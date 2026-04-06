@@ -4,6 +4,10 @@ import mongoose from 'mongoose'
 import dotenv from 'dotenv'
 import { corsOptions } from './config/corsOptions.js'
 import healthRouter from './routes/health.js'
+import agentsRouter from './routes/agents.js'
+import companyContextRouter from './routes/companyContext.js'
+import competitorsRouter from './routes/competitors.js'
+import researchRunsRouter from './routes/researchRuns.js'
 
 dotenv.config()
 
@@ -16,12 +20,32 @@ app.use(express.json())
 
 app.get('/', (_req, res) => {
   res.json({
-    name: 'beCRM API',
+    name: 'Trusted Tech Hub API',
     status: 'running',
   })
 })
 
 app.use('/health', healthRouter)
+app.use('/agents', agentsRouter)
+app.use('/company-context', companyContextRouter)
+app.use('/competitors', competitorsRouter)
+app.use('/research-runs', researchRunsRouter)
+
+app.use((err, _req, res, _next) => {
+  if (err instanceof mongoose.Error.ValidationError) {
+    return res.status(400).json({
+      message: 'Validation failed',
+      errors: Object.values(err.errors).map((detail) => detail.message),
+    })
+  }
+
+  if (err instanceof mongoose.Error.CastError) {
+    return res.status(400).json({ message: 'Invalid resource id' })
+  }
+
+  console.error(err)
+  return res.status(500).json({ message: 'Internal server error' })
+})
 
 async function start() {
   if (!mongoUri) {
