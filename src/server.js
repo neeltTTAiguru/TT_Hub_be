@@ -7,6 +7,9 @@ import healthRouter from './routes/health.js'
 import agentsRouter from './routes/agents.js'
 import companyContextRouter from './routes/companyContext.js'
 import competitorsRouter from './routes/competitors.js'
+import browserResearchRouter from './routes/browserResearch.js'
+import productsRouter from './routes/products.js'
+import publicPagesRouter from './routes/publicPages.js'
 import researchRunsRouter from './routes/researchRuns.js'
 
 dotenv.config()
@@ -29,9 +32,16 @@ app.use('/health', healthRouter)
 app.use('/agents', agentsRouter)
 app.use('/company-context', companyContextRouter)
 app.use('/competitors', competitorsRouter)
+app.use('/browser-research', browserResearchRouter)
+app.use('/products', productsRouter)
+app.use('/public-pages', publicPagesRouter)
 app.use('/research-runs', researchRunsRouter)
 
 app.use((err, _req, res, _next) => {
+  if (typeof err?.statusCode === 'number') {
+    return res.status(err.statusCode).json({ message: err.message || 'Request failed' })
+  }
+
   if (err instanceof mongoose.Error.ValidationError) {
     return res.status(400).json({
       message: 'Validation failed',

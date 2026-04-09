@@ -22,6 +22,8 @@ cp /Users/joecindergrid/Desktop/crm/beCRM/.env.example /Users/joecindergrid/Desk
 Update values in `.env` as needed:
 - `PORT` (default `3000`)
 - `MONGODB_URI`
+- `OPENAI_API_KEY` for OpenClaw chat in Market Researcher
+- `OPENAI_MODEL` optional override for the chat model (default `gpt-4.1-mini`)
 
 ## Run (dev)
 ```bash
@@ -42,6 +44,7 @@ Default allowed FE origins:
 - `GET /health` returns `{ status: "ok", time: "..." }`
 - `GET /company-context` returns the current Trusted Tech profile document
 - `PUT /company-context` updates the company profile
+- `POST /agents/market-researcher/chat` sends a Market Researcher chat turn to OpenAI using the backend API key
 - `GET /competitors` lists tracked competitors
 - `POST /competitors` creates a competitor entry
 - `GET /research-runs` lists research runs

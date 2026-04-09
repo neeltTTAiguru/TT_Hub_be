@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { getAgentById, listAgents } from '../services/agentCatalog.js'
+import { chatWithAgent } from '../services/openaiChat.js'
 
 const router = Router()
 
@@ -21,6 +22,30 @@ router.get('/:id', async (req, res, next) => {
     }
 
     return res.json(agent)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/:id/chat', async (req, res, next) => {
+  try {
+    const messages = Array.isArray(req.body?.messages) ? req.body.messages : []
+    const sanitizedMessages = messages
+      .filter(
+        (message) =>
+          message &&
+          (message.role === 'user' || message.role === 'assistant') &&
+          typeof message.content === 'string' &&
+          message.content.trim(),
+      )
+      .slice(-12)
+
+    if (!sanitizedMessages.length) {
+      return res.status(400).json({ message: 'Provide at least one chat message.' })
+    }
+
+    const result = await chatWithAgent(req.params.id, sanitizedMessages)
+    return res.json(result)
   } catch (error) {
     return next(error)
   }
