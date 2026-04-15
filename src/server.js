@@ -11,6 +11,9 @@ import browserResearchRouter from './routes/browserResearch.js'
 import productsRouter from './routes/products.js'
 import publicPagesRouter from './routes/publicPages.js'
 import researchRunsRouter from './routes/researchRuns.js'
+import chatThreadsRouter from './routes/chatThreads.js'
+import samGovMonitorRouter from './routes/samGovMonitor.js'
+import linkedinSurferRouter from './routes/linkedinSurfer.js'
 
 dotenv.config()
 
@@ -36,6 +39,9 @@ app.use('/browser-research', browserResearchRouter)
 app.use('/products', productsRouter)
 app.use('/public-pages', publicPagesRouter)
 app.use('/research-runs', researchRunsRouter)
+app.use('/chat-threads', chatThreadsRouter)
+app.use('/sam-gov-monitor', samGovMonitorRouter)
+app.use('/linkedin-surfer', linkedinSurferRouter)
 
 app.use((err, _req, res, _next) => {
   if (typeof err?.statusCode === 'number') {

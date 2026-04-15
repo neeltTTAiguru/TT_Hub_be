@@ -4,6 +4,7 @@ import Competitor from '../models/Competitor.js'
 import Product from '../models/Product.js'
 import PublicPage from '../models/PublicPage.js'
 import ResearchRun from '../models/ResearchRun.js'
+import Opportunity from '../models/Opportunity.js'
 import { getAgentById } from './agentCatalog.js'
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses'
@@ -55,12 +56,13 @@ async function loadLiveWorkspaceContext() {
     }
   }
 
-  const [companyContext, competitors, products, publicPages, researchRuns] = await Promise.all([
+  const [companyContext, competitors, products, publicPages, researchRuns, opportunities] = await Promise.all([
     CompanyContext.findOne().lean(),
     Competitor.find().sort({ updatedAt: -1 }).limit(8).lean(),
     Product.find({ visibility: 'public' }).sort({ updatedAt: -1 }).limit(12).lean(),
     PublicPage.find({ visibility: 'public' }).sort({ updatedAt: -1 }).limit(12).lean(),
     ResearchRun.find().sort({ updatedAt: -1 }).limit(6).lean(),
+    Opportunity.find().sort({ updatedAt: -1 }).limit(12).lean(),
   ])
 
   return {
@@ -69,6 +71,7 @@ async function loadLiveWorkspaceContext() {
     products,
     publicPages,
     researchRuns,
+    opportunities,
   }
 }
 
@@ -120,6 +123,19 @@ function buildInstructions(agent, liveContext) {
         .join('\n')
     : '- No public website pages are stored yet.'
 
+  const opportunityLines = liveContext.opportunities?.length
+    ? liveContext.opportunities
+        .map(
+          (opportunity) =>
+            `- ${opportunity.title} | Agency: ${opportunity.agency || 'Unknown'} | Posted: ${
+              opportunity.postedDate || 'Unknown'
+            } | Deadline: ${opportunity.responseDeadline || 'Unknown'} | Type: ${
+              opportunity.noticeType || 'Unknown'
+            } | Set-aside: ${opportunity.setAside || 'None listed'} | Link: ${opportunity.uiLink || 'None'}.`,
+        )
+        .join('\n')
+    : '- No SAM.gov opportunities are stored yet.'
+
   return [
     'You are OpenClaw, Trusted Tech\'s internal market research assistant inside OpenClaw Hub.',
     'Treat company information as internal by default.',
@@ -153,6 +169,9 @@ function buildInstructions(agent, liveContext) {
     '',
     'Public website pages:',
     publicPageLines,
+    '',
+    'SAM.gov opportunities:',
+    opportunityLines,
     '',
     'Recent research runs:',
     runLines,

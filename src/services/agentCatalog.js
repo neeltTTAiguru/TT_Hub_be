@@ -12,7 +12,6 @@ const files = {
   soul: path.join(workspaceRoot, 'SOUL.md'),
   user: path.join(workspaceRoot, 'USER.md'),
   heartbeat: path.join(workspaceRoot, 'HEARTBEAT.md'),
-  skill: path.join(workspaceRoot, 'skills', 'market-researcher', 'SKILL.md'),
   pluginManifest: path.join(
     workspaceRoot,
     'openclaw-plugins',
@@ -32,6 +31,37 @@ const files = {
     'README.md',
   ),
 }
+
+const agentDefinitions = [
+  {
+    id: 'market-researcher',
+    name: 'Market Researcher',
+    status: 'active',
+    productArea: 'Market Researcher',
+    skillPath: path.join(workspaceRoot, 'skills', 'market-researcher', 'SKILL.md'),
+  },
+  {
+    id: 'sam-gov-monitor',
+    name: 'SAM.gov Monitor',
+    status: 'planned',
+    productArea: 'SAM.gov Monitor',
+    skillPath: path.join(workspaceRoot, 'skills', 'sam-gov-monitor', 'SKILL.md'),
+  },
+  {
+    id: 'rfp-response-agent',
+    name: 'RFP Response Agent',
+    status: 'planned',
+    productArea: 'RFP Response',
+    skillPath: path.join(workspaceRoot, 'skills', 'rfp-response-agent', 'SKILL.md'),
+  },
+  {
+    id: 'linkedin-surfer',
+    name: 'LinkedIn Surfer',
+    status: 'planned',
+    productArea: 'LinkedIn Signals',
+    skillPath: path.join(workspaceRoot, 'skills', 'linkedin-surfer', 'SKILL.md'),
+  },
+]
 
 async function readText(filePath) {
   return fs.readFile(filePath, 'utf8')
@@ -71,13 +101,18 @@ function getToolNames(pluginSource) {
 }
 
 async function loadCatalogFiles() {
+  const skills = Object.fromEntries(
+    await Promise.all(
+      agentDefinitions.map(async (agent) => [agent.id, await readText(agent.skillPath)]),
+    ),
+  )
+
   const [
     workspaceInstructions,
     identity,
     soul,
     user,
     heartbeat,
-    skill,
     pluginManifestRaw,
     pluginEntry,
     pluginReadme,
@@ -87,7 +122,6 @@ async function loadCatalogFiles() {
     readText(files.soul),
     readText(files.user),
     readText(files.heartbeat),
-    readText(files.skill),
     readText(files.pluginManifest),
     readText(files.pluginEntry),
     readText(files.pluginReadme),
@@ -99,7 +133,7 @@ async function loadCatalogFiles() {
     soul,
     user,
     heartbeat,
-    skill,
+    skills,
     pluginManifest: JSON.parse(pluginManifestRaw),
     pluginEntry,
     pluginReadme,
@@ -109,21 +143,23 @@ async function loadCatalogFiles() {
 export async function listAgents() {
   const catalog = await loadCatalogFiles()
   const productAreas = getBulletItems(getSection(catalog.workspaceInstructions, 'Initial Product Areas'))
-  const activeProducts = productAreas.filter((item) => item === 'Market Researcher')
+  const activeProducts = productAreas
   const pluginTools = getToolNames(catalog.pluginEntry)
   const pluginConfigFields = Object.keys(catalog.pluginManifest.configSchema?.properties ?? {})
 
-  return [
-    {
-      id: 'market-researcher',
-      name: 'Market Researcher',
-      status: 'active',
-      productArea: 'Market Researcher',
-      summary: getFirstParagraph(getSection(catalog.skill, 'Purpose')),
-      mission: getFirstParagraph(getSection(catalog.skill, 'Mission')),
-      workflow: getBulletItems(getSection(catalog.skill, 'Workflow')),
-      outputShape: getBulletItems(getSection(catalog.skill, 'Required Output Shape')),
-      behaviorRules: getBulletItems(getSection(catalog.skill, 'Behavior Rules')),
+  return agentDefinitions.map((agent) => {
+    const skill = catalog.skills[agent.id]
+
+    return {
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      productArea: agent.productArea,
+      summary: getFirstParagraph(getSection(skill, 'Purpose')),
+      mission: getFirstParagraph(getSection(skill, 'Mission')),
+      workflow: getBulletItems(getSection(skill, 'Workflow')),
+      outputShape: getBulletItems(getSection(skill, 'Required Output Shape')),
+      behaviorRules: getBulletItems(getSection(skill, 'Behavior Rules')),
       workspace: {
         purpose: getFirstParagraph(getSection(catalog.workspaceInstructions, 'Workspace Purpose')),
         activeProducts,
@@ -138,23 +174,26 @@ export async function listAgents() {
         configFields: pluginConfigFields,
       },
       files: {
-        skill: files.skill,
+        skill: agent.skillPath,
         workspaceInstructions: files.workspaceInstructions,
         identity: files.identity,
         pluginManifest: files.pluginManifest,
         pluginEntry: files.pluginEntry,
         pluginReadme: files.pluginReadme,
       },
-    },
-  ]
+    }
+  })
 }
 
 export async function getAgentById(agentId) {
-  if (agentId !== 'market-researcher') {
+  const agentDefinition = agentDefinitions.find((agent) => agent.id === agentId)
+
+  if (!agentDefinition) {
     return null
   }
 
-  const [agent] = await listAgents()
+  const agents = await listAgents()
+  const agent = agents.find((entry) => entry.id === agentId)
   const catalog = await loadCatalogFiles()
 
   return {
@@ -181,8 +220,8 @@ export async function getAgentById(agentId) {
         content: catalog.heartbeat,
       },
       skill: {
-        path: files.skill,
-        content: catalog.skill,
+        path: agentDefinition.skillPath,
+        content: catalog.skills[agentId],
       },
       pluginManifest: {
         path: files.pluginManifest,
