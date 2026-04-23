@@ -1,16 +1,5 @@
 import ChatThread from '../models/ChatThread.js'
-
-function getUserId(req) {
-  const userId = req.header('x-auth0-user-id')?.trim()
-
-  if (!userId) {
-    const error = new Error('Missing Auth0 user id.')
-    error.statusCode = 401
-    throw error
-  }
-
-  return userId
-}
+import { getAuthenticatedUser } from '../middleware/auth.js'
 
 function sanitizeMessages(messages) {
   return Array.isArray(messages)
@@ -52,7 +41,7 @@ function buildThreadPayload(body, userId) {
 
 export async function listChatThreads(req, res, next) {
   try {
-    const userId = getUserId(req)
+    const userId = getAuthenticatedUser(req).id
     const agentId = typeof req.query.agentId === 'string' ? req.query.agentId.trim() : ''
     const filter = agentId ? { userId, agentId } : { userId }
     const threads = await ChatThread.find(filter).sort({ updatedAt: -1 })
@@ -64,7 +53,7 @@ export async function listChatThreads(req, res, next) {
 
 export async function createChatThread(req, res, next) {
   try {
-    const userId = getUserId(req)
+    const userId = getAuthenticatedUser(req).id
     const thread = await ChatThread.create(buildThreadPayload(req.body, userId))
     res.status(201).json(thread)
   } catch (error) {
@@ -74,7 +63,7 @@ export async function createChatThread(req, res, next) {
 
 export async function getChatThread(req, res, next) {
   try {
-    const userId = getUserId(req)
+    const userId = getAuthenticatedUser(req).id
     const thread = await ChatThread.findOne({ _id: req.params.id, userId })
 
     if (!thread) {
@@ -89,7 +78,7 @@ export async function getChatThread(req, res, next) {
 
 export async function updateChatThread(req, res, next) {
   try {
-    const userId = getUserId(req)
+    const userId = getAuthenticatedUser(req).id
     const update = buildThreadPayload(req.body, userId)
     const thread = await ChatThread.findOneAndUpdate({ _id: req.params.id, userId }, update, {
       new: true,
@@ -108,7 +97,7 @@ export async function updateChatThread(req, res, next) {
 
 export async function deleteChatThread(req, res, next) {
   try {
-    const userId = getUserId(req)
+    const userId = getAuthenticatedUser(req).id
     const thread = await ChatThread.findOneAndDelete({ _id: req.params.id, userId })
 
     if (!thread) {

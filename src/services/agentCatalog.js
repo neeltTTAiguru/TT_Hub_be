@@ -34,6 +34,13 @@ const files = {
 
 const agentDefinitions = [
   {
+    id: 'trusted-tech-assistant',
+    name: 'Trusted Tech Assistant',
+    status: 'active',
+    productArea: 'Market Researcher',
+    skillPath: path.join(workspaceRoot, 'skills', 'trusted-tech-assistant', 'SKILL.md'),
+  },
+  {
     id: 'market-researcher',
     name: 'Market Researcher',
     status: 'active',

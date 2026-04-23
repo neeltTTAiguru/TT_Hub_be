@@ -1,5 +1,6 @@
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { readFile } from 'node:fs/promises'
 import PublicPage from '../models/PublicPage.js'
 import ResearchRun from '../models/ResearchRun.js'
 
@@ -153,9 +154,26 @@ function parseLinkedInPostsPayload(raw) {
       ? payload.posts.map((post) => ({
           author: String(post?.author || ''),
           text: String(post?.text || ''),
+          selector: String(post?.selector || ''),
         }))
       : [],
   }
+}
+
+function parseMediaPath(raw) {
+  const trimmed = String(raw || '').trim()
+  const mediaMatch = trimmed.match(/MEDIA:(.+)$/m)
+
+  if (mediaMatch?.[1]?.trim()) {
+    return mediaMatch[1].trim()
+  }
+
+  const line = trimmed
+    .split('\n')
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith('/') && /\.(png|jpg|jpeg)$/i.test(entry))
+
+  return line || ''
 }
 
 function hasUsablePageText(page) {
@@ -205,6 +223,87 @@ export async function ensureBrowserStarted() {
     )
     wrappedError.statusCode = error.statusCode || 502
     throw wrappedError
+  }
+}
+
+export async function openBrowserPage(url) {
+  const trimmedUrl = String(url || '').trim()
+
+  if (!trimmedUrl) {
+    const error = new Error('A URL is required.')
+    error.statusCode = 400
+    throw error
+  }
+
+  await ensureBrowserStarted()
+  await runBrowserCommand(['open', trimmedUrl])
+
+  try {
+    await runBrowserCommand(['wait', '--url', trimmedUrl])
+  } catch {
+    // Some sites redirect during login flows. Opening the page is still useful even if exact URL wait fails.
+  }
+
+  const payload = await readPagePayload()
+  const page = payload.page
+
+  return {
+    title: String(page?.title || ''),
+    url: String(page?.url || trimmedUrl),
+    readyState: String(page?.readyState || ''),
+  }
+}
+
+export async function captureBrowserScreenshot({ fullPage = false } = {}) {
+  await ensureBrowserStarted()
+  const raw = await runBrowserCommand([
+    'screenshot',
+    ...(fullPage ? ['--full-page'] : []),
+  ])
+
+  const mediaPath = parseMediaPath(raw)
+
+  if (!mediaPath) {
+    const error = new Error(`Unable to parse browser screenshot response: ${raw.slice(0, 200) || 'empty'}`)
+    error.statusCode = 502
+    throw error
+  }
+
+  const image = await readFile(mediaPath)
+  return {
+    mediaPath,
+    dataUrl: `data:image/png;base64,${image.toString('base64')}`,
+  }
+}
+
+async function captureElementScreenshot(selector) {
+  const trimmedSelector = String(selector || '').trim()
+
+  if (!trimmedSelector) {
+    const error = new Error('A selector is required to capture an element screenshot.')
+    error.statusCode = 400
+    throw error
+  }
+
+  await ensureBrowserStarted()
+  const raw = await runBrowserCommand([
+    'screenshot',
+    '--element',
+    trimmedSelector,
+  ])
+
+  const mediaPath = parseMediaPath(raw)
+
+  if (!mediaPath) {
+    const error = new Error(`Unable to parse element screenshot response: ${raw.slice(0, 200) || 'empty'}`)
+    error.statusCode = 502
+    throw error
+  }
+
+  const image = await readFile(mediaPath)
+  return {
+    mediaPath,
+    dataUrl: `data:image/png;base64,${image.toString('base64')}`,
   }
 }
 
@@ -271,6 +370,65 @@ export async function captureLinkedInKeywordPosts(url, keyword) {
     `() => {
       const keyword = ${JSON.stringify(keyword)}.trim().toLowerCase()
       const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim()
+      const simplify = (value) =>
+        normalize(value)
+          .toLowerCase()
+          .replace(/[^a-z0-9\\s-]/g, ' ')
+          .replace(/-/g, ' ')
+          .replace(/\\s+/g, ' ')
+          .trim()
+      const singularize = (word) => {
+        if (word.endsWith('ies') && word.length > 4) return word.slice(0, -3) + 'y'
+        if (word.endsWith('s') && !word.endsWith('ss') && word.length > 3) return word.slice(0, -1)
+        return word
+      }
+      const tokenize = (value) =>
+        simplify(value)
+          .split(' ')
+          .map((part) => singularize(part.trim()))
+          .filter((part) => part.length > 2)
+
+      const synonymGroups = [
+        ['body', 'bodi'],
+        ['worn', 'wearable'],
+        ['camera', 'cam', 'video'],
+        ['evidence', 'digital', 'media'],
+        ['management', 'manage', 'platform', 'system', 'software'],
+        ['police', 'law', 'enforcement', 'public', 'safety'],
+      ]
+
+      const expandTokens = (tokens) => {
+        const expanded = new Set(tokens)
+        synonymGroups.forEach((group) => {
+          if (group.some((variant) => expanded.has(variant))) {
+            group.forEach((variant) => expanded.add(variant))
+          }
+        })
+        return expanded
+      }
+
+      const keywordTokens = tokenize(keyword)
+      const expandedKeywordTokens = expandTokens(keywordTokens)
+      const matchesKeyword = (text) => {
+        if (!keywordTokens.length) return true
+
+        const normalizedText = simplify(text)
+        if (!normalizedText) return false
+        if (normalizedText.includes(simplify(keyword))) return true
+
+        const textTokens = expandTokens(tokenize(normalizedText))
+        let overlap = 0
+
+        expandedKeywordTokens.forEach((token) => {
+          if (textTokens.has(token)) overlap += 1
+        })
+
+        const requiredOverlap =
+          keywordTokens.length <= 1 ? 1 : keywordTokens.length <= 3 ? 2 : Math.min(3, keywordTokens.length)
+
+        return overlap >= requiredOverlap
+      }
+
       const results = []
       const seen = new Set()
       const selectors = [
@@ -279,15 +437,53 @@ export async function captureLinkedInKeywordPosts(url, keyword) {
         'main div[data-urn]',
       ]
 
-      const pushResult = (author, text) => {
+      const getCssPath = (element) => {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE) return ''
+        if (element.id) return '#' + CSS.escape(element.id)
+
+        const segments = []
+        let current = element
+
+        while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+          let segment = current.nodeName.toLowerCase()
+          if (current.classList.length) {
+            const stableClasses = Array.from(current.classList)
+              .filter((className) =>
+                className &&
+                !/^(ember|artdeco|scaffold-layout__|occludable-update|feed-shared-update-v2__)/.test(className),
+              )
+              .slice(0, 2)
+
+            if (stableClasses.length) {
+              segment += stableClasses.map((className) => '.' + CSS.escape(className)).join('')
+            }
+          }
+
+          let sibling = current
+          let position = 1
+          while ((sibling = sibling.previousElementSibling)) {
+            if (sibling.nodeName.toLowerCase() === current.nodeName.toLowerCase()) {
+              position += 1
+            }
+          }
+          segment += ':nth-of-type(' + position + ')'
+          segments.unshift(segment)
+          current = current.parentElement
+        }
+
+        return ['body', ...segments].join(' > ')
+      }
+
+      const pushResult = (author, text, element) => {
         const normalizedText = normalize(text)
         if (!normalizedText || normalizedText.length < 80) return
-        if (keyword && !normalizedText.toLowerCase().includes(keyword)) return
+        if (keyword && !matchesKeyword(normalizedText)) return
         if (seen.has(normalizedText)) return
         seen.add(normalizedText)
         results.push({
           author: normalize(author),
           text: normalizedText.slice(0, 1400),
+          selector: getCssPath(element),
         })
       }
 
@@ -298,13 +494,13 @@ export async function captureLinkedInKeywordPosts(url, keyword) {
             element.querySelector('.feed-shared-actor__name')?.textContent ||
             element.querySelector('span[dir="ltr"]')?.textContent ||
             ''
-          pushResult(author, element.innerText)
+          pushResult(author, element.innerText, element)
         })
       })
 
       if (!results.length) {
         const blocks = (document.body?.innerText || '').split(/\\n{2,}/)
-        blocks.forEach((block) => pushResult('', block))
+        blocks.forEach((block) => pushResult('', block, null))
       }
 
       return JSON.stringify({
@@ -331,8 +527,20 @@ export async function captureLinkedInKeywordPosts(url, keyword) {
     error.statusCode = 404
     throw error
   }
+  let screenshot = null
 
-  return parsed
+  if (parsed.posts[0]?.selector) {
+    try {
+      screenshot = await captureElementScreenshot(parsed.posts[0].selector)
+    } catch {
+      screenshot = null
+    }
+  }
+
+  return {
+    ...parsed,
+    screenshotDataUrl: screenshot?.dataUrl || '',
+  }
 }
 
 export async function captureLinkedInSearchPosts(keyword) {

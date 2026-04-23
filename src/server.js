@@ -2,7 +2,10 @@ import express from 'express'
 import cors from 'cors'
 import mongoose from 'mongoose'
 import dotenv from 'dotenv'
+import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
 import { corsOptions } from './config/corsOptions.js'
+import { requireAuth } from './middleware/auth.js'
 import healthRouter from './routes/health.js'
 import agentsRouter from './routes/agents.js'
 import companyContextRouter from './routes/companyContext.js'
@@ -14,15 +17,25 @@ import researchRunsRouter from './routes/researchRuns.js'
 import chatThreadsRouter from './routes/chatThreads.js'
 import samGovMonitorRouter from './routes/samGovMonitor.js'
 import linkedinSurferRouter from './routes/linkedinSurfer.js'
+import usersRouter from './routes/users.js'
 
 dotenv.config()
 
 const app = express()
 const port = process.env.PORT || 3000
 const mongoUri = process.env.MONGODB_URI || ''
+const requestRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+})
 
+app.disable('x-powered-by')
+app.use(helmet())
+app.use(requestRateLimit)
 app.use(cors(corsOptions))
-app.use(express.json())
+app.use(express.json({ limit: '1mb' }))
 
 app.get('/', (_req, res) => {
   res.json({
@@ -32,6 +45,7 @@ app.get('/', (_req, res) => {
 })
 
 app.use('/health', healthRouter)
+app.use(requireAuth)
 app.use('/agents', agentsRouter)
 app.use('/company-context', companyContextRouter)
 app.use('/competitors', competitorsRouter)
@@ -42,6 +56,7 @@ app.use('/research-runs', researchRunsRouter)
 app.use('/chat-threads', chatThreadsRouter)
 app.use('/sam-gov-monitor', samGovMonitorRouter)
 app.use('/linkedin-surfer', linkedinSurferRouter)
+app.use('/users', usersRouter)
 
 app.use((err, _req, res, _next) => {
   if (typeof err?.statusCode === 'number') {

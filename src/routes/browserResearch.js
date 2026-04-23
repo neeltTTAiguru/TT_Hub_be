@@ -5,6 +5,7 @@ import {
   saveBrowserResearchRun,
   saveCapturedPublicPage,
 } from '../services/browserResearch.js'
+import { validateExternalUrl } from '../middleware/urlSafety.js'
 
 const router = Router()
 
@@ -19,15 +20,11 @@ router.post('/start', async (_req, res, next) => {
 
 router.post('/capture-page', async (req, res, next) => {
   try {
-    const url = typeof req.body?.url === 'string' ? req.body.url.trim() : ''
+    const url = validateExternalUrl(req.body?.url)
     const objective =
       typeof req.body?.objective === 'string' && req.body.objective.trim()
         ? req.body.objective.trim()
         : `Capture public page for research: ${url}`
-
-    if (!url) {
-      return res.status(400).json({ message: 'A URL is required.' })
-    }
 
     const page = await capturePublicPage(url)
     const savedPage = await saveCapturedPublicPage(page)
