@@ -71,7 +71,27 @@ const agentDefinitions = [
 ]
 
 async function readText(filePath) {
-  return fs.readFile(filePath, 'utf8')
+  try {
+    return await fs.readFile(filePath, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return ''
+    }
+
+    throw error
+  }
+}
+
+function parseJsonObject(value, fallback) {
+  if (!value) {
+    return fallback
+  }
+
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
 }
 
 function getSection(markdown, heading) {
@@ -141,7 +161,15 @@ async function loadCatalogFiles() {
     user,
     heartbeat,
     skills,
-    pluginManifest: JSON.parse(pluginManifestRaw),
+    pluginManifest: parseJsonObject(pluginManifestRaw, {
+      id: 'trusted-tech-hub',
+      name: 'Trusted Tech Hub',
+      description: 'Trusted Tech internal operating hub.',
+      version: '0.1.0',
+      configSchema: {
+        properties: {},
+      },
+    }),
     pluginEntry,
     pluginReadme,
   }
