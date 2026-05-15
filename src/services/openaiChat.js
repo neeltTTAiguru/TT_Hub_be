@@ -5,6 +5,7 @@ import Product from '../models/Product.js'
 import PublicPage from '../models/PublicPage.js'
 import ResearchRun from '../models/ResearchRun.js'
 import Opportunity from '../models/Opportunity.js'
+import GrantOpportunity from '../models/GrantOpportunity.js'
 import { getAgentById } from './agentCatalog.js'
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses'
@@ -53,16 +54,18 @@ async function loadLiveWorkspaceContext() {
       products: [],
       publicPages: [],
       researchRuns: [],
+      grantOpportunities: [],
     }
   }
 
-  const [companyContext, competitors, products, publicPages, researchRuns, opportunities] = await Promise.all([
+  const [companyContext, competitors, products, publicPages, researchRuns, opportunities, grantOpportunities] = await Promise.all([
     CompanyContext.findOne().lean(),
     Competitor.find().sort({ updatedAt: -1 }).limit(8).lean(),
     Product.find({ visibility: 'public' }).sort({ updatedAt: -1 }).limit(12).lean(),
     PublicPage.find({ visibility: 'public' }).sort({ updatedAt: -1 }).limit(12).lean(),
     ResearchRun.find().sort({ updatedAt: -1 }).limit(6).lean(),
     Opportunity.find().sort({ updatedAt: -1 }).limit(12).lean(),
+    GrantOpportunity.find().sort({ fitScore: -1, updatedAt: -1 }).limit(12).lean(),
   ])
 
   return {
@@ -72,6 +75,7 @@ async function loadLiveWorkspaceContext() {
     publicPages,
     researchRuns,
     opportunities,
+    grantOpportunities,
   }
 }
 
@@ -136,6 +140,21 @@ function buildInstructions(agent, liveContext) {
         .join('\n')
     : '- No SAM.gov opportunities are stored yet.'
 
+  const grantOpportunityLines = liveContext.grantOpportunities?.length
+    ? liveContext.grantOpportunities
+        .map(
+          (opportunity) =>
+            `- ${opportunity.title} | Source: ${opportunity.sourceAgency || 'Unknown'} | Fit score: ${
+              opportunity.fitScore || 0
+            } | Deadline: ${opportunity.deadline || 'Unknown'} | Award: ${
+              opportunity.awardRange || 'Unknown'
+            } | Eligibility: ${opportunity.eligibility || 'Unknown'} | Link: ${
+              opportunity.applicationUrl || opportunity.sourceUrl || 'None'
+            }.`,
+        )
+        .join('\n')
+    : '- No available grant opportunities are stored yet.'
+
   return [
     'You are OpenClaw, Trusted Tech\'s internal market research assistant inside OpenClaw Hub.',
     'Treat company information as internal by default.',
@@ -172,6 +191,9 @@ function buildInstructions(agent, liveContext) {
     '',
     'SAM.gov opportunities:',
     opportunityLines,
+    '',
+    'Available grant opportunities:',
+    grantOpportunityLines,
     '',
     'Recent research runs:',
     runLines,

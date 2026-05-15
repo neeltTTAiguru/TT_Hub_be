@@ -15,9 +15,12 @@ import productsRouter from './routes/products.js'
 import publicPagesRouter from './routes/publicPages.js'
 import researchRunsRouter from './routes/researchRuns.js'
 import chatThreadsRouter from './routes/chatThreads.js'
-import samGovMonitorRouter from './routes/samGovMonitor.js'
+import rfpOpportunitiesRouter from './routes/rfpOpportunities.js'
+import policeGrantLeadsRouter from './routes/policeGrantLeads.js'
+import grantOpportunitiesRouter from './routes/grantOpportunities.js'
 import linkedinSurferRouter from './routes/linkedinSurfer.js'
 import usersRouter from './routes/users.js'
+import adminRouter from './routes/admin.js'
 
 dotenv.config()
 
@@ -45,6 +48,7 @@ app.get('/', (_req, res) => {
 })
 
 app.use('/health', healthRouter)
+app.use('/rfp-opportunities', rfpOpportunitiesRouter)
 app.use(requireAuth)
 app.use('/agents', agentsRouter)
 app.use('/company-context', companyContextRouter)
@@ -54,9 +58,11 @@ app.use('/products', productsRouter)
 app.use('/public-pages', publicPagesRouter)
 app.use('/research-runs', researchRunsRouter)
 app.use('/chat-threads', chatThreadsRouter)
-app.use('/sam-gov-monitor', samGovMonitorRouter)
+app.use('/police-grant-leads', policeGrantLeadsRouter)
+app.use('/grant-opportunities', grantOpportunitiesRouter)
 app.use('/linkedin-surfer', linkedinSurferRouter)
 app.use('/users', usersRouter)
+app.use('/admin', adminRouter)
 
 app.use((err, _req, res, _next) => {
   if (typeof err?.statusCode === 'number') {
@@ -86,8 +92,18 @@ async function start() {
     console.log('Connected to MongoDB')
   }
 
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`)
+  })
+
+  server.on('error', (error) => {
+    if (error?.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use. Stop the existing server or run with PORT=<another-port> npm run dev.`)
+      process.exit(1)
+    }
+
+    console.error('Server failed after startup', error)
+    process.exit(1)
   })
 }
 

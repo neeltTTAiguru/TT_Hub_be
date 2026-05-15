@@ -48,11 +48,18 @@ const agentDefinitions = [
     skillPath: path.join(workspaceRoot, 'skills', 'market-researcher', 'SKILL.md'),
   },
   {
-    id: 'sam-gov-monitor',
-    name: 'SAM.gov Monitor',
+    id: 'police-grant-intelligence-agent',
+    name: 'Police Grant Intelligence Agent',
+    status: 'active',
+    productArea: 'Market Researcher',
+    skillPath: path.join(workspaceRoot, 'skills', 'police-grant-intelligence-agent', 'SKILL.md'),
+  },
+  {
+    id: 'grant-application-agent',
+    name: 'Grant Application Agent',
     status: 'planned',
-    productArea: 'SAM.gov Monitor',
-    skillPath: path.join(workspaceRoot, 'skills', 'sam-gov-monitor', 'SKILL.md'),
+    productArea: 'Grant Applications',
+    skillPath: path.join(workspaceRoot, 'skills', 'grant-application-agent', 'SKILL.md'),
   },
   {
     id: 'rfp-response-agent',

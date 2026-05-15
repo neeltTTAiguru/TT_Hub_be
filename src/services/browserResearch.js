@@ -23,7 +23,7 @@ function getCliError(error) {
   return error instanceof Error ? error.message : 'Browser command failed'
 }
 
-async function runBrowserCommand(args) {
+export async function runBrowserCommand(args) {
   try {
     const { stdout } = await execFileAsync(
       'openclaw',

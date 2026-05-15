@@ -69,6 +69,79 @@ const opportunitySchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    attachmentLinks: {
+      type: [
+        {
+          label: {
+            type: String,
+            default: '',
+            trim: true,
+          },
+          url: {
+            type: String,
+            default: '',
+            trim: true,
+          },
+          access: {
+            type: String,
+            default: 'public',
+            trim: true,
+          },
+          fileType: {
+            type: String,
+            default: '',
+            trim: true,
+          },
+        },
+      ],
+      default: [],
+    },
+    opportunityLinks: {
+      type: [
+        {
+          label: {
+            type: String,
+            default: '',
+            trim: true,
+          },
+          url: {
+            type: String,
+            default: '',
+            trim: true,
+          },
+          updatedDate: {
+            type: String,
+            default: '',
+            trim: true,
+          },
+        },
+      ],
+      default: [],
+    },
+    attachmentsLinksText: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    rfpPackage: {
+      type: {
+        classification: { type: String, default: '', trim: true },
+        originalSetAside: { type: String, default: '', trim: true },
+        productServiceCode: { type: String, default: '', trim: true },
+        naicsCode: { type: String, default: '', trim: true },
+        placeOfPerformance: { type: String, default: '', trim: true },
+        initiative: { type: String, default: '', trim: true },
+        description: { type: String, default: '', trim: true },
+        contactInformation: { type: String, default: '', trim: true },
+        primaryPointOfContact: { type: String, default: '', trim: true },
+        alternativePointOfContact: { type: String, default: '', trim: true },
+        contractingOfficeAddress: { type: String, default: '', trim: true },
+        attachmentsLinksText: { type: String, default: '', trim: true },
+        sourceUrl: { type: String, default: '', trim: true },
+        capturedAt: { type: String, default: '', trim: true },
+      },
+      default: {},
+    },
     sourceKeyword: {
       type: String,
       default: '',
