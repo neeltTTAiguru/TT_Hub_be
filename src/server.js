@@ -17,6 +17,7 @@ import researchRunsRouter from './routes/researchRuns.js'
 import chatThreadsRouter from './routes/chatThreads.js'
 import rfpOpportunitiesRouter from './routes/rfpOpportunities.js'
 import policeGrantLeadsRouter from './routes/policeGrantLeads.js'
+import grantSourcesRouter from './routes/grantSources.js'
 import grantOpportunitiesRouter from './routes/grantOpportunities.js'
 import linkedinSurferRouter from './routes/linkedinSurfer.js'
 import usersRouter from './routes/users.js'
@@ -59,6 +60,7 @@ app.use('/public-pages', publicPagesRouter)
 app.use('/research-runs', researchRunsRouter)
 app.use('/chat-threads', chatThreadsRouter)
 app.use('/police-grant-leads', policeGrantLeadsRouter)
+app.use('/grant-sources', grantSourcesRouter)
 app.use('/grant-opportunities', grantOpportunitiesRouter)
 app.use('/linkedin-surfer', linkedinSurferRouter)
 app.use('/users', usersRouter)
@@ -78,6 +80,15 @@ app.use((err, _req, res, _next) => {
 
   if (err instanceof mongoose.Error.CastError) {
     return res.status(400).json({ message: 'Invalid resource id' })
+  }
+
+  if (err?.code === 11000) {
+    const fields = Object.keys(err.keyPattern || err.keyValue || {})
+    return res.status(409).json({
+      message: fields.length
+        ? `A record already exists with the same ${fields.join(', ')}.`
+        : 'A record already exists with the same unique value.',
+    })
   }
 
   console.error(err)

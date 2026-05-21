@@ -1,5 +1,8 @@
 import { Router } from 'express'
 import GrantOpportunity from '../models/GrantOpportunity.js'
+import { generateGrantApplicationDraft } from '../services/grantApplicationDrafts.js'
+import { readGrantApplicationQuestions } from '../services/grantApplicationQuestions.js'
+import { discoverGrantOpportunitiesForUser } from '../services/grantOpportunityDiscovery.js'
 import { searchGrantOpportunities } from '../services/grantOpportunitySearch.js'
 
 const router = Router()
@@ -22,6 +25,48 @@ router.post('/search', async (req, res, next) => {
       agencyType: typeof req.body?.agencyType === 'string' ? req.body.agencyType : '',
       projectType: typeof req.body?.projectType === 'string' ? req.body.projectType : '',
       sourceUrls: Array.isArray(req.body?.sourceUrls) ? req.body.sourceUrls : [],
+    })
+
+    res.json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/discover', async (req, res, next) => {
+  try {
+    const result = await discoverGrantOpportunitiesForUser({
+      state: typeof req.body?.state === 'string' ? req.body.state : '',
+      stateCode: typeof req.body?.stateCode === 'string' ? req.body.stateCode : '',
+      userProfile: req.body?.userProfile && typeof req.body.userProfile === 'object' ? req.body.userProfile : {},
+    })
+
+    res.json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/:opportunityId/generate-response', async (req, res, next) => {
+  try {
+    const result = await generateGrantApplicationDraft({
+      opportunityId: req.params.opportunityId,
+      userId: req.body?.userId,
+      applicationQuestions: req.body?.applicationQuestions && typeof req.body.applicationQuestions === 'object'
+        ? req.body.applicationQuestions
+        : null,
+    })
+
+    res.status(201).json(result)
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/:opportunityId/read-application-questions', async (req, res, next) => {
+  try {
+    const result = await readGrantApplicationQuestions({
+      opportunityId: req.params.opportunityId,
     })
 
     res.json(result)
