@@ -20,6 +20,7 @@ import policeGrantLeadsRouter from './routes/policeGrantLeads.js'
 import grantSourcesRouter from './routes/grantSources.js'
 import grantOpportunitiesRouter from './routes/grantOpportunities.js'
 import linkedinSurferRouter from './routes/linkedinSurfer.js'
+import twitterSurferRouter from './routes/twitterSurfer.js'
 import usersRouter from './routes/users.js'
 import adminRouter from './routes/admin.js'
 
@@ -63,6 +64,7 @@ app.use('/police-grant-leads', policeGrantLeadsRouter)
 app.use('/grant-sources', grantSourcesRouter)
 app.use('/grant-opportunities', grantOpportunitiesRouter)
 app.use('/linkedin-surfer', linkedinSurferRouter)
+app.use('/twitter-surfer', twitterSurferRouter)
 app.use('/users', usersRouter)
 app.use('/admin', adminRouter)
 

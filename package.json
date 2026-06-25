@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "ingest:public-data": "node scripts/ingestTrustedTechPublicData.js"
+    "ingest:public-data": "node scripts/ingestTrustedTechPublicData.js",
+    "surf:twitter": "node scripts/runTwitterSurferCli.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

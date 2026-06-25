@@ -160,6 +160,30 @@ function parseLinkedInPostsPayload(raw) {
   }
 }
 
+function parseTwitterPostsPayload(raw) {
+  const payload = parseNestedJson(raw)
+
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  return {
+    title: String(payload.title || ''),
+    url: String(payload.url || ''),
+    keyword: String(payload.keyword || ''),
+    posts: Array.isArray(payload.posts)
+      ? payload.posts.map((post) => ({
+          author: String(post?.author || ''),
+          handle: String(post?.handle || ''),
+          text: String(post?.text || ''),
+          postedAt: String(post?.postedAt || ''),
+          url: String(post?.url || ''),
+          selector: String(post?.selector || ''),
+        }))
+      : [],
+  }
+}
+
 function parseMediaPath(raw) {
   const trimmed = String(raw || '').trim()
   const mediaMatch = trimmed.match(/MEDIA:(.+)$/m)
@@ -251,6 +275,62 @@ export async function openBrowserPage(url) {
     title: String(page?.title || ''),
     url: String(page?.url || trimmedUrl),
     readyState: String(page?.readyState || ''),
+  }
+}
+
+export async function getBrowserPageSnapshot() {
+  await ensureBrowserStarted()
+  const payload = await readPagePayload()
+  const page = payload.page
+
+  if (!page) {
+    const error = new Error(`Unable to read current browser page. Raw response: ${payload.raw.slice(0, 300) || 'empty'}`)
+    error.statusCode = 502
+    throw error
+  }
+
+  return {
+    title: String(page.title || ''),
+    url: String(page.url || ''),
+    readyState: String(page.readyState || ''),
+    text: trimText(page.text || '', 2500),
+  }
+}
+
+export async function getTwitterBrowserConnectionStatus() {
+  const page = await getBrowserPageSnapshot()
+  const hostname = page.url ? new URL(page.url).hostname.toLowerCase() : ''
+  const isTwitterHost =
+    hostname === 'x.com' ||
+    hostname.endsWith('.x.com') ||
+    hostname === 'twitter.com' ||
+    hostname.endsWith('.twitter.com')
+  const normalizedText = compactWhitespace(page.text || '').toLowerCase()
+  const showsLoginPrompt =
+    normalizedText.includes('sign in to x') ||
+    normalizedText.includes('log in') ||
+    normalizedText.includes('sign up') ||
+    normalizedText.includes('create account')
+  const showsAuthenticatedShell =
+    normalizedText.includes('home') &&
+    (normalizedText.includes('for you') ||
+      normalizedText.includes('following') ||
+      normalizedText.includes('post') ||
+      normalizedText.includes('messages'))
+
+  return {
+    connected: Boolean(isTwitterHost && showsAuthenticatedShell && !showsLoginPrompt),
+    browserReady: true,
+    currentUrl: page.url,
+    title: page.title,
+    readyState: page.readyState,
+    needsLogin: Boolean(isTwitterHost && showsLoginPrompt),
+    source: 'openclaw-browser',
+    message: isTwitterHost
+      ? showsAuthenticatedShell && !showsLoginPrompt
+        ? 'OpenClaw browser appears signed in to X/Twitter.'
+        : 'OpenClaw browser is on X/Twitter, but the session does not look signed in yet.'
+      : 'OpenClaw browser is ready, but it is not currently on X/Twitter.',
   }
 }
 
@@ -554,6 +634,203 @@ export async function captureLinkedInSearchPosts(keyword) {
 
   const searchUrl = `https://www.linkedin.com/search/results/content/?keywords=${encodeURIComponent(trimmedKeyword)}`
   return captureLinkedInKeywordPosts(searchUrl, trimmedKeyword)
+}
+
+export async function captureTwitterKeywordPosts(url, keyword) {
+  await ensureBrowserStarted()
+  await runBrowserCommand(['open', url])
+
+  try {
+    await runBrowserCommand(['wait', '--url', url])
+  } catch {
+    // X/Twitter often rewrites search URLs. Extraction below validates whether useful posts are visible.
+  }
+
+  await waitForReadableContent()
+
+  const payload = await runBrowserCommand([
+    'evaluate',
+    '--fn',
+    `() => {
+      const keyword = ${JSON.stringify(keyword)}.trim().toLowerCase()
+      const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim()
+      const simplify = (value) =>
+        normalize(value)
+          .toLowerCase()
+          .replace(/[^a-z0-9\\s-]/g, ' ')
+          .replace(/-/g, ' ')
+          .replace(/\\s+/g, ' ')
+          .trim()
+
+      const opportunityTerms = [
+        'rfp',
+        'bid',
+        'bids',
+        'solicitation',
+        'procurement',
+        'proposal',
+        'proposals',
+        'grant',
+        'grants',
+        'funding',
+        'contract',
+        'contracts',
+        'purchase',
+        'purchasing',
+        'seeking',
+        'vendor',
+        'vendors',
+        'body worn',
+        'body-worn',
+        'body camera',
+        'body cameras',
+        'bwc',
+        'digital evidence',
+      ]
+
+      const searchTokens = simplify(keyword).split(' ').filter((token) => token.length > 2)
+      const matchesKeyword = (text) => {
+        const simplifiedText = simplify(text)
+        if (!simplifiedText) return false
+        if (!searchTokens.length) return true
+        if (simplifiedText.includes(simplify(keyword))) return true
+
+        let overlap = 0
+        searchTokens.forEach((token) => {
+          if (simplifiedText.includes(token)) overlap += 1
+        })
+
+        const hasOpportunityTerm = opportunityTerms.some((term) => simplifiedText.includes(simplify(term)))
+        return overlap >= Math.min(2, searchTokens.length) || hasOpportunityTerm
+      }
+
+      const getCssPath = (element) => {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE) return ''
+        if (element.id) return '#' + CSS.escape(element.id)
+
+        const segments = []
+        let current = element
+
+        while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+          let segment = current.nodeName.toLowerCase()
+
+          if (current.getAttribute('data-testid')) {
+            segment += '[data-testid="' + CSS.escape(current.getAttribute('data-testid')) + '"]'
+          }
+
+          let sibling = current
+          let position = 1
+          while ((sibling = sibling.previousElementSibling)) {
+            if (sibling.nodeName.toLowerCase() === current.nodeName.toLowerCase()) {
+              position += 1
+            }
+          }
+
+          segment += ':nth-of-type(' + position + ')'
+          segments.unshift(segment)
+          current = current.parentElement
+        }
+
+        return ['body', ...segments].join(' > ')
+      }
+
+      const results = []
+      const seen = new Set()
+      const pushResult = (article) => {
+        const text = normalize(article.innerText)
+        if (!text || text.length < 40 || !matchesKeyword(text)) return
+        if (seen.has(text)) return
+
+        const timeElement = article.querySelector('time')
+        const statusLink = timeElement?.closest('a')?.href || ''
+        const userLink = article.querySelector('a[href^="/"][role="link"]')?.getAttribute('href') || ''
+        const handleMatch = text.match(/@[A-Za-z0-9_]+/)
+
+        seen.add(text)
+        results.push({
+          author: normalize(article.querySelector('[data-testid="User-Name"]')?.innerText || ''),
+          handle: handleMatch ? handleMatch[0] : userLink,
+          text: text.slice(0, 1400),
+          postedAt: timeElement?.getAttribute('datetime') || '',
+          url: statusLink,
+          selector: getCssPath(article),
+        })
+      }
+
+      document.querySelectorAll('article[data-testid="tweet"], article').forEach(pushResult)
+
+      if (!results.length) {
+        const blocks = (document.body?.innerText || '').split(/\\n{2,}/)
+        blocks.forEach((block) => {
+          const text = normalize(block)
+          if (!text || text.length < 40 || !matchesKeyword(text) || seen.has(text)) return
+          seen.add(text)
+          results.push({
+            author: '',
+            handle: '',
+            text: text.slice(0, 1400),
+            postedAt: '',
+            url: location.href,
+            selector: '',
+          })
+        })
+      }
+
+      return JSON.stringify({
+        title: document.title,
+        url: location.href,
+        keyword,
+        posts: results.slice(0, 12),
+      })
+    }`,
+  ])
+
+  const parsed = parseTwitterPostsPayload(payload)
+
+  if (!parsed) {
+    const error = new Error(`Unable to parse Twitter post results. Raw response: ${payload.slice(0, 300) || 'empty'}`)
+    error.statusCode = 502
+    throw error
+  }
+
+  if (!parsed.posts.length) {
+    const error = new Error(
+      `OpenClaw opened X/Twitter but found no visible posts matching "${keyword}". Make sure the browser profile is signed in, or try a broader keyword.`,
+    )
+    error.statusCode = 404
+    throw error
+  }
+
+  let screenshot = null
+
+  if (parsed.posts[0]?.selector) {
+    try {
+      screenshot = await captureElementScreenshot(parsed.posts[0].selector)
+    } catch {
+      screenshot = null
+    }
+  }
+
+  return {
+    ...parsed,
+    screenshotDataUrl: screenshot?.dataUrl || '',
+  }
+}
+
+export async function captureTwitterSearchPosts(keyword, { filter = 'live' } = {}) {
+  const trimmedKeyword = keyword.trim()
+
+  if (!trimmedKeyword) {
+    const error = new Error('A Twitter/X search keyword is required.')
+    error.statusCode = 400
+    throw error
+  }
+
+  const searchUrl = `https://x.com/search?q=${encodeURIComponent(trimmedKeyword)}&src=typed_query${
+    filter ? `&f=${encodeURIComponent(filter)}` : ''
+  }`
+
+  return captureTwitterKeywordPosts(searchUrl, trimmedKeyword)
 }
 
 export async function saveCapturedPublicPage(page, options = {}) {

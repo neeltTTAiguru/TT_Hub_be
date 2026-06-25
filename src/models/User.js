@@ -98,6 +98,19 @@ const userSchema = new mongoose.Schema(
       knownNeeds: { type: String, default: '' },
       grantRequirements: { type: String, default: '' },
     },
+    uploadedGrantApplications: {
+      type: [
+        {
+          fileName: { type: String, default: '', trim: true },
+          contentType: { type: String, default: '', trim: true },
+          sizeBytes: { type: Number, default: 0 },
+          extractedText: { type: String, default: '' },
+          truncated: { type: Boolean, default: false },
+          uploadedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
     status: {
       type: String,
       enum: ['active', 'invited', 'inactive'],

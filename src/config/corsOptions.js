@@ -7,12 +7,13 @@ const allowedOrigins = [
 const corsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true)
+    if (/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return callback(null, true)
     if (allowedOrigins.includes(origin)) return callback(null, true)
     return callback(new Error(`CORS blocked for origin: ${origin}`))
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-File-Name'],
   maxAge: 86400,
 }
 

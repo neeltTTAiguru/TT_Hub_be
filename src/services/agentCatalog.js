@@ -75,6 +75,13 @@ const agentDefinitions = [
     productArea: 'LinkedIn Signals',
     skillPath: path.join(workspaceRoot, 'skills', 'linkedin-surfer', 'SKILL.md'),
   },
+  {
+    id: 'twitter-surfer',
+    name: 'Twitter Surfer',
+    status: 'planned',
+    productArea: 'Market Researcher',
+    skillPath: path.join(workspaceRoot, 'skills', 'twitter-surfer', 'SKILL.md'),
+  },
 ]
 
 async function readText(filePath) {
