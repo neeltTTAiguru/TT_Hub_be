@@ -4,9 +4,11 @@ import os
 
 from openai import OpenAI
 from pypdf import PdfReader
+from agents import Agent
+from tools import extract_rfp_text, make_master_string, classify_rfp
 
-MODEL = "gpt-4.1-mini"
-DEFAULT_TEST_RFP = "/Users/neelpalle/Desktop/Trusted Tech/RFPS/2025_006_PD Car and Body Cameras.pdf"
+
+
 
 
 api_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -383,42 +385,12 @@ Output Field Meaning:
 """
 
 
-def extract_rfp_text(pdf_path: str) -> list[str]:
-    pdf_read = PdfReader(pdf_path)
-    text_list = []
-    for page in pdf_read.pages:
-        text_list.append(page.extract_text() or "")
-    return text_list
 
 
-def make_master_string(rfp_text_list: list[str]) -> str:
-    return "\n".join(rfp_text_list)
+#Define the Intake agent 
 
-
-def classify_rfp(pdf_path: str):
-    rfp_text = make_master_string(extract_rfp_text(pdf_path))
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": intake_agent_prompt},
-            {
-                "role": "user",
-                "content": (
-                    "Classify this RFP using your instructions. "
-                    "Return valid JSON only.\n\n"
-                    f"PDF path: {pdf_path}\n\n"
-                    f"RFP text:\n{rfp_text}"
-                ),
-            },
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": INTAKE_CLASSIFICATION_SCHEMA,
-        },
-    )
-    return response.choices[0].message.content
-
-
-if __name__ == "__main__":
-    result = classify_rfp(DEFAULT_TEST_RFP)
-    print(result)
+intake_agent = Agent(
+    name = "Intake Agent",
+    instructions = intake_agent_prompt,
+    tools = [extract_rfp_text, make_master_string, classify_rfp],
+)
