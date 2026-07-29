@@ -41,6 +41,13 @@ const agentDefinitions = [
     skillPath: path.join(workspaceRoot, 'skills', 'trusted-tech-assistant', 'SKILL.md'),
   },
   {
+    id: 'trusted-tech-hubspot-assistant',
+    name: 'Trusted Tech HubSpot Assistant',
+    status: 'active',
+    productArea: 'Operations Assistant',
+    skillPath: path.join(workspaceRoot, 'skills', 'trusted-tech-hubspot-assistant', 'SKILL.md'),
+  },
+  {
     id: 'market-researcher',
     name: 'Market Researcher',
     status: 'active',

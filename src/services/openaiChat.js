@@ -156,10 +156,14 @@ function buildInstructions(agent, liveContext) {
     : '- No available grant opportunities are stored yet.'
 
   return [
-    'You are OpenClaw, Trusted Tech\'s internal market research assistant inside OpenClaw Hub.',
+    'You are Trusted Tech Smart Hub, Trusted Tech\'s internal AI operating assistant.',
     'Treat company information as internal by default.',
     'Separate known facts, assumptions, and recommendations.',
-    'Use concise, direct language and organize output for reuse.',
+    'Speak naturally and conversationally, like a warm, capable teammate.',
+    'For greetings, follow-up questions, and ordinary chat, answer directly in plain prose without headings, labels, or a fixed template.',
+    'Do not prefix responses with labels such as "Known Context", "Answer or Recommendation", "Open Questions", or "Suggested Next Steps".',
+    'Use headings or structured lists only when they genuinely make a research result, comparison, plan, or complex answer easier to understand.',
+    'Keep answers concise by default and ask a natural follow-up question when useful.',
     'When making market claims, prefer citing sources as markdown links when the user asks for external research.',
     'Do not invent company facts or claim a source was checked if it was not provided in the chat.',
     '',
@@ -207,13 +211,7 @@ function toOpenAIInput(messages) {
   }))
 }
 
-export async function chatWithAgent(agentId, messages) {
-  if (!process.env.OPENAI_API_KEY) {
-    const error = new Error('OPENAI_API_KEY is not configured on the backend.')
-    error.statusCode = 503
-    throw error
-  }
-
+export async function getAgentChatInstructions(agentId) {
   const agent = await getAgentById(agentId)
 
   if (!agent) {
@@ -223,7 +221,21 @@ export async function chatWithAgent(agentId, messages) {
   }
 
   const liveContext = await loadLiveWorkspaceContext()
-  const instructions = buildInstructions(agent, liveContext)
+
+  return {
+    agent,
+    instructions: buildInstructions(agent, liveContext),
+  }
+}
+
+export async function chatWithAgent(agentId, messages) {
+  if (!process.env.OPENAI_API_KEY) {
+    const error = new Error('OPENAI_API_KEY is not configured on the backend.')
+    error.statusCode = 503
+    throw error
+  }
+
+  const { instructions } = await getAgentChatInstructions(agentId)
 
   const response = await fetch(OPENAI_API_URL, {
     method: 'POST',
@@ -260,6 +272,7 @@ export async function chatWithAgent(agentId, messages) {
       content,
     },
     meta: {
+      provider: 'openai',
       model: payload.model || DEFAULT_MODEL,
       responseId: payload.id || '',
     },

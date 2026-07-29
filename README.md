@@ -24,6 +24,10 @@ Update values in `.env` as needed:
 - `MONGODB_URI`
 - `OPENAI_API_KEY` for OpenClaw chat in Market Researcher
 - `OPENAI_MODEL` optional override for the chat model (default `gpt-4.1-mini`)
+- `HERMES_API_URL` for the Trusted Tech Assistant Hermes gateway (for example `https://hermes.example.com`)
+- `HERMES_API_KEY` bearer token for server-to-server Hermes access
+- `HERMES_MODEL` optional Hermes model name (default `hermes-agent`)
+- `HERMES_REQUEST_TIMEOUT_MS` optional gateway timeout (default `120000`)
 
 ## Run (dev)
 ```bash
@@ -44,6 +48,7 @@ Default allowed FE origins:
 - `GET /health` returns `{ status: "ok", time: "..." }`
 - `GET /company-context` returns the current Trusted Tech profile document
 - `PUT /company-context` updates the company profile
+- `POST /agents/trusted-tech-assistant/chat` sends Trusted Tech Assistant chat to Hermes
 - `POST /agents/market-researcher/chat` sends a Market Researcher chat turn to OpenAI using the backend API key
 - `GET /competitors` lists tracked competitors
 - `POST /competitors` creates a competitor entry

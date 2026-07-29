@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { getAgentById, listAgents } from '../services/agentCatalog.js'
+import { chatWithHermes } from '../services/hermesChat.js'
 import { chatWithAgent } from '../services/openaiChat.js'
 
 const router = Router()
@@ -44,7 +45,11 @@ router.post('/:id/chat', async (req, res, next) => {
       return res.status(400).json({ message: 'Provide at least one chat message.' })
     }
 
-    const result = await chatWithAgent(req.params.id, sanitizedMessages)
+    const result =
+      req.params.id === 'trusted-tech-assistant' ||
+      req.params.id === 'trusted-tech-hubspot-assistant'
+        ? await chatWithHermes(req.params.id, sanitizedMessages)
+        : await chatWithAgent(req.params.id, sanitizedMessages)
     return res.json(result)
   } catch (error) {
     return next(error)
