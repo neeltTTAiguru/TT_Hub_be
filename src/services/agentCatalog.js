@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const backendRoot = path.resolve(__dirname, '..', '..')
 const workspaceRoot = path.resolve(__dirname, '..', '..', '..')
 
 const files = {
@@ -38,14 +39,19 @@ const agentDefinitions = [
     name: 'Trusted Tech Assistant',
     status: 'active',
     productArea: 'Market Researcher',
-    skillPath: path.join(workspaceRoot, 'skills', 'trusted-tech-assistant', 'SKILL.md'),
+    skillPath: path.join(backendRoot, 'skills', 'trusted-tech-assistant', 'SKILL.md'),
   },
   {
     id: 'trusted-tech-hubspot-assistant',
     name: 'Trusted Tech HubSpot Assistant',
     status: 'active',
     productArea: 'Operations Assistant',
-    skillPath: path.join(workspaceRoot, 'skills', 'trusted-tech-hubspot-assistant', 'SKILL.md'),
+    skillPath: path.join(
+      backendRoot,
+      'skills',
+      'trusted-tech-hubspot-assistant',
+      'SKILL.md',
+    ),
   },
   {
     id: 'market-researcher',

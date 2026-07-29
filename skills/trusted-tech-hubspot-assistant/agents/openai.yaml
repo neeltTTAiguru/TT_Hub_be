@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trusted Tech HubSpot Assistant"
+  short_description: "Work with Trusted Tech CRM data through Hermes."
+  default_prompt: "Use $trusted-tech-hubspot-assistant to answer my CRM question and ask before making changes."
