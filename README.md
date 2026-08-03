@@ -40,6 +40,9 @@ In production, the HubSpot deal assistant should call the secured gateway on the
 Hermes Droplet so MCP OAuth credentials remain on that host. Direct MCP variables
 are retained as a fallback for installations without a Hermes Droplet. Configure
 these values on the backend web-service component, not the frontend static site.
+On the Hermes Droplet, set `HUBSPOT_PROXY_HOST` to its private VPC address and
+`HUBSPOT_PROXY_TOKEN` to the same secret used by the backend. The gateway remains
+off the public interface.
 
 ## Run (dev)
 ```bash

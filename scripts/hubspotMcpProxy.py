@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOME = os.environ.get('HUBSPOT_HOME', '/opt/data')
 PROXY_TOKEN = os.environ.get('HUBSPOT_PROXY_TOKEN', '')
+PROXY_HOST = os.environ.get('HUBSPOT_PROXY_HOST', '127.0.0.1')
+PROXY_PORT = int(os.environ.get('HUBSPOT_PROXY_PORT', '8650'))
 DEAL_COLUMNS = [
     'Deal Name','Deal Stage','Presentation/Demo Completed','Trial / Quote Requested','Date Trial Agreement Sent',
     'Trial Agreement Executed','Date Trial Started','Date Trial Ends','Trial Outcome','Date Quote Sent',
@@ -116,4 +118,4 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(502); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(body)
     def log_message(self, *_): pass
 
-HTTPServer(('127.0.0.1', 8650), Handler).serve_forever()
+HTTPServer((PROXY_HOST, PROXY_PORT), Handler).serve_forever()
