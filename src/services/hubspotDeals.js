@@ -1,8 +1,31 @@
 import { chatWithHermes } from './hermesChat.js'
 import { readHubSpotDeals } from './hubspotMcp.js'
 
+export async function readDealsFromHermesDroplet() {
+  const url = String(process.env.HUBSPOT_DEALS_PROXY_URL || '').trim()
+  const token = String(process.env.HUBSPOT_DEALS_PROXY_TOKEN || '').trim()
+  if (!url) return null
+  if (!token) {
+    throw Object.assign(new Error('HUBSPOT_DEALS_PROXY_TOKEN is not configured on the backend.'), { statusCode: 503 })
+  }
+
+  try {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(Number(process.env.HUBSPOT_DEALS_PROXY_TIMEOUT_MS || 30000)),
+    })
+    if (!response.ok) {
+      throw Object.assign(new Error(`Hermes HubSpot gateway returned ${response.status}.`), { statusCode: 502 })
+    }
+    return await response.json()
+  } catch (error) {
+    if (error?.statusCode) throw error
+    throw Object.assign(new Error('Hermes HubSpot gateway is unreachable.', { cause: error }), { statusCode: 502 })
+  }
+}
+
 export async function chatWithHubSpotDeals(messages, options = {}) {
-  const deals = await readHubSpotDeals()
+  const deals = await readDealsFromHermesDroplet() || await readHubSpotDeals()
   return chatWithHermes('trusted-tech-hubspot-assistant', messages, {
     ...options,
     timeoutMs: 30000,

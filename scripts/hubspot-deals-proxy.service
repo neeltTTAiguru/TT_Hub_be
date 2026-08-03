@@ -5,6 +5,7 @@ After=docker.service network-online.target
 [Service]
 Type=simple
 Environment=HUBSPOT_HOME=/opt/hermes
+EnvironmentFile=/etc/trusted-hubspot-proxy.env
 ExecStart=/usr/bin/python3 /opt/hermes/hubspotMcpProxy.py
 Restart=always
 RestartSec=3

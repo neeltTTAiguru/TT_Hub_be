@@ -9,6 +9,7 @@ import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HOME = os.environ.get('HUBSPOT_HOME', '/opt/data')
+PROXY_TOKEN = os.environ.get('HUBSPOT_PROXY_TOKEN', '')
 DEAL_COLUMNS = [
     'Deal Name','Deal Stage','Presentation/Demo Completed','Trial / Quote Requested','Date Trial Agreement Sent',
     'Trial Agreement Executed','Date Trial Started','Date Trial Ends','Trial Outcome','Date Quote Sent',
@@ -103,6 +104,10 @@ def read_deals():
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path != '/deals': self.send_error(404); return
+        if not PROXY_TOKEN:
+            self.send_error(503, 'HUBSPOT_PROXY_TOKEN is not configured'); return
+        if self.headers.get('Authorization', '') != f'Bearer {PROXY_TOKEN}':
+            self.send_error(401); return
         try:
             body = json.dumps(read_deals()).encode()
             self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
