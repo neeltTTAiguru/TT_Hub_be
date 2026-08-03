@@ -28,6 +28,15 @@ Update values in `.env` as needed:
 - `HERMES_API_KEY` bearer token for server-to-server Hermes access
 - `HERMES_MODEL` optional Hermes model name (default `hermes-agent`)
 - `HERMES_REQUEST_TIMEOUT_MS` optional gateway timeout (default `120000`)
+- `HUBSPOT_MCP_URL` HubSpot MCP Streamable HTTP endpoint used by the deal assistant
+- `HUBSPOT_MCP_ACCESS_TOKEN` encrypted bearer token for the MCP endpoint
+- `HUBSPOT_MCP_REFRESH_TOKEN`, `HUBSPOT_MCP_CLIENT_ID`, `HUBSPOT_MCP_CLIENT_SECRET`, and
+  `HUBSPOT_MCP_TOKEN_URL` recommended encrypted OAuth settings for automatic token renewal
+
+The HubSpot deal assistant connects to MCP directly from this backend. It does not
+require the legacy `HUBSPOT_DEALS_PROXY_URL` or a local process on port `8650`.
+Production credentials must be configured on the backend web-service component,
+not on the frontend static-site component.
 
 ## Run (dev)
 ```bash

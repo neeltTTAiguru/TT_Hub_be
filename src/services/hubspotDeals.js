@@ -1,11 +1,8 @@
 import { chatWithHermes } from './hermesChat.js'
-
-const PROXY_URL = process.env.HUBSPOT_DEALS_PROXY_URL || 'http://127.0.0.1:8650/deals'
+import { readHubSpotDeals } from './hubspotMcp.js'
 
 export async function chatWithHubSpotDeals(messages, options = {}) {
-  const response = await fetch(PROXY_URL, { signal: AbortSignal.timeout(25000) })
-  if (!response.ok) throw Object.assign(new Error('HubSpot deal data is unavailable.'), { statusCode: 502 })
-  const deals = await response.json()
+  const deals = await readHubSpotDeals()
   return chatWithHermes('trusted-tech-hubspot-assistant', messages, {
     ...options,
     timeoutMs: 30000,
