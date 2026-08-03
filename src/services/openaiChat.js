@@ -7,6 +7,8 @@ import ResearchRun from '../models/ResearchRun.js'
 import Opportunity from '../models/Opportunity.js'
 import GrantOpportunity from '../models/GrantOpportunity.js'
 import { getAgentById } from './agentCatalog.js'
+import { buildKnowledgeContext } from './knowledgeContext.js'
+import { getGa4Snapshot } from './ga4Analytics.js'
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses'
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini'
@@ -47,6 +49,11 @@ function getTextFromResponse(payload) {
 }
 
 async function loadLiveWorkspaceContext() {
+  const ga4SnapshotPromise = getGa4Snapshot().catch((error) => ({
+    unavailable: true,
+    message: error.message,
+  }))
+
   if (!isMongoConnected()) {
     return {
       companyContext: null,
@@ -55,10 +62,11 @@ async function loadLiveWorkspaceContext() {
       publicPages: [],
       researchRuns: [],
       grantOpportunities: [],
+      ga4Snapshot: await ga4SnapshotPromise,
     }
   }
 
-  const [companyContext, competitors, products, publicPages, researchRuns, opportunities, grantOpportunities] = await Promise.all([
+  const [companyContext, competitors, products, publicPages, researchRuns, opportunities, grantOpportunities, knowledgeContext, ga4Snapshot] = await Promise.all([
     CompanyContext.findOne().lean(),
     Competitor.find().sort({ updatedAt: -1 }).limit(8).lean(),
     Product.find({ visibility: 'public' }).sort({ updatedAt: -1 }).limit(12).lean(),
@@ -66,6 +74,8 @@ async function loadLiveWorkspaceContext() {
     ResearchRun.find().sort({ updatedAt: -1 }).limit(6).lean(),
     Opportunity.find().sort({ updatedAt: -1 }).limit(12).lean(),
     GrantOpportunity.find().sort({ fitScore: -1, updatedAt: -1 }).limit(12).lean(),
+    buildKnowledgeContext('Trusted Technology T500 body camera docking Trusted Vault evidence management', 36),
+    ga4SnapshotPromise,
   ])
 
   return {
@@ -76,6 +86,8 @@ async function loadLiveWorkspaceContext() {
     researchRuns,
     opportunities,
     grantOpportunities,
+    knowledgeContext,
+    ga4Snapshot,
   }
 }
 
@@ -166,6 +178,10 @@ function buildInstructions(agent, liveContext) {
     'Keep answers concise by default and ask a natural follow-up question when useful.',
     'When making market claims, prefer citing sources as markdown links when the user asks for external research.',
     'Do not invent company facts or claim a source was checked if it was not provided in the chat.',
+    'Brand asset rule: the approved and canonical Trusted Technology logo is beCRM/assets/brand/PRIMARY_Logo.pdf.',
+    'Whenever a Trusted Technology logo is needed, use that asset as the source of truth. Never redraw, regenerate, recolor, distort, crop, rearrange, or substitute it.',
+    'If a destination cannot use PDF directly, derive the required format from the canonical PDF while preserving the complete lockup, proportions, colors, clear space, and legibility.',
+    'Do not invent compact, monochrome, reversed, or icon-only logo variants. If the canonical asset is unavailable to the executing tool, state that limitation instead of fabricating a logo.',
     '',
     `Agent: ${agent.name}`,
     `Mission: ${agent.mission}`,
@@ -193,6 +209,10 @@ function buildInstructions(agent, liveContext) {
     'Public website pages:',
     publicPageLines,
     '',
+    'Approved Trusted Tech knowledge base:',
+    liveContext.knowledgeContext || 'No approved knowledge records are stored yet.',
+    'Records marked VERIFY/CITE BEFORE ASSERTING may inform research but must not be stated as current fact without verification or a source citation.',
+    '',
     'SAM.gov opportunities:',
     opportunityLines,
     '',
@@ -201,6 +221,10 @@ function buildInstructions(agent, liveContext) {
     '',
     'Recent research runs:',
     runLines,
+    '',
+    'GA4 website analytics (read-only snapshot):',
+    stringifyDocument(liveContext.ga4Snapshot),
+    'Treat GA4 metrics as time-bounded measurements. State the reporting period whenever using them.',
   ].join('\n')
 }
 
@@ -228,14 +252,17 @@ export async function getAgentChatInstructions(agentId) {
   }
 }
 
-export async function chatWithAgent(agentId, messages) {
+export async function chatWithAgent(agentId, messages, options = {}) {
   if (!process.env.OPENAI_API_KEY) {
     const error = new Error('OPENAI_API_KEY is not configured on the backend.')
     error.statusCode = 503
     throw error
   }
 
-  const { instructions } = await getAgentChatInstructions(agentId)
+  const { instructions: catalogInstructions } = await getAgentChatInstructions(agentId)
+  const baseInstructions = typeof options.instructions === 'string' ? options.instructions : catalogInstructions
+  const memoryContext = typeof options.memoryContext === 'string' ? options.memoryContext.trim() : ''
+  const instructions = memoryContext ? `${baseInstructions}\n\n${memoryContext}` : baseInstructions
 
   const response = await fetch(OPENAI_API_URL, {
     method: 'POST',
@@ -275,6 +302,36 @@ export async function chatWithAgent(agentId, messages) {
       provider: 'openai',
       model: payload.model || DEFAULT_MODEL,
       responseId: payload.id || '',
+      memory: options.memoryMeta || undefined,
     },
+  }
+}
+
+export async function chatWithOpenAIInstructions(messages, instructions) {
+  if (!process.env.OPENAI_API_KEY) {
+    const error = new Error('OPENAI_API_KEY is not configured on the backend.')
+    error.statusCode = 503
+    throw error
+  }
+  const response = await fetch(OPENAI_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({ model: DEFAULT_MODEL, instructions, input: toOpenAIInput(messages) }),
+  })
+  if (!response.ok) {
+    const body = await response.text()
+    const error = new Error(body || `OpenAI request failed with ${response.status}`)
+    error.statusCode = response.status
+    throw error
+  }
+  const payload = await response.json()
+  const content = getTextFromResponse(payload)
+  if (!content) throw Object.assign(new Error('OpenAI returned an empty response.'), { statusCode: 502 })
+  return {
+    message: { role: 'assistant', content },
+    meta: { provider: 'openai-fallback', model: payload.model || DEFAULT_MODEL, responseId: payload.id || '' },
   }
 }

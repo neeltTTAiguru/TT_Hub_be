@@ -23,6 +23,9 @@ import linkedinSurferRouter from './routes/linkedinSurfer.js'
 import twitterSurferRouter from './routes/twitterSurfer.js'
 import usersRouter from './routes/users.js'
 import adminRouter from './routes/admin.js'
+import seoContentRouter from './routes/seoContent.js'
+import contentOperationsRouter from './routes/contentOperations.js'
+import contentOperationsDownloadsRouter from './routes/contentOperationsDownloads.js'
 
 dotenv.config()
 
@@ -51,6 +54,7 @@ app.get('/', (_req, res) => {
 
 app.use('/health', healthRouter)
 app.use('/rfp-opportunities', rfpOpportunitiesRouter)
+app.use('/content-operations-download', contentOperationsDownloadsRouter)
 app.use(requireAuth)
 app.use('/agents', agentsRouter)
 app.use('/company-context', companyContextRouter)
@@ -67,6 +71,8 @@ app.use('/linkedin-surfer', linkedinSurferRouter)
 app.use('/twitter-surfer', twitterSurferRouter)
 app.use('/users', usersRouter)
 app.use('/admin', adminRouter)
+app.use('/api/seo-content', seoContentRouter)
+app.use('/content-operations', contentOperationsRouter)
 
 app.use((err, _req, res, _next) => {
   if (typeof err?.statusCode === 'number') {

@@ -1,0 +1,13 @@
+[Unit]
+Description=Trusted Tech read-only HubSpot deals MCP proxy
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+Environment=HUBSPOT_HOME=/opt/hermes
+ExecStart=/usr/bin/python3 /opt/hermes/hubspotMcpProxy.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

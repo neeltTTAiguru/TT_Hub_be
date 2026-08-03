@@ -2,6 +2,8 @@ import { getAgentChatInstructions } from './openaiChat.js'
 
 const DEFAULT_HERMES_MODEL = process.env.HERMES_MODEL || 'hermes-agent'
 const REQUEST_TIMEOUT_MS = Number(process.env.HERMES_REQUEST_TIMEOUT_MS || 120000)
+const RATE_LIMIT_RETRIES = Number(process.env.HERMES_RATE_LIMIT_RETRIES || 6)
+const MAX_RETRY_DELAY_MS = Number(process.env.HERMES_MAX_RETRY_DELAY_MS || 15000)
 
 function getHermesConfig() {
   const baseUrl = String(process.env.HERMES_API_URL || '').replace(/\/$/, '')
@@ -21,39 +23,103 @@ function getHermesContent(payload) {
   return typeof content === 'string' ? content.trim() : ''
 }
 
-export async function chatWithHermes(agentId, messages) {
+export function isHermesRateLimit(status, body = '') {
+  return status === 429 || /rate\s*limit|tokens per min|\bTPM\b|try again in/i.test(String(body))
+}
+
+export function getHermesRetryDelayMs(body = '', attempt = 0) {
+  const match = String(body).match(/try again in\s+([\d.]+)\s*(ms|s|sec|seconds?)/i)
+  const parsed = match ? Number(match[1]) * (match[2].toLowerCase() === 'ms' ? 1 : 1000) : 0
+  const fallback = Math.min(2000 * (attempt + 1), MAX_RETRY_DELAY_MS)
+  return Math.min(Math.max(Number.isFinite(parsed) && parsed > 0 ? parsed + 500 : fallback, 500), MAX_RETRY_DELAY_MS)
+}
+
+function waitForRetry(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, delayMs)
+    const abort = () => {
+      clearTimeout(timer)
+      const error = new Error('Request aborted')
+      error.name = 'AbortError'
+      reject(error)
+    }
+    if (signal?.aborted) return abort()
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+export async function chatWithHermes(agentId, messages, options = {}) {
   const { baseUrl, apiKey } = getHermesConfig()
-  const { instructions } = await getAgentChatInstructions(agentId)
+  const baseInstructions = typeof options.instructions === 'string'
+    ? options.instructions
+    : (await getAgentChatInstructions(agentId)).instructions
+  const memoryContext = typeof options.memoryContext === 'string' ? options.memoryContext.trim() : ''
+  const instructions = memoryContext
+    ? `${baseInstructions}\n\n${memoryContext}`
+    : baseInstructions
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const timeoutMs = Number(options.timeoutMs || REQUEST_TIMEOUT_MS)
+  const rateLimitRetries = Number.isFinite(Number(options.rateLimitRetries))
+    ? Math.max(0, Number(options.rateLimitRetries))
+    : RATE_LIMIT_RETRIES
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const abortFromCaller = () => controller.abort()
+  options.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
-    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: DEFAULT_HERMES_MODEL,
-        messages: [
-          { role: 'system', content: instructions },
-          ...messages.map(({ role, content }) => ({ role, content })),
-        ],
-        stream: false,
-      }),
-      signal: controller.signal,
-    })
+    let payload
+    let content = ''
+    for (let attempt = 0; attempt <= rateLimitRetries; attempt += 1) {
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: DEFAULT_HERMES_MODEL,
+          messages: [
+            { role: 'system', content: instructions },
+            ...messages.map(({ role, content }) => ({ role, content })),
+          ],
+          stream: false,
+        }),
+        signal: controller.signal,
+      })
 
-    if (!response.ok) {
       const body = await response.text()
-      const error = new Error(body || `Hermes request failed with ${response.status}`)
-      error.statusCode = response.status
+      if (response.ok) {
+        try {
+          payload = JSON.parse(body)
+        } catch {
+          payload = null
+        }
+        content = getHermesContent(payload)
+        if (isHermesRateLimit(response.status, content) && attempt < rateLimitRetries) {
+          await waitForRetry(getHermesRetryDelayMs(content, attempt), controller.signal)
+          continue
+        }
+        if (isHermesRateLimit(response.status, content)) {
+          const error = new Error('The HubSpot query is still processing. Please retry shortly.')
+          error.statusCode = 503
+          throw error
+        }
+        break
+      }
+
+      if (isHermesRateLimit(response.status, body) && attempt < rateLimitRetries) {
+        await waitForRetry(getHermesRetryDelayMs(body, attempt), controller.signal)
+        continue
+      }
+
+      const error = new Error(
+        isHermesRateLimit(response.status, body)
+          ? 'The HubSpot query is still processing. Please retry shortly.'
+          : (body || `Hermes request failed with ${response.status}`),
+      )
+      error.statusCode = isHermesRateLimit(response.status, body) ? 503 : response.status
       throw error
     }
-
-    const payload = await response.json()
-    const content = getHermesContent(payload)
 
     if (!content) {
       const error = new Error('Hermes returned an empty response.')
@@ -70,10 +136,16 @@ export async function chatWithHermes(agentId, messages) {
         provider: 'hermes',
         model: payload.model || DEFAULT_HERMES_MODEL,
         responseId: payload.id || '',
+        memory: options.memoryMeta || undefined,
       },
     }
   } catch (error) {
     if (error?.name === 'AbortError') {
+      if (options.signal?.aborted) {
+        const stoppedError = new Error('Run stopped by user.')
+        stoppedError.code = 'RUN_STOPPED'
+        throw stoppedError
+      }
       const timeoutError = new Error('Hermes took too long to respond.')
       timeoutError.statusCode = 504
       throw timeoutError
@@ -82,5 +154,6 @@ export async function chatWithHermes(agentId, messages) {
     throw error
   } finally {
     clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortFromCaller)
   }
 }

@@ -2,6 +2,10 @@ import { Router } from 'express'
 import { getAgentById, listAgents } from '../services/agentCatalog.js'
 import { chatWithHermes } from '../services/hermesChat.js'
 import { chatWithAgent } from '../services/openaiChat.js'
+import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
+import { getAuthenticatedUser } from '../middleware/auth.js'
+import { retrieveMemoryContext } from '../services/memoryGateway.js'
+import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
 
 const router = Router()
 
@@ -45,11 +49,38 @@ router.post('/:id/chat', async (req, res, next) => {
       return res.status(400).json({ message: 'Provide at least one chat message.' })
     }
 
-    const result =
-      req.params.id === 'trusted-tech-assistant' ||
-      req.params.id === 'trusted-tech-hubspot-assistant'
-        ? await chatWithHermes(req.params.id, sanitizedMessages)
-        : await chatWithAgent(req.params.id, sanitizedMessages)
+    const user = getAuthenticatedUser(req)
+    const memory = await retrieveMemoryContext({
+      agentId: req.params.id,
+      messages: sanitizedMessages,
+      user,
+    })
+    const memoryOptions = {
+      memoryContext: memory.context,
+      memoryMeta: {
+        status: memory.status,
+        retrieved: memory.memories.length,
+      },
+    }
+
+    const result = req.params.id === 'trusted-tech-hubspot-assistant'
+      ? await chatWithHubSpotDeals(sanitizedMessages, memoryOptions)
+      : req.params.id === 'wordpress-draft-editor'
+      ? await handleWordPressChat(sanitizedMessages, memoryOptions)
+      : req.params.id === 'trusted-tech-assistant' ||
+      req.params.id === 'trusted-tech-hubspot-assistant' ||
+      req.params.id === 'trusted-tech-ahrefs-assistant' ||
+      req.params.id === 'content-operations-assistant' ||
+      req.params.id === 'wordpress-draft-test-agent'
+        ? await chatWithHermes(
+          req.params.id,
+          sanitizedMessages,
+          req.params.id === 'trusted-tech-hubspot-assistant'
+            ? { ...memoryOptions, timeoutMs: 30000, rateLimitRetries: 1 }
+            : memoryOptions,
+        )
+        : await chatWithAgent(req.params.id, sanitizedMessages, memoryOptions)
+    result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
     return res.json(result)
   } catch (error) {
     return next(error)
