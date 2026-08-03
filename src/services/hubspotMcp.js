@@ -212,9 +212,21 @@ async function readDealsWithToken(config, token) {
     return [label, value === '' || value === undefined ? null : value]
   })))
   const won = deals.filter((deal) => String(deal['Deal Stage'] || '').trim().toLowerCase() === 'closed won')
+  const trialValues = deals.map((deal) => String(deal['Trial Agreement Executed'] || '').trim().toLowerCase())
+  const trialExecuted = trialValues.filter((value) => value === 'true' || value === 'yes').length
+  const trialPending = trialValues.filter((value) => value === 'docusign pending' || value === 'pending').length
+  const trialNotExecuted = trialValues.filter((value) => value === 'false' || value === 'no').length
   return {
     available_columns: Object.values(selected),
-    summary: { pipeline: 'Deal Pipeline', total_deals: deals.length, closed_won_deals: won.length },
+    summary: {
+      pipeline: 'Deal Pipeline',
+      total_deals: deals.length,
+      closed_won_deals: won.length,
+      trial_agreements_executed: trialExecuted,
+      trial_agreements_pending: trialPending,
+      trial_agreements_not_executed: trialNotExecuted,
+      trial_agreements_missing: deals.length - trialExecuted - trialPending - trialNotExecuted,
+    },
     deals,
   }
 }
@@ -230,4 +242,3 @@ export async function readHubSpotDeals() {
     return readDealsWithToken(config, token)
   }
 }
-

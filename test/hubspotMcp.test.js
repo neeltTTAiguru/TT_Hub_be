@@ -57,7 +57,15 @@ test('reads and translates the Deal Pipeline directly through MCP', async () => 
 
   try {
     const result = await readHubSpotDeals()
-    assert.deepEqual(result.summary, { pipeline: 'Deal Pipeline', total_deals: 1, closed_won_deals: 1 })
+    assert.deepEqual(result.summary, {
+      pipeline: 'Deal Pipeline',
+      total_deals: 1,
+      closed_won_deals: 1,
+      trial_agreements_executed: 0,
+      trial_agreements_pending: 0,
+      trial_agreements_not_executed: 0,
+      trial_agreements_missing: 1,
+    })
     assert.equal(result.deals[0]['Deal Name'], 'Example Agency')
     assert.equal(result.deals[0]['Deal Stage'], 'Closed Won')
     assert.equal(result.deals[0]['Deal Owner'], 'Alex Seller')
@@ -70,4 +78,3 @@ test('reads and translates the Deal Pipeline directly through MCP', async () => 
     else process.env.HUBSPOT_MCP_ACCESS_TOKEN = originalToken
   }
 })
-

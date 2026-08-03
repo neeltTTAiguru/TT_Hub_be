@@ -101,7 +101,23 @@ def read_deals():
         deals.append(deal)
     primary_deals = deals
     won = [deal for deal in primary_deals if str(deal.get('Deal Stage', '')).strip().lower() == 'closed won']
-    return {'available_columns':list(selected.values()),'summary':{'pipeline':'Deal Pipeline','total_deals':len(primary_deals),'closed_won_deals':len(won)},'deals':primary_deals}
+    trial_values = [str(deal.get('Trial Agreement Executed') or '').strip().lower() for deal in primary_deals]
+    trial_executed = sum(value in ('true', 'yes') for value in trial_values)
+    trial_pending = sum(value in ('docusign pending', 'pending') for value in trial_values)
+    trial_not_executed = sum(value in ('false', 'no') for value in trial_values)
+    return {
+        'available_columns': list(selected.values()),
+        'summary': {
+            'pipeline': 'Deal Pipeline',
+            'total_deals': len(primary_deals),
+            'closed_won_deals': len(won),
+            'trial_agreements_executed': trial_executed,
+            'trial_agreements_pending': trial_pending,
+            'trial_agreements_not_executed': trial_not_executed,
+            'trial_agreements_missing': len(primary_deals) - trial_executed - trial_pending - trial_not_executed,
+        },
+        'deals': primary_deals,
+    }
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
