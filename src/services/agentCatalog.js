@@ -36,14 +36,14 @@ const files = {
 const agentDefinitions = [
   {
     id: 'trusted-tech-assistant',
-    name: 'TT-Hermes-brain',
+    name: 'Brain',
     status: 'active',
     productArea: 'Market Researcher',
     skillPath: path.join(backendRoot, 'skills', 'trusted-tech-assistant', 'SKILL.md'),
   },
   {
     id: 'trusted-tech-hubspot-assistant',
-    name: 'TT-Hubspot',
+    name: 'Hubspot',
     status: 'active',
     productArea: 'Operations Assistant',
     skillPath: path.join(
@@ -67,7 +67,7 @@ const agentDefinitions = [
   },
   {
     id: 'content-operations-assistant',
-    name: 'TT- Content Generator',
+    name: 'Content Generator',
     status: 'active',
     productArea: 'Content Operations',
     skillPath: path.join(
