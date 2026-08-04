@@ -3,7 +3,7 @@ name: content-operations-assistant
 description: Orchestrate Trusted Technology content research, scoring, briefing, drafting, approval, and future optimization and publishing stages using Hermes and connected tools.
 ---
 
-# Hermes Content Operations
+# TT- Content Generator
 
 ## Purpose
 

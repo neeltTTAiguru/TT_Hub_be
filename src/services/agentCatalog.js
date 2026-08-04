@@ -43,7 +43,7 @@ const agentDefinitions = [
   },
   {
     id: 'trusted-tech-hubspot-assistant',
-    name: 'Hermes HubSpot Deal Pipeline Assistant',
+    name: 'TT-Hubspot',
     status: 'active',
     productArea: 'Operations Assistant',
     skillPath: path.join(
@@ -67,7 +67,7 @@ const agentDefinitions = [
   },
   {
     id: 'content-operations-assistant',
-    name: 'Hermes Content Operations',
+    name: 'TT- Content Generator',
     status: 'active',
     productArea: 'Content Operations',
     skillPath: path.join(

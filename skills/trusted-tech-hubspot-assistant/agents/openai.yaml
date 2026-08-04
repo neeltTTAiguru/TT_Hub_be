@@ -1,4 +1,4 @@
 interface:
-  display_name: "Hermes HubSpot Deal Pipeline Assistant"
+  display_name: "TT-Hubspot"
   short_description: "Work exclusively with Trusted Tech HubSpot deals through Hermes."
   default_prompt: "Use $trusted-tech-hubspot-assistant to answer my deal-pipeline question and ask before making any deal changes."
