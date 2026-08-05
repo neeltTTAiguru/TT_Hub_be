@@ -1,4 +1,5 @@
 import { getAgentChatInstructions } from './openaiChat.js'
+import { retrieveMemoryContext } from './memoryGateway.js'
 
 const DEFAULT_HERMES_MODEL = process.env.HERMES_MODEL || 'hermes-agent'
 const REQUEST_TIMEOUT_MS = Number(process.env.HERMES_REQUEST_TIMEOUT_MS || 120000)
@@ -53,7 +54,16 @@ export async function chatWithHermes(agentId, messages, options = {}) {
   const baseInstructions = typeof options.instructions === 'string'
     ? options.instructions
     : (await getAgentChatInstructions(agentId)).instructions
-  const memoryContext = typeof options.memoryContext === 'string' ? options.memoryContext.trim() : ''
+  const suppliedMemoryContext = typeof options.memoryContext === 'string'
+  const memory = suppliedMemoryContext
+    ? null
+    : await retrieveMemoryContext({ agentId, messages, user: options.user })
+  const memoryContext = suppliedMemoryContext
+    ? options.memoryContext.trim()
+    : memory.context
+  const memoryMeta = options.memoryMeta || (memory
+    ? { status: memory.status, retrieved: memory.memories.length }
+    : undefined)
   const instructions = memoryContext
     ? `${baseInstructions}\n\n${memoryContext}`
     : baseInstructions
@@ -136,7 +146,7 @@ export async function chatWithHermes(agentId, messages, options = {}) {
         provider: 'hermes',
         model: payload.model || DEFAULT_HERMES_MODEL,
         responseId: payload.id || '',
-        memory: options.memoryMeta || undefined,
+        memory: memoryMeta,
       },
     }
   } catch (error) {

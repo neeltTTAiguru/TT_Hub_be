@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import crypto from 'node:crypto'
 
 const DEFAULT_LIMIT = 6
 const DEFAULT_TIMEOUT_MS = 8000
@@ -8,6 +9,13 @@ const MAX_QUERY_CHARS = 2000
 const MAX_MEMORY_CHARS = 4000
 const APPROVED_LIFECYCLES = new Set(['approved', 'approved-for-poc'])
 const ALLOWED_SENSITIVITY = new Set(['public', 'internal'])
+const WRITABLE_DEPARTMENTS = new Set(['shared', 'sales', 'marketing', 'operations', 'research'])
+const SECRET_PATTERNS = [
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
+  /\b(?:api[_-]?key|password|secret|token|authorization|connection[_-]?string)\s*[:=]\s*\S+/i,
+  /\b(?:sk|pk)_(?:live|test)_[a-z0-9]{16,}\b/i,
+  /\bgh[pousr]_[a-z0-9]{20,}\b/i,
+]
 
 const AGENT_DEPARTMENTS = {
   'trusted-tech-assistant': ['shared', 'sales'],
@@ -285,6 +293,97 @@ async function readPage(agentId, slug) {
     // Older/local GBrain transports may return canonical markdown instead.
   }
   return parseMemoryPage(text, slug)
+}
+
+function cleanSingleLine(value, maxLength) {
+  return String(value || '').replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength)
+}
+
+function memorySlug(title) {
+  const normalized = String(title || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60) || 'memory'
+  const suffix = crypto.randomBytes(4).toString('hex')
+  return `tt-shared/user-approved/${normalized}-${suffix}`
+}
+
+export async function saveApprovedMemory({
+  agentId,
+  user,
+  proposal,
+  confirmed,
+  write = (id, slug, content) => callTool(id, 'put_page', { slug, content }),
+  read = readPage,
+}) {
+  if (!enabled()) throw Object.assign(new Error('GBrain is not enabled.'), { statusCode: 503 })
+  if (agentId !== 'trusted-tech-assistant') {
+    throw Object.assign(new Error('Only Brain can save approved memories.'), { statusCode: 403 })
+  }
+  if (confirmed !== true) {
+    throw Object.assign(new Error('Explicit confirmation is required before saving to GBrain.'), { statusCode: 400 })
+  }
+
+  const title = cleanSingleLine(proposal?.title, 160)
+  const content = String(proposal?.content || '').trim()
+  const department = cleanSingleLine(proposal?.department || 'shared', 40).toLowerCase()
+  const sensitivity = cleanSingleLine(proposal?.sensitivity || 'internal', 40).toLowerCase()
+  const source = cleanSingleLine(proposal?.source || `user://${user?.id || 'unknown'}`, 500)
+
+  if (title.length < 3) throw Object.assign(new Error('Memory title must be at least 3 characters.'), { statusCode: 400 })
+  if (content.length < 10 || content.length > 8000) {
+    throw Object.assign(new Error('Memory content must contain between 10 and 8,000 characters.'), { statusCode: 400 })
+  }
+  if (!WRITABLE_DEPARTMENTS.has(department)) {
+    throw Object.assign(new Error('Select an allowed memory category.'), { statusCode: 400 })
+  }
+  if (!ALLOWED_SENSITIVITY.has(sensitivity)) {
+    throw Object.assign(new Error('Only public or internal memories can be saved from Brain.'), { statusCode: 400 })
+  }
+
+  const unsafe = SECRET_PATTERNS.find((pattern) => pattern.test(`${title}\n${content}\n${source}`))
+  if (unsafe) {
+    throw Object.assign(new Error('This memory may contain a credential or secret and was not saved.'), { statusCode: 400 })
+  }
+
+  const now = new Date().toISOString()
+  const slug = memorySlug(title)
+  const markdown = [
+    '---',
+    `title: ${JSON.stringify(title)}`,
+    'lifecycle: approved',
+    `sensitivity: ${sensitivity}`,
+    `department: ${department}`,
+    `source_uri: ${JSON.stringify(source)}`,
+    `observed_at: ${now}`,
+    `last_verified_at: ${now}`,
+    `approved_by: ${JSON.stringify(user?.id || 'authenticated-user')}`,
+    'approval_method: explicit-brain-confirmation',
+    'contains_secrets: false',
+    '---',
+    '',
+    `# ${title}`,
+    '',
+    content,
+  ].join('\n')
+
+  await write(agentId, slug, markdown)
+  const saved = await read(agentId, slug)
+  if (!saved || saved.slug !== slug || saved.frontmatter?.lifecycle !== 'approved') {
+    throw Object.assign(new Error('GBrain write completed but verification failed.'), { statusCode: 502 })
+  }
+
+  return {
+    slug,
+    title: saved.title,
+    department,
+    sensitivity,
+    source,
+    lifecycle: saved.frontmatter.lifecycle,
+    verified: true,
+  }
 }
 
 function formatMemory(memory, index) {

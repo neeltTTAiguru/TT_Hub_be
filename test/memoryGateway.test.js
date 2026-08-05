@@ -6,6 +6,7 @@ import {
   memoryAllowed,
   parseMemoryPage,
   retrieveMemoryContext,
+  saveApprovedMemory,
 } from '../src/services/memoryGateway.js'
 
 function page(frontmatter = {}, body = 'Approved company knowledge.') {
@@ -111,6 +112,79 @@ test('fails open for chat when GBrain is unavailable', async () => {
     assert.equal(result.status, 'unavailable')
     assert.equal(result.context, '')
     assert.deepEqual(result.memories, [])
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('requires explicit confirmation before writing a memory', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  try {
+    await assert.rejects(
+      saveApprovedMemory({
+        agentId: 'trusted-tech-assistant',
+        user: { id: 'user-1' },
+        proposal: { title: 'Test memory', content: 'This is approved knowledge.' },
+        confirmed: false,
+      }),
+      /Explicit confirmation is required/,
+    )
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('writes and verifies an explicitly approved Brain memory', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  let written
+  try {
+    const result = await saveApprovedMemory({
+      agentId: 'trusted-tech-assistant',
+      user: { id: 'user-1' },
+      proposal: {
+        title: 'Preferred content audience',
+        content: 'Trusted Technology content should prioritize public-safety decision makers.',
+        department: 'marketing',
+        sensitivity: 'internal',
+        source: 'user-confirmed decision',
+      },
+      confirmed: true,
+      write: async (agentId, slug, markdown) => { written = { agentId, slug, markdown } },
+      read: async (_agentId, slug) => ({
+        slug,
+        title: 'Preferred content audience',
+        body: 'Trusted Technology content should prioritize public-safety decision makers.',
+        frontmatter: { lifecycle: 'approved' },
+      }),
+    })
+    assert.equal(written.agentId, 'trusted-tech-assistant')
+    assert.match(written.slug, /^tt-shared\/user-approved\/preferred-content-audience-/)
+    assert.match(written.markdown, /approval_method: explicit-brain-confirmation/)
+    assert.equal(result.verified, true)
+    assert.equal(result.department, 'marketing')
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('rejects credential-like memory content before writing', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  try {
+    await assert.rejects(
+      saveApprovedMemory({
+        agentId: 'trusted-tech-assistant',
+        user: { id: 'user-1' },
+        proposal: { title: 'Deployment secret', content: 'api_key=do-not-store-this-value' },
+        confirmed: true,
+      }),
+      /credential or secret/,
+    )
   } finally {
     if (original === undefined) delete process.env.GBRAIN_ENABLED
     else process.env.GBRAIN_ENABLED = original

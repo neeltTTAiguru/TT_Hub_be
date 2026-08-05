@@ -4,7 +4,7 @@ import { chatWithHermes } from '../services/hermesChat.js'
 import { chatWithAgent } from '../services/openaiChat.js'
 import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
-import { retrieveMemoryContext } from '../services/memoryGateway.js'
+import { retrieveMemoryContext, saveApprovedMemory } from '../services/memoryGateway.js'
 import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
 
@@ -86,6 +86,21 @@ router.post('/:id/chat', async (req, res, next) => {
         : await chatWithAgent(req.params.id, sanitizedMessages, memoryOptions)
     result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
     return res.json(result)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/:id/memory', async (req, res, next) => {
+  try {
+    const user = getAuthenticatedUser(req)
+    const memory = await saveApprovedMemory({
+      agentId: req.params.id,
+      user,
+      proposal: req.body?.proposal,
+      confirmed: req.body?.confirmed,
+    })
+    return res.status(201).json(memory)
   } catch (error) {
     return next(error)
   }

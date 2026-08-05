@@ -1,9 +1,13 @@
+import 'dotenv/config'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 const sourcePath = process.argv[2]
+const excludeConfidential = process.argv.includes('--exclude-confidential')
 if (!sourcePath) {
   throw new Error('Usage: node scripts/importRfpFoundationToGbrain.js /absolute/path/to/baseline-rfp.docx')
 }
@@ -11,7 +15,12 @@ if (!sourcePath) {
 const gbrainCwd = process.env.GBRAIN_MCP_CWD
 const gbrainHome = process.env.GBRAIN_HOME
 const bun = process.env.GBRAIN_MCP_COMMAND || '/opt/homebrew/bin/bun'
-if (!gbrainCwd || !gbrainHome) throw new Error('GBRAIN_MCP_CWD and GBRAIN_HOME must be configured.')
+const gbrainUrl = String(process.env.GBRAIN_MCP_URL || '').trim()
+const gbrainToken = String(process.env.GBRAIN_MCP_TOKEN || '').trim()
+if (gbrainUrl && !gbrainToken) throw new Error('GBRAIN_MCP_TOKEN must be configured for remote import.')
+if (!gbrainUrl && (!gbrainCwd || !gbrainHome)) {
+  throw new Error('Configure GBRAIN_MCP_URL and GBRAIN_MCP_TOKEN, or GBRAIN_MCP_CWD and GBRAIN_HOME.')
+}
 
 const source = await fs.readFile(sourcePath)
 const sourceHash = crypto.createHash('sha256').update(source).digest('hex')
@@ -154,29 +163,55 @@ const forbidden = [
   /(?:api[_-]?key|password|secret|token)\s*[:=]\s*\S+/i,
 ]
 
-for (const memory of memories) {
+const selectedMemories = excludeConfidential
+  ? memories.filter((memory) => memory.sensitivity !== 'confidential')
+  : memories
+
+let remoteClient
+if (gbrainUrl) {
+  remoteClient = new Client({ name: 'trusted-tech-foundation-importer', version: '0.1.0' })
+  const transport = new StreamableHTTPClientTransport(new URL(gbrainUrl), {
+    requestInit: { headers: { Authorization: `Bearer ${gbrainToken}` } },
+  })
+  await remoteClient.connect(transport)
+}
+
+for (const memory of selectedMemories) {
   const content = frontmatter(memory)
   const unsafe = forbidden.find((pattern) => pattern.test(content))
   if (unsafe) throw new Error(`PII/secret safety check failed for ${memory.slug}: ${unsafe}`)
 
-  const result = spawnSync(bun, ['run', 'src/cli.ts', 'put', memory.slug, '--content', content], {
-    cwd: gbrainCwd,
-    env: { ...process.env, GBRAIN_HOME: gbrainHome, GBRAIN_SKIP_STARTUP_HOOKS: '1' },
-    encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024,
-  })
-  if (result.status !== 0) {
-    throw new Error(`GBrain import failed for ${memory.slug}: ${result.stderr || result.stdout}`)
+  if (remoteClient) {
+    const result = await remoteClient.callTool({
+      name: 'put_page',
+      arguments: { slug: memory.slug, content },
+    })
+    if (result?.isError) {
+      throw new Error(`GBrain import failed for ${memory.slug}.`)
+    }
+  } else {
+    const result = spawnSync(bun, ['run', 'src/cli.ts', 'put', memory.slug, '--content', content], {
+      cwd: gbrainCwd,
+      env: { ...process.env, GBRAIN_HOME: gbrainHome, GBRAIN_SKIP_STARTUP_HOOKS: '1' },
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    if (result.status !== 0) {
+      throw new Error(`GBrain import failed for ${memory.slug}: ${result.stderr || result.stdout}`)
+    }
   }
 }
+
+if (remoteClient) await remoteClient.close()
 
 console.log(JSON.stringify({
   source: sourceName,
   sourceSha256: sourceHash,
   revisionDate,
   importedAt,
-  memoriesWritten: memories.length,
-  internalMemories: memories.filter((memory) => !memory.sensitivity).length,
-  confidentialMemories: memories.filter((memory) => memory.sensitivity === 'confidential').length,
+  memoriesWritten: selectedMemories.length,
+  internalMemories: selectedMemories.filter((memory) => !memory.sensitivity).length,
+  confidentialMemories: selectedMemories.filter((memory) => memory.sensitivity === 'confidential').length,
   piiRedacted: true,
+  transport: remoteClient ? 'remote-mcp' : 'local-stdio',
 }))
