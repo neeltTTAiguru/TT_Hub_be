@@ -6,6 +6,7 @@ import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
 import { retrieveMemoryContext } from '../services/memoryGateway.js'
 import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
+import { chatWithYouTrack } from '../services/youtrack.js'
 
 const router = Router()
 
@@ -65,10 +66,13 @@ router.post('/:id/chat', async (req, res, next) => {
 
     const result = req.params.id === 'trusted-tech-hubspot-assistant'
       ? await chatWithHubSpotDeals(sanitizedMessages, memoryOptions)
+      : req.params.id === 'trusted-tech-youtrack-assistant'
+      ? await chatWithYouTrack(sanitizedMessages, memoryOptions)
       : req.params.id === 'wordpress-draft-editor'
       ? await handleWordPressChat(sanitizedMessages, memoryOptions)
       : req.params.id === 'trusted-tech-assistant' ||
       req.params.id === 'trusted-tech-hubspot-assistant' ||
+      req.params.id === 'trusted-tech-youtrack-assistant' ||
       req.params.id === 'trusted-tech-ahrefs-assistant' ||
       req.params.id === 'content-operations-assistant' ||
       req.params.id === 'wordpress-draft-test-agent'

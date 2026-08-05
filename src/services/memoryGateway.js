@@ -12,6 +12,7 @@ const ALLOWED_SENSITIVITY = new Set(['public', 'internal'])
 const AGENT_DEPARTMENTS = {
   'trusted-tech-assistant': ['shared', 'sales'],
   'trusted-tech-hubspot-assistant': ['shared', 'sales'],
+  'trusted-tech-youtrack-assistant': ['shared', 'operations'],
   'trusted-tech-ahrefs-assistant': ['shared', 'marketing'],
   'content-operations-assistant': ['shared', 'marketing'],
   'wordpress-draft-test-agent': ['shared', 'marketing'],

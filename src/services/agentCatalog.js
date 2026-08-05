@@ -54,6 +54,18 @@ const agentDefinitions = [
     ),
   },
   {
+    id: 'trusted-tech-youtrack-assistant',
+    name: 'YouTrack',
+    status: 'active',
+    productArea: 'Operations Assistant',
+    skillPath: path.join(
+      backendRoot,
+      'skills',
+      'trusted-tech-youtrack-assistant',
+      'SKILL.md',
+    ),
+  },
+  {
     id: 'trusted-tech-ahrefs-assistant',
     name: 'Hermes Ahrefs Assistant',
     status: 'active',
