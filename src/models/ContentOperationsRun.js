@@ -23,6 +23,7 @@ const contentOperationsRunSchema = new mongoose.Schema(
     selectedOpportunity: { type: mongoose.Schema.Types.Mixed, default: null },
     brief: { type: mongoose.Schema.Types.Mixed, default: null },
     article: { type: String, default: '' },
+    generatedImages: { type: [mongoose.Schema.Types.Mixed], default: [] },
     testPublication: {
       published: { type: Boolean, default: false },
       slug: { type: String, default: '' },

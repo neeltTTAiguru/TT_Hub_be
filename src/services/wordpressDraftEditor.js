@@ -11,6 +11,7 @@ import {
   createWordPressDraft,
   createWordPressPageDraft,
   getWordPressDraft,
+  getWordPressEditorUrl,
   getWordPressPost,
   listWordPressDrafts,
   listWordPressPublishedPosts,
@@ -48,7 +49,7 @@ function parseJson(content, message = 'Hermes did not return a valid WordPress a
 }
 
 function reviewLink(item) {
-  return item.link || item.guid?.rendered || ''
+  return getWordPressEditorUrl(item?.id)
 }
 
 function escapeHtml(value) {
@@ -75,6 +76,38 @@ function categoryNames(post) {
     .filter(Boolean)
 }
 
+function templateDesignTokens(html) {
+  const tokens = new Map()
+  for (const match of String(html || '').matchAll(/<([a-z][\w:-]*)\b([^>]*\bclass=(['"])([^'"]*\btt-[^'"]*)\3[^>]*)>/gi)) {
+    const classes = match[4].split(/\s+/).filter((name) => name.startsWith('tt-')).sort()
+    const style = match[2].match(/\bstyle=(['"])(.*?)\1/i)?.[2] || ''
+    for (const className of classes) tokens.set(`${match[1].toLowerCase()}.${className}`, style)
+  }
+  return tokens
+}
+
+export function validateArticleTemplateDesign(templateHtml, generatedHtml) {
+  const expected = templateDesignTokens(templateHtml)
+  if (!expected.size) {
+    throw Object.assign(new Error('The canonical WordPress article template has no tt-* design classes.'), { statusCode: 500 })
+  }
+  const actual = templateDesignTokens(generatedHtml)
+  const missing = []
+  const changed = []
+  for (const [token, style] of expected) {
+    if (!actual.has(token)) missing.push(token)
+    else if (actual.get(token) !== style) changed.push(token)
+  }
+  if (missing.length || changed.length) {
+    const details = [
+      missing.length ? `missing ${missing.join(', ')}` : '',
+      changed.length ? `changed styles for ${changed.join(', ')}` : '',
+    ].filter(Boolean).join('; ')
+    throw Object.assign(new Error(`Hermes did not preserve the canonical article design: ${details}. No WordPress draft was created.`), { statusCode: 502 })
+  }
+  return true
+}
+
 export function buildBlogIndexHtml(posts) {
   const articlePosts = posts.filter((post) => {
     const title = plainText(post.title).trim()
@@ -90,20 +123,20 @@ export function buildBlogIndexHtml(posts) {
     const image = featuredImage(post)
     const date = post.date ? new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(post.date)) : ''
     const meta = [date, ...categoryNames(post).slice(0, 2)].filter(Boolean).join(' | ')
-    return `<article style="overflow:hidden;border-radius:10px;background:#293640;color:#fff;box-shadow:0 8px 24px rgba(20,28,34,.14);">${image ? `<a href="${escapeHtml(post.link)}" style="display:block;"><img src="${escapeHtml(image)}" alt="${escapeHtml(title)}" style="display:block;width:100%;height:clamp(240px,38vw,520px);object-fit:cover;" /></a>` : ''}<div style="padding:clamp(28px,5vw,56px);"><h2 style="margin:0 0 16px;color:#fff;font-size:clamp(2rem,4vw,3.5rem);line-height:1.12;font-weight:750;">${escapeHtml(title)}</h2>${meta ? `<p style="margin:0 0 28px;color:#fff;font-size:1rem;">${escapeHtml(meta)}</p>` : ''}${excerpt ? `<p style="margin:0 0 30px;color:#d5dadd;font-size:clamp(1.05rem,2vw,1.45rem);line-height:1.55;">${escapeHtml(excerpt)}${plainText(post.excerpt).length > 260 ? '…' : ''}</p>` : ''}<a href="${escapeHtml(post.link)}" style="display:inline-block;padding:12px 24px;border:2px solid #fff;border-radius:3px;color:#fff;text-decoration:none;font-weight:700;">Read Story</a></div></article>`
+    return `<article style="display:flex;min-width:0;flex-direction:column;overflow:hidden;border-radius:10px;background:#57584A;color:#F7F5EF;font-family:Ubuntu,Arial,sans-serif;box-shadow:0 8px 24px rgba(20,28,34,.14);">${image ? `<a href="${escapeHtml(post.link)}" style="display:block;"><img src="${escapeHtml(image)}" alt="${escapeHtml(title)}" style="display:block;width:100%;aspect-ratio:16/9;object-fit:cover;" /></a>` : ''}<div style="display:flex;flex:1;flex-direction:column;padding:30px;"><h2 style="margin:0 0 14px;color:#F7F5EF;font-size:24px;line-height:1.35;font-weight:700;">${escapeHtml(title)}</h2>${meta ? `<p style="margin:0 0 18px;color:#D8D2C3;font-size:16px;line-height:1.5;font-weight:300;">${escapeHtml(meta)}</p>` : ''}${excerpt ? `<p style="margin:0 0 24px;color:#D8D2C3;font-size:18px;line-height:1.5;font-weight:300;">${escapeHtml(excerpt)}${plainText(post.excerpt).length > 260 ? '…' : ''}</p>` : ''}<a href="${escapeHtml(post.link)}" style="display:inline-block;align-self:flex-start;margin-top:auto;padding:10px 22px;border:2px solid #B8AA88;border-radius:3px;color:#F7F5EF;font-size:18px;text-decoration:none;font-weight:700;">Read Story</a></div></article>`
   }).join('')
-  return `<main class="tt-blog-index" style="max-width:1180px;margin:0 auto;padding:clamp(24px,5vw,64px) 20px;"><header style="margin:0 0 40px;"><p style="margin:0 0 10px;color:#8b8064;font-size:.78rem;font-weight:800;letter-spacing:.14em;text-transform:uppercase;">Trusted Technology Insights</p><h1 style="margin:0;color:#2b2b28;font-size:clamp(2.5rem,6vw,5rem);line-height:1;">Latest Articles</h1></header><section aria-label="Trusted Technology articles" style="display:grid;grid-template-columns:1fr;gap:36px;">${cards || '<p>No published articles are available yet.</p>'}</section></main>`
+  return `<main class="tt-blog-index" style="max-width:1180px;margin:0 auto;padding:clamp(24px,5vw,64px) 20px;font-family:Ubuntu,Arial,sans-serif;"><header style="margin:0 0 40px;"><p style="margin:0 0 10px;color:#8b8064;font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;">Trusted Technology Insights</p><h1 style="margin:0;color:#504c41;font-size:48px;line-height:1.15;font-weight:300;">Latest Articles</h1></header><section aria-label="Trusted Technology articles" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:30px;align-items:stretch;">${cards || '<p>No published articles are available yet.</p>'}</section></main>`
 }
 
 export function buildDynamicBlogIndexHtml() {
-  return `<style>.tt-blog-index .tt-article-card{background:#57584A!important;color:#F7F5EF!important}.tt-blog-index .tt-article-card .wp-block-post-title,.tt-blog-index .tt-article-card .wp-block-post-title a{color:#F7F5EF!important}.tt-blog-index .tt-article-card .wp-block-post-date,.tt-blog-index .tt-article-card .wp-block-post-date time,.tt-blog-index .tt-article-card .wp-block-post-terms,.tt-blog-index .tt-article-card .wp-block-post-terms a,.tt-blog-index .tt-article-card .wp-block-post-excerpt,.tt-blog-index .tt-article-card .wp-block-post-excerpt p{color:#D8D2C3!important}.tt-blog-index .tt-article-card .wp-block-read-more{color:#F7F5EF!important;border-color:#B8AA88!important}.tt-blog-index .tt-article-card .wp-block-read-more:hover{background:#B8AA88!important;color:#2B2B28!important}</style>
+  return `<style>.tt-blog-index .wp-block-post-template{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:30px!important;align-items:stretch}.tt-blog-index .wp-block-post-template>li{display:flex;min-width:0}.tt-blog-index .tt-article-card{display:flex;min-width:0;flex:1;flex-direction:column;overflow:hidden;background:#57584A!important;color:#F7F5EF!important;box-shadow:0 8px 24px rgba(20,28,34,.14)}.tt-blog-index .tt-card-content{display:flex;flex:1;flex-direction:column}.tt-blog-index .wp-block-post-featured-image img{width:100%;aspect-ratio:16/9;object-fit:cover}.tt-blog-index .tt-article-card .wp-block-post-title,.tt-blog-index .tt-article-card .wp-block-post-title a{color:#F7F5EF!important;font-size:24px!important;line-height:1.35!important}.tt-blog-index .tt-article-card .wp-block-post-date,.tt-blog-index .tt-article-card .wp-block-post-date time,.tt-blog-index .tt-article-card .wp-block-post-terms,.tt-blog-index .tt-article-card .wp-block-post-terms a,.tt-blog-index .tt-article-card .wp-block-post-excerpt,.tt-blog-index .tt-article-card .wp-block-post-excerpt p{color:#D8D2C3!important}.tt-blog-index .tt-article-card .wp-block-read-more{align-self:flex-start;margin-top:auto;color:#F7F5EF!important;border-color:#B8AA88!important}.tt-blog-index .tt-article-card .wp-block-read-more:hover{background:#B8AA88!important;color:#2B2B28!important}@media(max-width:960px){.tt-blog-index .wp-block-post-template{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:640px){.tt-blog-index .wp-block-post-template{grid-template-columns:1fr}.tt-blog-index .tt-article-card .wp-block-post-title,.tt-blog-index .tt-article-card .wp-block-post-title a{font-size:22px!important}}</style>
 <!-- wp:group {"className":"tt-blog-index","style":{"spacing":{"padding":{"top":"48px","right":"20px","bottom":"64px","left":"20px"}},"dimensions":{"minHeight":"0px"}},"layout":{"type":"constrained","contentSize":"1180px"}} -->
 <div class="wp-block-group tt-blog-index" style="min-height:0;padding-top:48px;padding-right:20px;padding-bottom:64px;padding-left:20px"><!-- wp:paragraph {"style":{"typography":{"textTransform":"uppercase","letterSpacing":"0.14em","fontSize":"12px","fontWeight":"800"},"color":{"text":"#8b8064"}}} -->
 <p style="color:#8b8064;font-size:12px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase">Trusted Technology Insights</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:heading {"level":2,"style":{"typography":{"fontSize":"64px","lineHeight":"1"},"spacing":{"margin":{"top":"8px","bottom":"40px"}}}} -->
-<h2 class="wp-block-heading" style="margin-top:8px;margin-bottom:40px;font-size:64px;line-height:1">Latest Articles</h2>
+<h2 class="wp-block-heading" style="margin-top:8px;margin-bottom:40px;color:#504c41;font-size:48px;font-weight:300;line-height:1.15">Latest Articles</h2>
 <!-- /wp:heading -->
 
 <!-- wp:query {"queryId":1152,"query":{"perPage":12,"pages":0,"offset":0,"postType":"post","order":"desc","orderBy":"date","author":"","search":"","exclude":[],"sticky":"exclude","inherit":false},"enhancedPagination":true} -->
@@ -111,17 +144,17 @@ export function buildDynamicBlogIndexHtml() {
 <!-- wp:group {"className":"tt-article-card","style":{"color":{"background":"#57584A","text":"#F7F5EF"},"border":{"radius":"10px"},"spacing":{"padding":{"bottom":"0px"}}},"layout":{"type":"constrained"}} -->
 <div class="wp-block-group tt-article-card has-text-color has-background" style="border-radius:10px;color:#F7F5EF;background-color:#57584A;padding-bottom:0px"><!-- wp:post-featured-image {"isLink":true,"aspectRatio":"16/9","style":{"border":{"radius":{"topLeft":"10px","topRight":"10px"}}}} /-->
 
-<!-- wp:group {"style":{"spacing":{"padding":{"top":"44px","right":"44px","bottom":"48px","left":"44px"}}},"layout":{"type":"constrained"}} -->
-<div class="wp-block-group" style="padding-top:44px;padding-right:44px;padding-bottom:48px;padding-left:44px"><!-- wp:post-title {"isLink":true,"style":{"color":{"text":"#ffffff"},"typography":{"fontSize":"42px","lineHeight":"1.15"},"elements":{"link":{"color":{"text":"#ffffff"}}},"spacing":{"margin":{"top":"0","bottom":"16px"}}}} /-->
+<!-- wp:group {"className":"tt-card-content","style":{"spacing":{"padding":{"top":"30px","right":"30px","bottom":"32px","left":"30px"}}},"layout":{"type":"constrained"}} -->
+<div class="wp-block-group tt-card-content" style="padding-top:30px;padding-right:30px;padding-bottom:32px;padding-left:30px"><!-- wp:post-title {"isLink":true,"style":{"color":{"text":"#ffffff"},"typography":{"fontSize":"24px","fontWeight":"700","lineHeight":"1.35"},"elements":{"link":{"color":{"text":"#ffffff"}}},"spacing":{"margin":{"top":"0","bottom":"14px"}}}} /-->
 
 <!-- wp:group {"style":{"spacing":{"blockGap":"8px","margin":{"bottom":"24px"}}},"layout":{"type":"flex","flexWrap":"wrap"}} -->
-<div class="wp-block-group" style="margin-bottom:24px"><!-- wp:post-date {"style":{"color":{"text":"#ffffff"},"typography":{"fontSize":"15px"}}} /-->
-<!-- wp:post-terms {"term":"category","separator":" | ","style":{"color":{"text":"#ffffff"},"elements":{"link":{"color":{"text":"#ffffff"}}},"typography":{"fontSize":"15px"}}} /--></div>
+<div class="wp-block-group" style="margin-bottom:24px"><!-- wp:post-date {"style":{"color":{"text":"#ffffff"},"typography":{"fontSize":"16px","fontWeight":"300","lineHeight":"1.5"}}} /-->
+<!-- wp:post-terms {"term":"category","separator":" | ","style":{"color":{"text":"#ffffff"},"elements":{"link":{"color":{"text":"#ffffff"}}},"typography":{"fontSize":"16px","fontWeight":"300","lineHeight":"1.5"}}} /--></div>
 <!-- /wp:group -->
 
-<!-- wp:post-excerpt {"moreText":"","excerptLength":38,"style":{"color":{"text":"#d5dadd"},"typography":{"fontSize":"21px","lineHeight":"1.55"},"spacing":{"margin":{"bottom":"28px"}}}} /-->
+<!-- wp:post-excerpt {"moreText":"","excerptLength":30,"style":{"color":{"text":"#d5dadd"},"typography":{"fontSize":"18px","fontWeight":"300","lineHeight":"1.5"},"spacing":{"margin":{"bottom":"24px"}}}} /-->
 
-<!-- wp:read-more {"content":"Read Story","style":{"border":{"width":"2px","color":"#ffffff","radius":"3px"},"color":{"text":"#ffffff"},"spacing":{"padding":{"top":"10px","right":"22px","bottom":"10px","left":"22px"}},"typography":{"fontWeight":"700"}}} /--></div>
+<!-- wp:read-more {"content":"Read Story","style":{"border":{"width":"2px","color":"#ffffff","radius":"3px"},"color":{"text":"#ffffff"},"spacing":{"padding":{"top":"10px","right":"22px","bottom":"10px","left":"22px"}},"typography":{"fontSize":"18px","fontWeight":"700","lineHeight":"1.3"}}} /--></div>
 <!-- /wp:group --></div>
 <!-- /wp:group -->
 <!-- /wp:post-template -->
@@ -371,12 +404,13 @@ async function generateDraft(plan, request) {
     'Do not invent product claims, statistics, testimonials, or external facts.',
     'Use the approved Trusted Technology context for factual company content. Mark unsupported claims [SOURCE NEEDED].',
     'When reference material is provided, imitate only high-level information architecture; do not copy wording, branding, images, or distinctive design.',
-    articleTemplateHtml ? `For every blog post, reproduce the structural and visual pattern of canonical template post ${articleTemplateId}: preserve its tt-field-guide wrapper, inline styling system, hero composition, eyebrow, title scale, opening summary, right-side statement panel, contents panel, section hierarchy, callouts, summary, and FAQ treatment. Replace all template-specific wording with the new article. Do not copy claims or subject matter unless relevant and supported.` : '',
+    articleTemplateHtml ? `For every blog post, clone the structural and visual pattern of canonical template post ${articleTemplateId}. Every element carrying a tt-* class must remain present with its tag, class, and style attribute unchanged. Replace article-specific wording only. WordPress theme styles and the canonical template—not newly invented inline CSS—own fonts, colors, spacing, and responsive layout. Do not copy claims or subject matter unless relevant and supported.` : '',
     'Never claim to publish or change navigation.',
   ].join(' '))
   if (!value.title || typeof value.content !== 'string') {
     throw Object.assign(new Error('Hermes did not produce a complete draft title and body.'), { statusCode: 502 })
   }
+  if (articleTemplateHtml) validateArticleTemplateDesign(articleTemplateHtml, value.content)
   const payload = Object.fromEntries(EDITABLE_FIELDS.filter((field) => typeof value[field] === 'string').map((field) => [field, value[field]]))
   const created = plan.operation === 'create_page'
     ? await createWordPressPageDraft(payload)
@@ -463,6 +497,12 @@ export async function handleWordPressChat(messages, options = {}) {
       content: `${action} ${result.verified.type} draft ${result.verified.id}: ${rendered(result.verified.title)}\n\nChanged: ${result.fields.join(', ')}.\n\nVerified that its status remains draft.${reviewLink(result.verified) ? `\n\nReview: ${reviewLink(result.verified)}` : ''}${navigationNote}`,
     },
     meta: result.meta,
+    wordpressDraft: {
+      id: result.verified.id,
+      title: rendered(result.verified.title),
+      type: result.verified.type,
+      reviewUrl: reviewLink(result.verified),
+    },
   }
 }
 

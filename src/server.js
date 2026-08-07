@@ -37,12 +37,13 @@ const requestRateLimit = rateLimit({
   limit: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === 'GET' && req.path === '/content-operations/runs',
 })
 
 app.disable('x-powered-by')
 app.use(helmet())
-app.use(requestRateLimit)
 app.use(cors(corsOptions))
+app.use(requestRateLimit)
 app.use(express.json({ limit: '1mb' }))
 
 app.get('/', (_req, res) => {

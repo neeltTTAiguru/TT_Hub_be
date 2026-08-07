@@ -331,6 +331,12 @@ export async function saveApprovedMemory({
   const department = cleanSingleLine(proposal?.department || 'shared', 40).toLowerCase()
   const sensitivity = cleanSingleLine(proposal?.sensitivity || 'internal', 40).toLowerCase()
   const source = cleanSingleLine(proposal?.source || `user://${user?.id || 'unknown'}`, 500)
+  // Optional agent scoping: when set, GBrain's memoryAllowed restricts retrieval
+  // to exactly these agents (the "brain section"). Empty = readable by every
+  // agent whose department scope matches (company-wide).
+  const allowedAgents = Array.isArray(proposal?.allowedAgents)
+    ? proposal.allowedAgents.map((agentName) => cleanSingleLine(agentName, 80)).filter(Boolean).slice(0, 20)
+    : []
 
   if (title.length < 3) throw Object.assign(new Error('Memory title must be at least 3 characters.'), { statusCode: 400 })
   if (content.length < 10 || content.length > 8000) {
@@ -356,6 +362,7 @@ export async function saveApprovedMemory({
     'lifecycle: approved',
     `sensitivity: ${sensitivity}`,
     `department: ${department}`,
+    ...(allowedAgents.length ? [`allowed_agents: ${JSON.stringify(allowedAgents)}`] : []),
     `source_uri: ${JSON.stringify(source)}`,
     `observed_at: ${now}`,
     `last_verified_at: ${now}`,
@@ -379,6 +386,7 @@ export async function saveApprovedMemory({
     slug,
     title: saved.title,
     department,
+    allowedAgents,
     sensitivity,
     source,
     lifecycle: saved.frontmatter.lifecycle,

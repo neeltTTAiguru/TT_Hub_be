@@ -7,9 +7,11 @@ import {
   approveOpportunity,
   contentIntegrationStatus,
   createWordPressDraftForRun,
+  publishWordPressPostForRun,
   restartContentOperationsRun,
   startContentOperationsRun,
   stopContentOperationsRun,
+  trashWordPressDraftForRun,
   publishToTestBlog,
 } from '../services/contentOperations.js'
 import { createPdfDownloadToken } from '../services/articlePdf.js'
@@ -89,6 +91,28 @@ router.get('/runs/:runId', async (req, res, next) => {
   }
 })
 
+router.delete('/runs/:runId', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    let wordpressAction = 'none'
+    if (run.wordpressPublication?.postId && run.wordpressPublication?.status === 'draft') {
+      try {
+        await trashWordPressDraftForRun(run)
+        wordpressAction = 'trashed_draft'
+      } catch (error) {
+        if (!/is not a draft/i.test(String(error?.message || ''))) throw error
+        wordpressAction = 'left_published'
+      }
+    }
+    await ArticleAsset.deleteMany({ runId: run.runId })
+    await ContentOperationsRun.deleteOne({ _id: run._id })
+    return res.json({ runId: run.runId, wordpressAction })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.post('/runs', async (req, res, next) => {
   try {
     return res.status(202).json(await startContentOperationsRun(req.body))
@@ -151,13 +175,35 @@ router.post('/runs/:runId/wordpress-draft', async (req, res, next) => {
   }
 })
 
+router.post('/runs/:runId/wordpress-publish', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    return res.json(await publishWordPressPostForRun(run))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.delete('/runs/:runId/wordpress-draft', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    const result = await trashWordPressDraftForRun(run)
+    return res.json(result.run)
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.post('/runs/:runId/pdf-link', async (req, res, next) => {
   try {
     const run = await ContentOperationsRun.findOne({
       runId: req.params.runId,
-      'testPublication.published': true,
+      article: { $ne: '' },
+      'approval.article': true,
     })
-    if (!run) return res.status(404).json({ message: 'Published article not found.' })
+    if (!run) return res.status(404).json({ message: 'Completed article not found.' })
     const token = createPdfDownloadToken(run.runId)
     return res.json({ url: `/content-operations-download/${token}` })
   } catch (error) {

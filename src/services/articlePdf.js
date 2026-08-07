@@ -187,5 +187,9 @@ export async function resolvePdfDownload(token) {
     return null
   }
   if (!data.runId || Number(data.expiresAt) < Date.now()) return null
-  return ContentOperationsRun.findOne({ runId: data.runId, 'testPublication.published': true })
+  return ContentOperationsRun.findOne({
+    runId: data.runId,
+    article: { $ne: '' },
+    'approval.article': true,
+  })
 }

@@ -8,6 +8,16 @@ function configuration() {
   return { siteUrl, apiBase, username, applicationPassword }
 }
 
+export function getWordPressSiteUrl() {
+  return configuration().siteUrl
+}
+
+export function getWordPressEditorUrl(postId) {
+  const id = String(postId || '').trim()
+  if (!/^\d+$/.test(id) || !configuration().siteUrl) return ''
+  return `${configuration().siteUrl}/wp-admin/post.php?post=${encodeURIComponent(id)}&action=edit`
+}
+
 export function isWordPressConfigured() {
   const config = configuration()
   return Boolean(config.siteUrl && config.username && config.applicationPassword)
@@ -191,6 +201,27 @@ export function trashWordPressDraft(item) {
   return wordpressRequest(`/${item.type === 'page' ? 'pages' : 'posts'}/${encodeURIComponent(item.id)}`, {
     method: 'DELETE',
   })
+}
+
+// SiteGround's SG Optimizer (plugin "Speed Optimizer") purges a post's own URL on
+// publish, but leaves archive/listing pages like /blog/ cached until they expire.
+// Re-saving the Blog page fires SG's purge-on-save for that URL, so a freshly
+// published post appears on the blog index immediately. Best-effort: a purge
+// failure must never fail the publish itself.
+export async function purgeBlogListingCache() {
+  try {
+    const pages = await wordpressRequest('/pages?slug=blog&context=edit&per_page=1')
+    const blog = Array.isArray(pages) ? pages[0] : null
+    if (!blog?.id) return { purged: false, reason: 'no Blog page found' }
+    const title = blog?.title?.raw ?? 'Blog'
+    await wordpressRequest(`/pages/${encodeURIComponent(blog.id)}`, {
+      method: 'POST',
+      body: { title },
+    })
+    return { purged: true, pageId: blog.id }
+  } catch (error) {
+    return { purged: false, reason: error?.message || 'purge failed' }
+  }
 }
 
 export async function uploadWordPressMedia({ bytes, fileName, contentType, altText = '' }) {

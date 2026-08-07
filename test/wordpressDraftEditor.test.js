@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildBlogIndexHtml, buildDynamicBlogIndexHtml, extractDraftId, inferWordPressAction, isBlogTemplateEdit, validateDynamicBlogIndexHtml } from '../src/services/wordpressDraftEditor.js'
+import { buildBlogIndexHtml, buildDynamicBlogIndexHtml, extractDraftId, inferWordPressAction, isBlogTemplateEdit, validateArticleTemplateDesign, validateDynamicBlogIndexHtml } from '../src/services/wordpressDraftEditor.js'
 
 test('extracts a WordPress draft ID from common user inputs', () => {
   assert.equal(extractDraftId('Edit draft 1113'), '1113')
@@ -57,7 +57,9 @@ test('builds a neat article-card blog index from WordPress posts', () => {
   assert.match(html, /Latest Articles/)
   assert.match(html, /Body Camera Guide/)
   assert.match(html, /Read Story/)
-  assert.match(html, /background:#293640/)
+  assert.match(html, /background:#57584A/)
+  assert.match(html, /grid-template-columns:repeat\(auto-fit/)
+  assert.match(html, /aspect-ratio:16\/9/)
   assert.match(html, /image\.jpg/)
 })
 
@@ -88,4 +90,14 @@ test('routes Blog visual changes through the deterministic template', () => {
 test('validates all required dynamic Blog structure and palette markers', () => {
   assert.equal(validateDynamicBlogIndexHtml(buildDynamicBlogIndexHtml()), true)
   assert.throws(() => validateDynamicBlogIndexHtml('<p>broken</p>'), /Blog template validation failed/)
+})
+
+test('requires generated articles to preserve canonical design classes and styles', () => {
+  const template = '<article class="tt-field-guide" style="color:var(--wp--preset--color--contrast)"><div class="tt-article-hero" style="padding:40px">Old copy</div></article>'
+  const generated = '<article class="tt-field-guide" style="color:var(--wp--preset--color--contrast)"><div class="tt-article-hero" style="padding:40px">New copy</div></article>'
+  assert.equal(validateArticleTemplateDesign(template, generated), true)
+  assert.throws(
+    () => validateArticleTemplateDesign(template, generated.replace('padding:40px', 'padding:20px')),
+    /did not preserve the canonical article design/,
+  )
 })

@@ -5,12 +5,17 @@ import { isGa4Configured } from './ga4Analytics.js'
 import {
   createWordPressDraft,
   findWordPressDraft,
+  getWordPressDraft,
+  getWordPressSiteUrl,
   isWordPressConfigured,
   listWordPressCategories,
   listWordPressTags,
+  purgeBlogListingCache,
+  trashWordPressDraft,
   updateWordPressPost,
 } from './wordpress.js'
-import { markdownToWordPressHtml } from './markdown.js'
+import { markdownToWordPressHtml, stripProductionNotes } from './markdown.js'
+import { generateAndUploadArticleImages, insertGeneratedImages } from './articleImages.js'
 
 const DEFAULT_DOMAIN = 'trustedtechnology.ai'
 const MAX_TEXT = 12000
@@ -222,7 +227,9 @@ Return up to five opportunities. Score business fit, buyer intent, conversion po
       ),
     ]
     run.currentStage = run.researchOnly ? 'opportunity_scoring' : 'opportunity_approval'
-    run.status = run.researchOnly ? 'completed' : 'waiting_for_approval'
+    run.status = run.researchOnly
+      ? 'completed'
+      : run.workflowMode === 'draft_automation' ? 'running' : 'waiting_for_approval'
     await run.save()
     return run
   } catch (error) {
@@ -237,10 +244,35 @@ export async function startContentOperationsRun(body = {}) {
   const run = await createRunRecord(body)
   const controller = new AbortController()
   activeRunControllers.set(run.runId, controller)
-  void createContentOperationsRun(body, { run, signal: controller.signal })
+  const execute = run.workflowMode === 'draft_automation' && !run.researchOnly
+    ? runDraftAutomation(run, body, controller.signal)
+    : createContentOperationsRun(body, { run, signal: controller.signal })
+  void execute
     .catch(() => {})
     .finally(() => activeRunControllers.delete(run.runId))
   return run
+}
+
+async function runDraftAutomation(run, body, signal) {
+  try {
+    await createContentOperationsRun(body, { run, signal })
+    if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
+    const selected = [...run.opportunities].sort((a, b) => Number(b.score ?? -1) - Number(a.score ?? -1))[0]
+    if (!selected) throw new Error('Ahrefs research did not produce an opportunity to draft.')
+    await approveOpportunity(run, selected.id, { signal })
+    if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
+    await approveBriefAndDraft(run, { ...run.brief, articleLength: 'standard' }, { signal })
+    if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
+    await approveArticle(run, { automated: true })
+    await generateAndUploadArticleImages(run, { signal })
+    await createWordPressDraftForRun(run, { signal })
+    return run
+  } catch (error) {
+    run.status = error.code === 'RUN_STOPPED' ? 'stopped' : 'error'
+    if (!run.errors.includes(error.message)) run.errors.push(error.message)
+    await run.save()
+    throw error
+  }
 }
 
 export async function stopContentOperationsRun(run) {
@@ -261,7 +293,7 @@ export async function restartContentOperationsRun(run) {
   })
 }
 
-export async function approveOpportunity(run, opportunityId) {
+export async function approveOpportunity(run, opportunityId, options = {}) {
   const selected = run.opportunities.find((item) => item.id === opportunityId)
   if (!selected) throw Object.assign(new Error('Select a valid content opportunity.'), { statusCode: 400 })
   run.selectedOpportunity = selected
@@ -280,6 +312,8 @@ Original request: ${run.userInstructions}
 Use the Trusted Tech knowledge records supplied in your system context for product facts.
 Treat records marked VERIFY/CITE BEFORE ASSERTING as unverified: cite the handbook or omit the claim.
 Never expose internal-only contact information.
+Create a practical image plan, not decorative filler. Use one featured image and no more than two inline images unless the subject genuinely requires more. When an image depicts the T500 camera, set source to approved_t500_reference and require the canonical asset assets/article-images/t500-camera-reference.png. Preserve its exact front geometry, black casing, lens, lower circular sensor area, side details, and proportions; never substitute or invent a generic body camera. Use approved_media for real product, employee, customer, agency, or software imagery. Use generated_conceptual only for abstract environments, security/evidence motifs, or explanatory illustrations that do not imply fabricated product capabilities. Specify placement after a relevant H2, useful alt text, and a factual caption. Never request fake product screens, fake agency insignia, fake customers, or text inside generated images.
+For repossession, REPO operations, collateral recovery, vehicle recovery, tow operations, recovery-agent, or recovery field-documentation articles, the featured recommendation must combine the canonical T500 camera with a professional vehicle-recovery setting such as a recovery truck, secured vehicle, dispatch yard, or calm vehicle inspection. Use a realistic 16:9 landscape composition. Avoid confrontations, weapons, arrests, police insignia, identifiable license plates, damaged vehicles, sensational action, or any implication that the camera performs an undocumented function.
 Do not call Ahrefs again unless essential. Do not invent metrics or Trusted Technology capabilities.
 Return ONLY valid JSON:
 {
@@ -295,14 +329,29 @@ Return ONLY valid JSON:
   "internalLinks": [],
   "cta": "",
   "productConnection": "",
-  "imageRecommendations": [],
+  "imageRecommendations": [{
+    "role": "featured|inline",
+    "purpose": "",
+    "placementAfterHeading": "",
+    "source": "approved_t500_reference|approved_media|generated_conceptual",
+    "prompt": "",
+    "aspectRatio": "16:9|3:2|1:1",
+    "altText": "",
+    "caption": ""
+  }],
   "category": "",
   "tags": [],
   "complianceCautions": [],
   "slug": "",
   "metaDescription": ""
 }
-`)
+
+Image recommendation requirements:
+- Return exactly three recommendations: one featured image and two inline images.
+- Each inline image must name an exact proposed H2 in placementAfterHeading.
+- Space inline images across the middle of the article: one near the first third and one near the second third.
+- Each image must explain or visualize the specific section beside it; do not return decorative filler.
+`, options.signal)
     run.brief = extractJson(content)
     run.stages.push(stageRecord(
       'seo_brief',
@@ -312,7 +361,7 @@ Return ONLY valid JSON:
       run.brief,
     ))
     run.currentStage = 'brief_approval'
-    run.status = 'waiting_for_approval'
+    run.status = run.workflowMode === 'draft_automation' ? 'running' : 'waiting_for_approval'
     await run.save()
     return run
   } catch (error) {
@@ -323,7 +372,7 @@ Return ONLY valid JSON:
   }
 }
 
-export async function approveBriefAndDraft(run, briefOverride) {
+export async function approveBriefAndDraft(run, briefOverride, options = {}) {
   if (!run.brief) throw Object.assign(new Error('This run does not have an SEO brief.'), { statusCode: 400 })
   if (briefOverride && typeof briefOverride === 'object') run.brief = briefOverride
   run.approval.brief = true
@@ -339,27 +388,30 @@ ${JSON.stringify(run.brief)}
 
 Length: ${length}
 Use Trusted Technology's clear, authoritative, useful, non-promotional voice.
+Write for the canonical Trusted Technology Field Guide format established by WordPress article 1113: an answer-first deck, article overview, clear table of contents, narrow readable body column, practical H2/H3 progression, concise paragraphs, restrained lists, summary, FAQ, and a closing brand statement. Use the format only—never copy article 1113's subject matter, claims, comparisons, or wording. The WordPress renderer owns all CSS; do not add inline styles or invent a separate visual theme.
 Ground product facts in the Trusted Tech knowledge records supplied in your system context.
 Use records marked APPROVED directly. For records marked VERIFY/CITE BEFORE ASSERTING, cite the handbook clearly or omit the claim.
 Never expose internal-only contact information.
 Use one H1, descriptive H2/H3 headings, direct answers, natural keywords, useful explanations, and a clear CTA.
 Format it as a complete, neatly organized WordPress resource article: a concise answer-first introduction; six to eight substantive H2 sections in a logical sequence; no more than three useful H3 subsections under any H2; short paragraphs of two to four sentences; lists only when they make scanning easier; natural internal links from the approved brief; one restrained mid-article CTA; a concise summary; and a Frequently Asked Questions section with three to five H3 questions.
 Do not write a table of contents; the WordPress renderer creates a clean H2-only table of contents automatically.
-Do not include the title more than once. Do not add fake image URLs. Where an image would materially help, add a short italicized image placement note using an approved image recommendation from the brief.
+Do not include the title more than once. Do not add fake image URLs. Output ONLY reader-facing article prose and headings. Never write image-placement notes, featured-image notes, inline-image notes, "Role:"/"Source:" fields, asset paths (for example assets/article-images/...), aspect ratios, alt text, captions, or any generation/production direction anywhere in the article — not even as italics, asides, comments, or bracketed hints. The image workflow reads the approved brief separately and inserts every finished image automatically; the reader must never see a description of an image where the image itself will appear.
+Any T500 depiction must use the canonical approved reference at assets/article-images/t500-camera-reference.png and must not redesign the device. Generated images may add only the surrounding scene, lighting, composition, or abstract explanatory elements. Do not ask image generation to fabricate Trusted Vault screens or other product interfaces.
+When the brief concerns repossession or vehicle recovery, preserve the approved featured-image concept: the canonical T500 camera combined with a professional, non-confrontational vehicle-recovery environment.
 Never invent statistics, laws, customers, certifications, prices, or product capabilities.
 Mark externally verifiable unsupported claims with [SOURCE NEEDED].
 Return only the Markdown article.
-`)
-    run.article = content
+`, options.signal)
+    run.article = stripProductionNotes(content)
     run.stages.push(stageRecord(
       'article_writing',
       'Hermes',
       'Article draft generated from the approved brief.',
-      'The draft preserves factual caution and does not publish automatically.',
-      `${content.split(/\s+/).filter(Boolean).length} words`,
+      'The draft preserves factual caution and does not publish automatically. Any leaked image/production notes are stripped before storage.',
+      `${run.article.split(/\s+/).filter(Boolean).length} words`,
     ))
     run.currentStage = 'article_approval'
-    run.status = 'waiting_for_approval'
+    run.status = run.workflowMode === 'draft_automation' ? 'running' : 'waiting_for_approval'
     await run.save()
     return run
   } catch (error) {
@@ -370,17 +422,17 @@ Return only the Markdown article.
   }
 }
 
-export async function approveArticle(run) {
+export async function approveArticle(run, options = {}) {
   if (!run.article) throw Object.assign(new Error('This run does not have an article draft.'), { statusCode: 400 })
   run.approval.article = true
   run.currentStage = 'human_review'
-  run.status = 'completed'
+  run.status = options.automated ? 'running' : 'completed'
   run.stages.push(stageRecord(
     'human_review',
-    'Human approval',
-    'Article approved for export.',
-    'Publishing remains disabled until WordPress is configured and explicit publish approval is added.',
-    'Approved',
+    options.automated ? 'Automated draft gate' : 'Human approval',
+    options.automated ? 'Article passed the automated draft-only review gate.' : 'Article approved for export.',
+    'This approval permits creation of an unpublished WordPress draft only. Publishing remains disabled.',
+    options.automated ? 'Approved for WordPress draft' : 'Approved',
   ))
   await run.save()
   return run
@@ -420,7 +472,7 @@ export async function publishToTestBlog(run) {
   return run
 }
 
-export async function createWordPressDraftForRun(run) {
+export async function createWordPressDraftForRun(run, options = {}) {
   if (!run.article || !run.approval.article) {
     throw Object.assign(new Error('Approve the article before creating a WordPress draft.'), { statusCode: 400 })
   }
@@ -428,6 +480,7 @@ export async function createWordPressDraftForRun(run) {
     throw Object.assign(new Error('WordPress credentials are not configured.'), { statusCode: 503 })
   }
 
+  const images = await generateAndUploadArticleImages(run, { signal: options.signal })
   const title = cleanText(run.brief?.proposedTitle || run.selectedOpportunity?.title || 'Trusted Tech Article', 300)
   const slug = slugify(run.brief?.slug || title)
   const [categories, tags, existingDraft] = await Promise.all([
@@ -448,11 +501,12 @@ export async function createWordPressDraftForRun(run) {
   const draftPayload = {
     title,
     slug,
-    content: markdownToWordPressHtml(run.article, { title }),
+    content: insertGeneratedImages(markdownToWordPressHtml(run.article, { title }), images),
     excerpt: cleanText(run.brief?.metaDescription, 500),
     categories: categoryIds,
     tags: tagIds,
     status: 'draft',
+    featured_media: images.find((image) => image.role === 'featured')?.mediaId || 0,
   }
   const post = existingDraft
     ? await updateWordPressPost(existingDraft.id, draftPayload)
@@ -476,6 +530,63 @@ export async function createWordPressDraftForRun(run) {
   ))
   await run.save()
   return run
+}
+
+export async function publishWordPressPostForRun(run) {
+  // Guards run before any network call so they are cheap and unit-testable.
+  if (!run.approval?.article) {
+    throw Object.assign(new Error('Approve the article before publishing it.'), { statusCode: 400 })
+  }
+  const postId = run.wordpressPublication?.postId
+  if (!postId) {
+    throw Object.assign(new Error('Create the WordPress draft before publishing it.'), { statusCode: 400 })
+  }
+  if (run.wordpressPublication?.status === 'publish') {
+    return run // already live — idempotent no-op
+  }
+  if (!isWordPressConfigured()) {
+    throw Object.assign(new Error('WordPress credentials are not configured.'), { statusCode: 503 })
+  }
+
+  // The single deliberate crossing of the publish guardrail: allowPublish is only
+  // ever true here, on an already-approved, already-drafted article.
+  const post = await updateWordPressPost(postId, { status: 'publish' }, { allowPublish: true })
+  const cache = await purgeBlogListingCache()
+
+  run.wordpressPublication.status = post.status || 'publish'
+  run.wordpressPublication.url = post.link || run.wordpressPublication.url || ''
+  run.approval.publish = true
+  run.currentStage = 'wordpress_publish'
+  run.status = 'completed'
+  run.stages.push(stageRecord(
+    'wordpress_publish',
+    'WordPress REST API',
+    'Article published live to the blog.',
+    cache.purged
+      ? 'Publishing was explicitly approved; the /blog/ listing cache was purged so the post appears immediately.'
+      : `Publishing was explicitly approved. Blog-cache purge was skipped (${cache.reason}); it will refresh on its normal cache cycle.`,
+    post.link || `${getWordPressSiteUrl()}/?p=${postId}`,
+  ))
+  await run.save()
+  return run
+}
+
+export async function trashWordPressDraftForRun(run) {
+  const postId = run.wordpressPublication?.postId
+  if (!postId) throw Object.assign(new Error('This content run does not have a WordPress draft.'), { statusCode: 400 })
+  const draft = await getWordPressDraft(postId)
+  const trashed = await trashWordPressDraft(draft)
+  run.wordpressPublication.status = 'trash'
+  run.currentStage = 'wordpress_trash'
+  run.stages.push(stageRecord(
+    'wordpress_trash',
+    'WordPress REST API',
+    'WordPress draft moved to Trash.',
+    'The backend re-verified that the article was still a draft before deleting it.',
+    `WordPress post ${postId}`,
+  ))
+  await run.save()
+  return { run, trashed }
 }
 
 export function contentIntegrationStatus() {

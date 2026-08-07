@@ -7,8 +7,72 @@ import { getAuthenticatedUser } from '../middleware/auth.js'
 import { retrieveMemoryContext, saveApprovedMemory } from '../services/memoryGateway.js'
 import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
+import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
 
 const router = Router()
+
+let wordpressStylesheetCache = { siteUrl: '', expiresAt: 0, stylesheets: [], inlineStyles: [] }
+
+function rendered(field) {
+  return typeof field === 'string' ? field : String(field?.rendered ?? field?.raw ?? '')
+}
+
+async function getWordPressStylesheets() {
+  const siteUrl = getWordPressSiteUrl()
+  if (!siteUrl) return { stylesheets: [], inlineStyles: [] }
+  if (wordpressStylesheetCache.siteUrl === siteUrl && wordpressStylesheetCache.expiresAt > Date.now()) {
+    return wordpressStylesheetCache
+  }
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetch(siteUrl, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'TrustedTechHub/1.0' },
+    })
+    if (!response.ok) return []
+    const html = (await response.text()).slice(0, 750000)
+    const stylesheets = [...html.matchAll(/<link\b[^>]*\brel=(['"])[^'"]*stylesheet[^'"]*\1[^>]*>/gi)]
+      .map(([tag]) => tag.match(/\bhref=(['"])(.*?)\1/i)?.[2] || '')
+      .filter(Boolean)
+      .map((href) => href.replace(/&amp;|&#0*38;/gi, '&'))
+      .map((href) => new URL(href, siteUrl).href)
+      .filter((href) => /^https?:\/\//i.test(href))
+      .slice(0, 40)
+    const inlineStyles = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)]
+      .map((match) => match[1].trim())
+      .filter(Boolean)
+      .slice(0, 30)
+    wordpressStylesheetCache = { siteUrl, expiresAt: Date.now() + 5 * 60 * 1000, stylesheets, inlineStyles }
+    return wordpressStylesheetCache
+  } catch {
+    return { stylesheets: [], inlineStyles: [] }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+router.get('/wordpress-draft-editor/preview/:postId', async (req, res, next) => {
+  try {
+    const draft = await getWordPressPost(req.params.postId)
+    const { stylesheets, inlineStyles } = await getWordPressStylesheets()
+    return res.json({
+      id: draft.id,
+      type: draft.type,
+      title: rendered(draft.title),
+      content: rendered(draft.content),
+      excerpt: rendered(draft.excerpt),
+      reviewUrl: getWordPressEditorUrl(draft.id),
+      siteUrl: getWordPressSiteUrl(),
+      stylesheets,
+      inlineStyles,
+      modified: draft.modified || '',
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
 
 router.get('/', async (_req, res, next) => {
   try {
@@ -94,13 +158,27 @@ router.post('/:id/chat', async (req, res, next) => {
 router.post('/:id/memory', async (req, res, next) => {
   try {
     const user = getAuthenticatedUser(req)
+    const incoming = req.body?.proposal || {}
+    // The client picks a brain "section": either the whole company (all agents)
+    // or one specific agent. Company-wide memory carries no allowed_agents
+    // restriction; an agent section scopes retrieval to exactly that agent.
+    const section = typeof incoming.section === 'string' ? incoming.section.trim() : 'company'
+    let allowedAgents = []
+    if (section && section !== 'company' && section !== 'shared') {
+      const agents = await listAgents()
+      const validAgentIds = new Set(agents.map((agent) => agent.id))
+      if (!validAgentIds.has(section)) {
+        return res.status(400).json({ message: 'Choose a valid brain section.' })
+      }
+      allowedAgents = [section]
+    }
     const memory = await saveApprovedMemory({
       agentId: req.params.id,
       user,
-      proposal: req.body?.proposal,
+      proposal: { ...incoming, department: 'shared', allowedAgents },
       confirmed: req.body?.confirmed,
     })
-    return res.status(201).json(memory)
+    return res.status(201).json({ ...memory, section })
   } catch (error) {
     return next(error)
   }
