@@ -5,6 +5,7 @@ import { chatWithAgent } from '../services/openaiChat.js'
 import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
 import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories } from '../services/memoryGateway.js'
+import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
@@ -168,6 +169,21 @@ router.post('/:id/chat', async (req, res, next) => {
         )
         : await chatWithAgent(req.params.id, sanitizedMessages, memoryOptions)
     result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
+    return res.json(result)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Reads a competitor's own website (homepage + product pages) and extracts their
+// BWC models/specs so the section acts as a mini research hub for that competitor.
+router.post('/:id/sections/:competitor/research', async (req, res, next) => {
+  try {
+    if (req.params.id !== 'competitor-analyst') {
+      return res.status(404).json({ message: 'Sections are only available for Competitor Analyst.' })
+    }
+    getAuthenticatedUser(req)
+    const result = await researchCompetitorWebsite(req.params.competitor)
     return res.json(result)
   } catch (error) {
     return next(error)
