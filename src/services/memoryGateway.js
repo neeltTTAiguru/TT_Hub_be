@@ -455,6 +455,50 @@ export function buildMemoryInstructions(memories) {
   ].join('\n')
 }
 
+// Loads the approved memory stored in one competitor's brain section (all BWC
+// model spec pages under that competitor), so selecting a competitor can prime
+// the chat with what GBrain already knows about them.
+export async function listSectionMemories({
+  agentId,
+  competitor,
+  user,
+  search = searchPages,
+  read = readPage,
+  limit = 25,
+}) {
+  if (!enabled()) return { status: 'disabled', memories: [] }
+  const comp = getCompetitorBySlug(competitor)
+  if (!comp) return { status: 'invalid', memories: [] }
+
+  const scope = getMemoryScope(agentId, user)
+  try {
+    const rows = await search(agentId, `${comp.name} body-worn camera models and specifications`, limit)
+    const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
+    const memories = pages
+      .filter((memory) => memoryAllowed(memory, scope))
+      .filter(
+        (memory) =>
+          String(memory.frontmatter?.competitor || '') === comp.slug ||
+          String(memory.slug || '').startsWith(`competitor-analyst/${comp.slug}/`),
+      )
+      .map((memory) => ({
+        slug: memory.slug,
+        title: memory.title,
+        model: String(memory.frontmatter?.bwc_model || ''),
+        summary: String(memory.body || '').replace(/\s+/g, ' ').trim().slice(0, 600),
+      }))
+    return { status: 'ok', memories }
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: 'gbrain_section_unavailable',
+      agentId,
+      competitor: comp.slug,
+      message: error?.message || String(error),
+    }))
+    return { status: 'unavailable', memories: [] }
+  }
+}
+
 export async function retrieveMemoryContext({ agentId, messages, user, search = searchPages, read = readPage }) {
   if (!enabled()) return { status: 'disabled', context: '', memories: [] }
   const query = latestUserQuery(messages)

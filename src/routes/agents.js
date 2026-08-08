@@ -4,7 +4,7 @@ import { chatWithHermes } from '../services/hermesChat.js'
 import { chatWithAgent } from '../services/openaiChat.js'
 import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
-import { retrieveMemoryContext, saveApprovedMemory } from '../services/memoryGateway.js'
+import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories } from '../services/memoryGateway.js'
 import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
@@ -169,6 +169,25 @@ router.post('/:id/chat', async (req, res, next) => {
         : await chatWithAgent(req.params.id, sanitizedMessages, memoryOptions)
     result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
     return res.json(result)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Loads a competitor's brain-section memory from GBrain so the UI can prime the
+// chat when that competitor is selected.
+router.get('/:id/sections/:competitor/memories', async (req, res, next) => {
+  try {
+    if (req.params.id !== 'competitor-analyst') {
+      return res.status(404).json({ message: 'Sections are only available for Competitor Analyst.' })
+    }
+    const user = getAuthenticatedUser(req)
+    const result = await listSectionMemories({
+      agentId: req.params.id,
+      competitor: req.params.competitor,
+      user,
+    })
+    return res.json({ competitor: req.params.competitor, ...result })
   } catch (error) {
     return next(error)
   }
