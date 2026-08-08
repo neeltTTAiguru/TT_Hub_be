@@ -1,10 +1,16 @@
 import { chatWithHermes } from './hermesChat.js'
 
+// Bound below the gateway timeout so a slow HubSpot query fails cleanly (with a
+// "took too long, chat saved" message) instead of hanging ~2 min and returning
+// an HTML gateway error. Tunable via env if the gateway limit changes.
+const HUBSPOT_TIMEOUT_MS = Number(process.env.HUBSPOT_HERMES_TIMEOUT_MS || 55000)
+const HUBSPOT_RETRIES = Number(process.env.HUBSPOT_HERMES_RETRIES ?? 1)
+
 export async function chatWithHubSpotDeals(messages, options = {}) {
   return chatWithHermes('trusted-tech-hubspot-assistant', messages, {
     ...options,
-    timeoutMs: 120000,
-    rateLimitRetries: 2,
+    timeoutMs: HUBSPOT_TIMEOUT_MS,
+    rateLimitRetries: HUBSPOT_RETRIES,
     instructions: `You are Trusted Tech's executive-friendly HubSpot deal pipeline assistant. Use the connected HubSpot MCP tools for every factual CRM question.
 
 Response rules:
