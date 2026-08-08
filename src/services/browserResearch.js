@@ -1,46 +1,26 @@
-import { execFile } from 'child_process'
-import { promisify } from 'util'
 import { readFile } from 'node:fs/promises'
 import PublicPage from '../models/PublicPage.js'
 import ResearchRun from '../models/ResearchRun.js'
 
-const execFileAsync = promisify(execFile)
-const BROWSER_PROFILE = process.env.OPENCLAW_BROWSER_PROFILE || 'openclaw'
-const BROWSER_TIMEOUT_MS = Number(process.env.OPENCLAW_BROWSER_TIMEOUT_MS || 30000)
-const MIN_CAPTURED_TEXT_LENGTH = Number(process.env.OPENCLAW_BROWSER_MIN_TEXT_LENGTH || 120)
+const PAGE_FETCH_TIMEOUT_MS = Number(process.env.PAGE_FETCH_TIMEOUT_MS || 15000)
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses'
 const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini'
 
-function getCliError(error) {
-  if (typeof error?.stderr === 'string' && error.stderr.trim()) {
-    return error.stderr.trim()
-  }
+// Interactive browser automation was removed (migrated off OpenClaw). Anything
+// that needs a real, logged-in, JS-rendered browser session (surfers,
+// screenshots) is disabled and returns a clean 501. Public, static page reads
+// are served by plain server-side fetch (capturePublicPage below) — no browser.
+const BROWSER_DISABLED_MESSAGE =
+  'Interactive browser automation has been removed. This feature is disabled.'
 
-  if (typeof error?.stdout === 'string' && error.stdout.trim()) {
-    return error.stdout.trim()
-  }
-
-  return error instanceof Error ? error.message : 'Browser command failed'
+function browserDisabledError() {
+  const error = new Error(BROWSER_DISABLED_MESSAGE)
+  error.statusCode = 501
+  return error
 }
 
-export async function runBrowserCommand(args) {
-  try {
-    const { stdout } = await execFileAsync(
-      'openclaw',
-      ['browser', '--browser-profile', BROWSER_PROFILE, '--timeout', String(BROWSER_TIMEOUT_MS), ...args],
-      {
-        timeout: BROWSER_TIMEOUT_MS + 5000,
-        maxBuffer: 1024 * 1024 * 4,
-      },
-    )
-
-    return stdout.trim()
-  } catch (error) {
-    const message = getCliError(error)
-    const wrappedError = new Error(message)
-    wrappedError.statusCode = 502
-    throw wrappedError
-  }
+export async function runBrowserCommand() {
+  throw browserDisabledError()
 }
 
 function compactWhitespace(value) {
@@ -200,10 +180,6 @@ function parseMediaPath(raw) {
   return line || ''
 }
 
-function hasUsablePageText(page) {
-  return compactWhitespace(page.text || '').length >= MIN_CAPTURED_TEXT_LENGTH
-}
-
 async function readPagePayload() {
   const pagePayload = await runBrowserCommand([
     'evaluate',
@@ -223,31 +199,8 @@ async function readPagePayload() {
   }
 }
 
-async function waitForReadableContent() {
-  try {
-    await runBrowserCommand([
-      'wait',
-      '--fn',
-      `() => {
-        const text = document.body ? document.body.innerText || '' : ''
-        return document.readyState === 'complete' && text.replace(/\\s+/g, ' ').trim().length >= ${MIN_CAPTURED_TEXT_LENGTH}
-      }`,
-    ])
-  } catch {
-    // Some pages never fully settle. We still attempt extraction below and return a clearer error if it fails.
-  }
-}
-
 export async function ensureBrowserStarted() {
-  try {
-    await runBrowserCommand(['start'])
-  } catch (error) {
-    const wrappedError = new Error(
-      `OpenClaw browser is unavailable. Start the browser profile locally and try again. Details: ${error.message}`,
-    )
-    wrappedError.statusCode = error.statusCode || 502
-    throw wrappedError
-  }
+  throw browserDisabledError()
 }
 
 export async function openBrowserPage(url) {
@@ -325,7 +278,7 @@ export async function getTwitterBrowserConnectionStatus() {
     title: page.title,
     readyState: page.readyState,
     needsLogin: Boolean(isTwitterHost && showsLoginPrompt),
-    source: 'openclaw-browser',
+    source: 'server-fetch',
     message: isTwitterHost
       ? showsAuthenticatedShell && !showsLoginPrompt
         ? 'OpenClaw browser appears signed in to X/Twitter.'
@@ -387,51 +340,87 @@ async function captureElementScreenshot(selector) {
   }
 }
 
+function htmlToText(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;|&#0*38;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*39;|&apos;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function extractTitle(html) {
+  return (String(html).match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').replace(/\s+/g, ' ').trim()
+}
+
+// Reads a public, static page via plain server-side fetch (no browser). Sites
+// that require a logged-in / JS-rendered session cannot be read this way and
+// should be handled by a dedicated integration, not scraped here.
 export async function capturePublicPage(url) {
-  await ensureBrowserStarted()
-  await runBrowserCommand(['open', url])
-  await runBrowserCommand(['wait', '--url', url])
-  await waitForReadableContent()
+  const trimmedUrl = String(url || '').trim()
+  if (!trimmedUrl) {
+    const error = new Error('A URL is required.')
+    error.statusCode = 400
+    throw error
+  }
 
-  const firstAttempt = await readPagePayload()
-  let page = firstAttempt.page
-
-  if ((!page || !hasUsablePageText(page)) && page?.url) {
-    try {
-      await runBrowserCommand(['wait', '--url', page.url])
-      await waitForReadableContent()
-    } catch {
-      // Keep the first extraction result if the second wait fails.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PAGE_FETCH_TIMEOUT_MS)
+  let html = ''
+  let finalUrl = trimmedUrl
+  try {
+    const response = await fetch(trimmedUrl, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'TrustedTechHub/1.0 (+public-page-capture)',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+    })
+    if (!response.ok) {
+      const error = new Error(`Could not load ${trimmedUrl} (HTTP ${response.status}).`)
+      error.statusCode = 502
+      throw error
     }
-
-    const secondAttempt = await readPagePayload()
-    page = secondAttempt.page || page
-  }
-
-  if (!page) {
-    const error = new Error(
-      `Unable to read page contents from OpenClaw browser. Raw response: ${firstAttempt.raw.slice(0, 300) || 'empty'}`,
-    )
+    finalUrl = response.url || trimmedUrl
+    html = (await response.text()).slice(0, 800000)
+  } catch (fetchError) {
+    if (fetchError?.name === 'AbortError') {
+      const error = new Error(`Timed out loading ${trimmedUrl}.`)
+      error.statusCode = 504
+      throw error
+    }
+    if (fetchError?.statusCode) throw fetchError
+    const error = new Error(`Could not load ${trimmedUrl}: ${fetchError?.message || fetchError}`)
     error.statusCode = 502
     throw error
+  } finally {
+    clearTimeout(timer)
   }
 
-  const normalizedText = compactWhitespace(page.text || '')
-
+  const normalizedText = htmlToText(html)
   if (!normalizedText) {
-    const error = new Error(
-      `OpenClaw browser reached the page but extracted no readable text from ${page.url || url}. The site may require additional interaction, consent, or block scripted reads.`,
-    )
+    const error = new Error(`Loaded ${finalUrl} but found no readable text (the site may require a browser).`)
     error.statusCode = 502
     throw error
   }
 
+  const metaDescription =
+    html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["']/i)?.[1] || ''
   const text = trimText(normalizedText)
-  const summarySource = String(page.metaDescription || '') || text
+  const summarySource = compactWhitespace(metaDescription) || text
 
   return {
-    url: String(page.url || url),
-    title: String(page.title || url),
+    url: finalUrl,
+    title: extractTitle(html) || finalUrl,
     rawText: text,
     summary: buildSummary(summarySource),
     highlights: extractHighlights(text),
@@ -442,7 +431,6 @@ export async function captureLinkedInKeywordPosts(url, keyword) {
   await ensureBrowserStarted()
   await runBrowserCommand(['open', url])
   await runBrowserCommand(['wait', '--url', url])
-  await waitForReadableContent()
 
   const payload = await runBrowserCommand([
     'evaluate',
@@ -1032,7 +1020,7 @@ async function generateBrowserResearchReport({ objective, page }) {
   }
 }
 
-export async function saveBrowserResearchRun({ objective, page, requestedBy = 'openclaw-browser' }) {
+export async function saveBrowserResearchRun({ objective, page, requestedBy = 'public-page-capture' }) {
   const report = await generateBrowserResearchReport({ objective, page })
 
   return ResearchRun.create({
