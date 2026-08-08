@@ -281,9 +281,9 @@ export async function getTwitterBrowserConnectionStatus() {
     source: 'server-fetch',
     message: isTwitterHost
       ? showsAuthenticatedShell && !showsLoginPrompt
-        ? 'OpenClaw browser appears signed in to X/Twitter.'
-        : 'OpenClaw browser is on X/Twitter, but the session does not look signed in yet.'
-      : 'OpenClaw browser is ready, but it is not currently on X/Twitter.',
+        ? 'the browser appears signed in to X/Twitter.'
+        : 'the browser is on X/Twitter, but the session does not look signed in yet.'
+      : 'the browser is ready, but it is not currently on X/Twitter.',
   }
 }
 
@@ -590,7 +590,7 @@ export async function captureLinkedInKeywordPosts(url, keyword) {
 
   if (!parsed.posts.length) {
     const error = new Error(
-      `OpenClaw opened the LinkedIn page but found no visible posts matching "${keyword}". Try a broader keyword or make sure the page shows recent posts.`,
+      `The browser opened the LinkedIn page but found no visible posts matching "${keyword}". Try a broader keyword or make sure the page shows recent posts.`,
     )
     error.statusCode = 404
     throw error
@@ -783,7 +783,7 @@ export async function captureTwitterKeywordPosts(url, keyword) {
 
   if (!parsed.posts.length) {
     const error = new Error(
-      `OpenClaw opened X/Twitter but found no visible posts matching "${keyword}". Make sure the browser profile is signed in, or try a broader keyword.`,
+      `The browser opened X/Twitter but found no visible posts matching "${keyword}". Make sure the browser profile is signed in, or try a broader keyword.`,
     )
     error.statusCode = 404
     throw error
@@ -1026,7 +1026,7 @@ export async function saveBrowserResearchRun({ objective, page, requestedBy = 'p
   return ResearchRun.create({
     title: `Browser capture: ${page.title}`,
     objective,
-    scope: `Captured in OpenClaw browser from ${page.url}`,
+    scope: `Captured in the browser from ${page.url}`,
     status: 'completed',
     requestedBy,
     findings: report.findings.map((finding) => ({

@@ -13,24 +13,6 @@ const files = {
   soul: path.join(workspaceRoot, 'SOUL.md'),
   user: path.join(workspaceRoot, 'USER.md'),
   heartbeat: path.join(workspaceRoot, 'HEARTBEAT.md'),
-  pluginManifest: path.join(
-    workspaceRoot,
-    'openclaw-plugins',
-    'trusted-tech-hub',
-    'openclaw.plugin.json',
-  ),
-  pluginEntry: path.join(
-    workspaceRoot,
-    'openclaw-plugins',
-    'trusted-tech-hub',
-    'index.js',
-  ),
-  pluginReadme: path.join(
-    workspaceRoot,
-    'openclaw-plugins',
-    'trusted-tech-hub',
-    'README.md',
-  ),
 }
 
 const agentDefinitions = [
@@ -235,18 +217,12 @@ async function loadCatalogFiles() {
     soul,
     user,
     heartbeat,
-    pluginManifestRaw,
-    pluginEntry,
-    pluginReadme,
   ] = await Promise.all([
     readText(files.workspaceInstructions),
     readText(files.identity),
     readText(files.soul),
     readText(files.user),
     readText(files.heartbeat),
-    readText(files.pluginManifest),
-    readText(files.pluginEntry),
-    readText(files.pluginReadme),
   ])
 
   return {
@@ -256,7 +232,7 @@ async function loadCatalogFiles() {
     user,
     heartbeat,
     skills,
-    pluginManifest: parseJsonObject(pluginManifestRaw, {
+    pluginManifest: {
       id: 'trusted-tech-hub',
       name: 'Trusted Tech Hub',
       description: 'Trusted Tech internal operating hub.',
@@ -264,9 +240,9 @@ async function loadCatalogFiles() {
       configSchema: {
         properties: {},
       },
-    }),
-    pluginEntry,
-    pluginReadme,
+    },
+    pluginEntry: '',
+    pluginReadme: '',
   }
 }
 
@@ -307,9 +283,6 @@ export async function listAgents() {
         skill: agent.skillPath,
         workspaceInstructions: files.workspaceInstructions,
         identity: files.identity,
-        pluginManifest: files.pluginManifest,
-        pluginEntry: files.pluginEntry,
-        pluginReadme: files.pluginReadme,
       },
     }
   })
@@ -354,11 +327,11 @@ export async function getAgentById(agentId) {
         content: catalog.skills[agentId],
       },
       pluginManifest: {
-        path: files.pluginManifest,
+        path: '',
         content: catalog.pluginManifest,
       },
       pluginReadme: {
-        path: files.pluginReadme,
+        path: '',
         content: catalog.pluginReadme,
       },
     },

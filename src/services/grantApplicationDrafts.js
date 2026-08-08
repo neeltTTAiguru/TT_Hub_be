@@ -64,7 +64,7 @@ function buildDraftPrompt({ user, opportunity, applicationQuestions = null }) {
   const hasApplicationQuestions = visibleQuestions.length > 0 || visibleQuestionText.length > 0
 
   return [
-    'You are OpenClaw\'s Grant Application Agent for Trusted Tech.',
+    'You are Trusted Tech\'s Grant Application Agent.',
     '',
     'Mission:',
     hasApplicationQuestions
@@ -169,7 +169,7 @@ function buildDraftPrompt({ user, opportunity, applicationQuestions = null }) {
 
 function buildUploadedApplicationPrompt({ user, upload }) {
   return [
-    'You are OpenClaw\'s Grant Application Agent for Trusted Tech.',
+    'You are Trusted Tech\'s Grant Application Agent.',
     '',
     'Mission:',
     'Generate a practical, editable first-pass response package using the uploaded grant application text as the primary source material.',

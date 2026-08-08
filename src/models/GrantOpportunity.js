@@ -83,7 +83,7 @@ const grantOpportunitySchema = new mongoose.Schema(
     },
     sourceType: {
       type: String,
-      default: 'openclaw-browser',
+      default: 'browser-discovery',
       trim: true,
     },
     scannedAt: {

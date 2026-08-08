@@ -201,7 +201,7 @@ function stringifyForPrompt(value) {
 
 export function buildGrantDiscoveryPrompt({ state, stateCode, grantSources, userProfile = {} }) {
   return [
-    'You are OpenClaw\'s Grant Discovery Agent for Trusted Tech.',
+    'You are Trusted Tech\'s Grant Discovery Agent.',
     '',
     'Mission:',
     'Find grant opportunities from the provided source URLs and determine which ones the user is eligible for, maybe eligible for, or not eligible for.',

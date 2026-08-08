@@ -69,7 +69,7 @@ export async function extractGrantApplicationUpload({ buffer, fileName, contentT
     : normalizeUploadedGrantText(buffer.toString('utf8'))
 
   if (!extractedText) {
-    const error = new Error('OpenClaw could not extract readable text from this grant application.')
+    const error = new Error('Could not extract readable text from this grant application.')
     error.statusCode = 422
     throw error
   }

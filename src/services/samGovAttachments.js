@@ -62,7 +62,7 @@ async function fetchAttachmentBuffer(url) {
       signal: controller.signal,
       headers: {
         Accept: 'application/pdf,text/plain,*/*',
-        'User-Agent': 'TrustedTechOpenClaw/1.0',
+        'User-Agent': 'TrustedTechHub/1.0',
       },
     })
 

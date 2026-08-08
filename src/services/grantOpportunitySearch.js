@@ -271,7 +271,7 @@ function extractOpportunitiesFromPage(page, source, keywords) {
         fitScore,
         summary: buildSummary(sourceText) || `Potential grant opportunity found on ${source.sourceAgency}.`,
         sourceText,
-        sourceType: 'openclaw-browser',
+        sourceType: 'browser-discovery',
         scannedAt: new Date().toISOString(),
       }
     })
@@ -349,7 +349,7 @@ export async function searchGrantOpportunities({
     : best
 
   return {
-    source: 'openclaw-browser',
+    source: 'browser-discovery',
     sources: sources.map((source) => source.url),
     keywords: normalizedKeywords,
     scannedAt: new Date().toISOString(),

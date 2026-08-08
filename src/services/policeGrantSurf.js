@@ -355,7 +355,7 @@ function enrichLead(lead) {
   }
 }
 
-async function readPageWithOpenClawBrowser(url) {
+async function readPageViaBrowser(url) {
   let raw = ''
   let lastError = null
 
@@ -399,7 +399,7 @@ async function readPageWithOpenClawBrowser(url) {
   const text = String(payload?.text || normalizeTextFromHtml(html))
 
   if (!html && !text) {
-    const error = new Error(`OpenClaw browser could not read Police Funding Database page: ${url}`)
+    const error = new Error(`Browser could not read Police Funding Database page: ${url}`)
     error.statusCode = 502
     throw error
   }
@@ -408,7 +408,7 @@ async function readPageWithOpenClawBrowser(url) {
 }
 
 async function collectLeadsFromLocation(location) {
-  const { text } = await readPageWithOpenClawBrowser(location.url)
+  const { text } = await readPageViaBrowser(location.url)
   const meta = extractLocationMeta(text)
 
   return splitGrantRows(text)
@@ -456,7 +456,7 @@ export async function surfPoliceGrantDatabase({
 } = {}) {
   await ensureBrowserStarted()
 
-  const { html } = await readPageWithOpenClawBrowser(LOCATION_INDEX_URL)
+  const { html } = await readPageViaBrowser(LOCATION_INDEX_URL)
   const normalizedInstructions = compactWhitespace(instructions)
   const requestedLimit = Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 25))
   const excludedLeadIds = new Set(excludeLeadIds.map((leadId) => compactWhitespace(leadId)).filter(Boolean))

@@ -355,7 +355,7 @@ function buildReport({ searches, posts, errors, task = '' }) {
       'Open the strongest post links and verify whether an official solicitation, grant notice, or agency procurement page exists.',
       'Add recurring high-signal accounts to the Trusted Tech watchlist.',
       'Cross-check strong leads against SAM.gov and agency procurement portals before treating them as real opportunities.',
-      ...(errors.length ? ['Review failed searches and confirm the OpenClaw browser profile is signed in to X/Twitter.'] : []),
+      ...(errors.length ? ['Review failed searches and confirm the browser session is signed in to X/Twitter.'] : []),
     ],
   }
 }
@@ -556,7 +556,7 @@ export function startTwitterSurferTaskRun({ task, durationMinutes = 30, filter =
   const normalizedTask = compactWhitespace(task)
 
   if (!normalizedTask) {
-    const error = new Error('Describe what posts OpenClaw should search for.')
+    const error = new Error('Describe what posts to search for.')
     error.statusCode = 400
     throw error
   }
