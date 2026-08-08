@@ -2,6 +2,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import crypto from 'node:crypto'
+import { getCompetitorBySlug } from '../data/publicSafetyCompetitors.js'
+
+// Agents allowed to write approved memory. Brain saves company/agent-scoped
+// memory; Competitor Analyst saves competitor-scoped sections.
+const MEMORY_WRITERS = new Set(['trusted-tech-assistant', 'competitor-analyst'])
 
 const DEFAULT_LIMIT = 6
 const DEFAULT_TIMEOUT_MS = 8000
@@ -26,6 +31,7 @@ const AGENT_DEPARTMENTS = {
   'wordpress-draft-test-agent': ['shared', 'marketing'],
   'wordpress-draft-editor': ['shared', 'marketing'],
   'market-researcher': ['shared', 'marketing', 'research'],
+  'competitor-analyst': ['shared', 'marketing', 'research'],
   'police-grant-intelligence-agent': ['shared', 'sales', 'research'],
   'grant-application-agent': ['shared', 'sales'],
   'rfp-response-agent': ['shared', 'sales'],
@@ -299,7 +305,7 @@ function cleanSingleLine(value, maxLength) {
   return String(value || '').replace(/[\r\n]+/g, ' ').trim().slice(0, maxLength)
 }
 
-function memorySlug(title) {
+function memorySlug(title, prefix = 'tt-shared/user-approved') {
   const normalized = String(title || '')
     .toLowerCase()
     .normalize('NFKD')
@@ -307,7 +313,7 @@ function memorySlug(title) {
     .replace(/^-|-$/g, '')
     .slice(0, 60) || 'memory'
   const suffix = crypto.randomBytes(4).toString('hex')
-  return `tt-shared/user-approved/${normalized}-${suffix}`
+  return `${prefix}/${normalized}-${suffix}`
 }
 
 export async function saveApprovedMemory({
@@ -319,8 +325,8 @@ export async function saveApprovedMemory({
   read = readPage,
 }) {
   if (!enabled()) throw Object.assign(new Error('GBrain is not enabled.'), { statusCode: 503 })
-  if (agentId !== 'trusted-tech-assistant') {
-    throw Object.assign(new Error('Only Brain can save approved memories.'), { statusCode: 403 })
+  if (!MEMORY_WRITERS.has(agentId)) {
+    throw Object.assign(new Error('Only Brain or Competitor Analyst can save approved memories.'), { statusCode: 403 })
   }
   if (confirmed !== true) {
     throw Object.assign(new Error('Explicit confirmation is required before saving to GBrain.'), { statusCode: 400 })
@@ -337,6 +343,27 @@ export async function saveApprovedMemory({
   const allowedAgents = Array.isArray(proposal?.allowedAgents)
     ? proposal.allowedAgents.map((agentName) => cleanSingleLine(agentName, 80)).filter(Boolean).slice(0, 20)
     : []
+  // Competitor Analyst saves into a per-competitor "section": the memory is
+  // scoped to this agent and tagged/namespaced by the competitor slug. Every
+  // Competitor Analyst save must name a valid tracked competitor.
+  const competitorSlug = cleanSingleLine(proposal?.competitor || '', 80)
+  let competitor = null
+  if (agentId === 'competitor-analyst') {
+    competitor = getCompetitorBySlug(competitorSlug)
+    if (!competitor) {
+      throw Object.assign(new Error('Choose a valid competitor section to save into.'), { statusCode: 400 })
+    }
+  }
+  // Optional BWC (body-worn camera) model line item within the competitor
+  // section, e.g. "Axon Body 4". Lets a competitor's brain hold one spec page
+  // per camera model instead of one blob.
+  const model = cleanSingleLine(proposal?.model || '', 120)
+  const modelSlug = model
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60)
 
   if (title.length < 3) throw Object.assign(new Error('Memory title must be at least 3 characters.'), { statusCode: 400 })
   if (content.length < 10 || content.length > 8000) {
@@ -355,7 +382,9 @@ export async function saveApprovedMemory({
   }
 
   const now = new Date().toISOString()
-  const slug = memorySlug(title)
+  const slug = competitor
+    ? memorySlug(title, `competitor-analyst/${competitor.slug}${modelSlug ? `/${modelSlug}` : ''}`)
+    : memorySlug(title)
   const markdown = [
     '---',
     `title: ${JSON.stringify(title)}`,
@@ -363,6 +392,8 @@ export async function saveApprovedMemory({
     `sensitivity: ${sensitivity}`,
     `department: ${department}`,
     ...(allowedAgents.length ? [`allowed_agents: ${JSON.stringify(allowedAgents)}`] : []),
+    ...(competitor ? [`competitor: ${competitor.slug}`, `competitor_name: ${JSON.stringify(competitor.name)}`] : []),
+    ...(model ? [`bwc_model: ${JSON.stringify(model)}`] : []),
     `source_uri: ${JSON.stringify(source)}`,
     `observed_at: ${now}`,
     `last_verified_at: ${now}`,
@@ -387,6 +418,8 @@ export async function saveApprovedMemory({
     title: saved.title,
     department,
     allowedAgents,
+    ...(competitor ? { competitor: competitor.slug, competitorName: competitor.name } : {}),
+    ...(model ? { model } : {}),
     sensitivity,
     source,
     lifecycle: saved.frontmatter.lifecycle,

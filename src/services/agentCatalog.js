@@ -121,6 +121,14 @@ const agentDefinitions = [
     skillPath: path.join(workspaceRoot, 'skills', 'market-researcher', 'SKILL.md'),
   },
   {
+    id: 'competitor-analyst',
+    name: 'Competitor Analyst',
+    status: 'active',
+    productArea: 'Market Researcher',
+    // Skill lives inside the backend (like Brain) so it ships with the beCRM deploy.
+    skillPath: path.join(backendRoot, 'skills', 'competitor-analyst', 'SKILL.md'),
+  },
+  {
     id: 'police-grant-intelligence-agent',
     name: 'Police Grant Intelligence Agent',
     status: 'active',

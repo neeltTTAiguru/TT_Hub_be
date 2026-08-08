@@ -13,6 +13,23 @@ const router = Router()
 
 let wordpressStylesheetCache = { siteUrl: '', expiresAt: 0, stylesheets: [], inlineStyles: [] }
 
+// Prefer Hermes (same backend as Brain), but if the Hermes gateway is offline
+// (connection refused / not configured / timeout) fall back to the OpenAI-backed
+// agent chat so the surface still works. Used by Competitor Analyst.
+async function chatWithHermesOrOpenAI(agentId, messages, options) {
+  try {
+    return await chatWithHermes(agentId, messages, options)
+  } catch (error) {
+    const message = String(error?.message || '')
+    const hermesOffline =
+      error?.statusCode === 503 ||
+      error?.statusCode === 504 ||
+      /fetch failed|ECONNREFUSED|not configured|took too long|empty response/i.test(message)
+    if (!hermesOffline) throw error
+    return chatWithAgent(agentId, messages, options)
+  }
+}
+
 function rendered(field) {
   return typeof field === 'string' ? field : String(field?.rendered ?? field?.raw ?? '')
 }
@@ -134,6 +151,8 @@ router.post('/:id/chat', async (req, res, next) => {
       ? await chatWithYouTrack(sanitizedMessages, memoryOptions)
       : req.params.id === 'wordpress-draft-editor'
       ? await handleWordPressChat(sanitizedMessages, memoryOptions)
+      : req.params.id === 'competitor-analyst'
+      ? await chatWithHermesOrOpenAI(req.params.id, sanitizedMessages, memoryOptions)
       : req.params.id === 'trusted-tech-assistant' ||
       req.params.id === 'trusted-tech-hubspot-assistant' ||
       req.params.id === 'trusted-tech-youtrack-assistant' ||
@@ -175,7 +194,10 @@ router.post('/:id/memory', async (req, res, next) => {
     const memory = await saveApprovedMemory({
       agentId: req.params.id,
       user,
-      proposal: { ...incoming, department: 'shared', allowedAgents },
+      // `competitor` (a tracked-competitor slug) turns the save into a
+      // per-competitor brain section; `model` scopes it to a specific BWC model
+      // line item. saveApprovedMemory validates the competitor.
+      proposal: { ...incoming, department: 'shared', allowedAgents, competitor: incoming.competitor, model: incoming.model },
       confirmed: req.body?.confirmed,
     })
     return res.status(201).json({ ...memory, section })
