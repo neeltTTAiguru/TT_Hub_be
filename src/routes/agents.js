@@ -15,19 +15,26 @@ const router = Router()
 
 let wordpressStylesheetCache = { siteUrl: '', expiresAt: 0, stylesheets: [], inlineStyles: [] }
 
-// Prefer Hermes (same backend as Brain), but if the Hermes gateway is offline
-// (connection refused / not configured / timeout) fall back to the OpenAI-backed
-// agent chat so the surface still works. Used by Competitor Analyst.
+// Prefer Hermes (same backend as Brain), but bound how long we wait on it: if
+// Hermes is slow or offline, fall back to the fast OpenAI-backed chat instead of
+// hanging until the gateway times out (~2 min). Used by Competitor Analyst.
+const COMPETITOR_HERMES_TIMEOUT_MS = Number(process.env.COMPETITOR_HERMES_TIMEOUT_MS || 25000)
+
 async function chatWithHermesOrOpenAI(agentId, messages, options) {
   try {
-    return await chatWithHermes(agentId, messages, options)
+    return await chatWithHermes(agentId, messages, {
+      ...options,
+      timeoutMs: COMPETITOR_HERMES_TIMEOUT_MS,
+      rateLimitRetries: 0,
+    })
   } catch (error) {
     const message = String(error?.message || '')
     const hermesOffline =
       error?.statusCode === 503 ||
       error?.statusCode === 504 ||
-      /fetch failed|ECONNREFUSED|not configured|took too long|empty response/i.test(message)
+      /fetch failed|ECONNREFUSED|not configured|took too long|empty response|aborted/i.test(message)
     if (!hermesOffline) throw error
+    // Hermes was slow/unavailable — answer with the fast OpenAI path instead.
     return chatWithAgent(agentId, messages, options)
   }
 }
