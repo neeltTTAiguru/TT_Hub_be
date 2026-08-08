@@ -427,6 +427,78 @@ export async function saveApprovedMemory({
   }
 }
 
+function buildModelSpecSheet(comp, model, specs, notes) {
+  const lines = [`# ${model}`, '', `**Company:** ${comp.name}`, `**Product line:** ${model}`, '']
+  const entries = Object.entries(specs || {}).filter(([, value]) => String(value || '').trim())
+  if (entries.length) {
+    lines.push('## Specifications', '')
+    for (const [label, value] of entries) lines.push(`- **${label}:** ${String(value).trim()}`)
+    lines.push('')
+  }
+  if (notes && String(notes).trim()) lines.push('## Notes', '', String(notes).trim())
+  return lines.join('\n').trim()
+}
+
+// Automated, idempotent save used by the competitor collector job. Unlike
+// saveApprovedMemory (which is gated on explicit user confirmation), this writes
+// a competitor's BWC model spec page under a STABLE slug so repeated collector
+// runs overwrite the same page instead of creating duplicates.
+export async function saveCompetitorModelMemory({
+  competitor,
+  model,
+  specs = {},
+  notes = '',
+  source = '',
+  write = (slug, content) => callTool('competitor-analyst', 'put_page', { slug, content }),
+  read = (slug) => readPage('competitor-analyst', slug),
+}) {
+  if (!enabled()) throw Object.assign(new Error('GBrain is not enabled.'), { statusCode: 503 })
+  const comp = getCompetitorBySlug(competitor)
+  if (!comp) throw Object.assign(new Error('Unknown competitor.'), { statusCode: 400 })
+
+  const modelName = cleanSingleLine(model, 120)
+  if (modelName.length < 2) throw Object.assign(new Error('Model name is required.'), { statusCode: 400 })
+
+  const title = `${comp.name} — ${modelName}`
+  const body = buildModelSpecSheet(comp, modelName, specs, notes)
+  const cleanSource = cleanSingleLine(source || comp.website, 500)
+
+  const unsafe = SECRET_PATTERNS.find((pattern) => pattern.test(`${title}\n${body}\n${cleanSource}`))
+  if (unsafe) throw Object.assign(new Error('Collected content looked like a secret; skipped.'), { statusCode: 400 })
+
+  const modelSlug =
+    modelName.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'model'
+  const slug = `competitor-analyst/${comp.slug}/${modelSlug}`
+  const now = new Date().toISOString()
+  const markdown = [
+    '---',
+    `title: ${JSON.stringify(title)}`,
+    'lifecycle: approved',
+    'sensitivity: internal',
+    'department: shared',
+    'allowed_agents: ["competitor-analyst"]',
+    `competitor: ${comp.slug}`,
+    `competitor_name: ${JSON.stringify(comp.name)}`,
+    `bwc_model: ${JSON.stringify(modelName)}`,
+    `source_uri: ${JSON.stringify(cleanSource)}`,
+    `observed_at: ${now}`,
+    `last_verified_at: ${now}`,
+    'approved_by: "automated-competitor-collector"',
+    'approval_method: automated-competitor-collector',
+    'contains_secrets: false',
+    '---',
+    '',
+    body,
+  ].join('\n')
+
+  await write(slug, markdown)
+  const saved = await read(slug)
+  if (!saved || saved.frontmatter?.lifecycle !== 'approved') {
+    throw Object.assign(new Error('GBrain write verification failed.'), { statusCode: 502 })
+  }
+  return { slug, title, competitor: comp.slug, model: modelName, verified: true }
+}
+
 function formatMemory(memory, index) {
   const metadata = memory.frontmatter
   const source = metadata.source_url || metadata.source_uri || 'Source not recorded'

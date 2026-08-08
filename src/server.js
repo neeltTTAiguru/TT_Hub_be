@@ -26,6 +26,7 @@ import adminRouter from './routes/admin.js'
 import seoContentRouter from './routes/seoContent.js'
 import contentOperationsRouter from './routes/contentOperations.js'
 import contentOperationsDownloadsRouter from './routes/contentOperationsDownloads.js'
+import { startCompetitorCollectorSchedule } from './services/competitorCollector.js'
 
 dotenv.config()
 
@@ -114,6 +115,7 @@ async function start() {
 
   const server = app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`)
+    startCompetitorCollectorSchedule()
   })
 
   server.on('error', (error) => {

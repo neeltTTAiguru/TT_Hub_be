@@ -6,6 +6,7 @@ import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
 import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories } from '../services/memoryGateway.js'
 import { researchCompetitorWebsite } from '../services/competitorResearch.js'
+import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
 import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
@@ -170,6 +171,39 @@ router.post('/:id/chat', async (req, res, next) => {
         : await chatWithAgent(req.params.id, sanitizedMessages, memoryOptions)
     result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
     return res.json(result)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Triggers the background collector that reads EVERY competitor's website and
+// writes their models into each brain section. Fire-and-forget; returns 202.
+router.post('/:id/collect', async (req, res, next) => {
+  try {
+    if (req.params.id !== 'competitor-analyst') {
+      return res.status(404).json({ message: 'Collection is only available for Competitor Analyst.' })
+    }
+    getAuthenticatedUser(req)
+    const status = getCollectorStatus()
+    if (status.running) {
+      return res.status(202).json({ started: false, alreadyRunning: true })
+    }
+    // Fire-and-forget: the sweep takes minutes; don't hold the request open.
+    refreshAllCompetitorSections().catch((error) => console.error('manual competitor collect failed', error))
+    return res.status(202).json({ started: true })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Reports the last collector run + whether one is in progress.
+router.get('/:id/collect/status', async (req, res, next) => {
+  try {
+    if (req.params.id !== 'competitor-analyst') {
+      return res.status(404).json({ message: 'Collection is only available for Competitor Analyst.' })
+    }
+    getAuthenticatedUser(req)
+    return res.json(getCollectorStatus())
   } catch (error) {
     return next(error)
   }
