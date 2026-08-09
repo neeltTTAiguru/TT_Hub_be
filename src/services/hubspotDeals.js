@@ -6,6 +6,11 @@ import { chatWithHermes } from './hermesChat.js'
 const HUBSPOT_TIMEOUT_MS = Number(process.env.HUBSPOT_HERMES_TIMEOUT_MS || 55000)
 const HUBSPOT_RETRIES = Number(process.env.HUBSPOT_HERMES_RETRIES ?? 1)
 
+// Route this agent to its dedicated lean Hermes profile (isolated toolset →
+// ~17k fewer tokens per call). Defaults to "hubspot"; set the env var to an
+// empty string to fall back to the default profile without a code change.
+const HUBSPOT_HERMES_PROFILE = process.env.HUBSPOT_HERMES_PROFILE ?? 'hubspot'
+
 // Exported so it can be unit-tested. These instructions steer the agent's tool
 // use; the "Tool-use efficiency" rules exist to stop the failed-call retry loops
 // (bad SQL, too many keywords, missing args) that re-send the whole conversation
@@ -53,5 +58,6 @@ export async function chatWithHubSpotDeals(messages, options = {}) {
     timeoutMs: HUBSPOT_TIMEOUT_MS,
     rateLimitRetries: HUBSPOT_RETRIES,
     instructions: HUBSPOT_DEAL_INSTRUCTIONS,
+    ...(HUBSPOT_HERMES_PROFILE ? { profile: HUBSPOT_HERMES_PROFILE } : {}),
   })
 }

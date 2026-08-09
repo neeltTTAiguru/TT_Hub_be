@@ -77,10 +77,17 @@ export async function chatWithHermes(agentId, messages, options = {}) {
   options.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
+    // Route to a specific Hermes profile when requested. Each profile is an
+    // isolated instance with its own (leaner) toolset, so this is how an agent
+    // avoids paying for tool schemas it never uses. An unknown/ignored param
+    // simply falls back to the default profile, so this is safe.
+    const completionsUrl = options.profile
+      ? `${baseUrl}/v1/chat/completions?profile=${encodeURIComponent(options.profile)}`
+      : `${baseUrl}/v1/chat/completions`
     let payload
     let content = ''
     for (let attempt = 0; attempt <= rateLimitRetries; attempt += 1) {
-      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      const response = await fetch(completionsUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

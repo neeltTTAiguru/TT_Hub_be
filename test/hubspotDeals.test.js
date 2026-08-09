@@ -29,8 +29,10 @@ test('chatWithHubSpotDeals forwards the exported instructions to Hermes', async 
   process.env.HERMES_API_KEY = 'test-key'
 
   let capturedInstructions
+  let capturedUrl
   const originalFetch = global.fetch
-  global.fetch = async (_url, options) => {
+  global.fetch = async (url, options) => {
+    capturedUrl = String(url)
     capturedInstructions = JSON.parse(options.body).messages?.[0]?.content
     return new Response(
       JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
@@ -46,6 +48,8 @@ test('chatWithHubSpotDeals forwards the exported instructions to Hermes', async 
     assert.ok(capturedInstructions, 'expected Hermes to be called with a system message')
     assert.match(capturedInstructions, /does not support DISTINCT/)
     assert.match(capturedInstructions, /at most 5 keywords per call/)
+    // Routes to the dedicated lean Hermes profile (default "hubspot").
+    assert.match(capturedUrl, /[?&]profile=hubspot\b/)
   } finally {
     global.fetch = originalFetch
     if (originalUrl === undefined) delete process.env.HERMES_API_URL
