@@ -6,11 +6,8 @@ const REQUEST_TIMEOUT_MS = Number(process.env.HERMES_REQUEST_TIMEOUT_MS || 12000
 const RATE_LIMIT_RETRIES = Number(process.env.HERMES_RATE_LIMIT_RETRIES || 6)
 const MAX_RETRY_DELAY_MS = Number(process.env.HERMES_MAX_RETRY_DELAY_MS || 15000)
 
-function getHermesConfig(options = {}) {
-  // A per-request base URL (options.hermesBaseUrl) lets one agent target a
-  // dedicated Hermes gateway/profile (e.g. the lean HubSpot profile on :8643)
-  // while everyone else uses the shared default.
-  const baseUrl = String(options.hermesBaseUrl || process.env.HERMES_API_URL || '').replace(/\/$/, '')
+function getHermesConfig() {
+  const baseUrl = String(process.env.HERMES_API_URL || '').replace(/\/$/, '')
   const apiKey = String(process.env.HERMES_API_KEY || '')
 
   if (!baseUrl || !apiKey) {
@@ -53,7 +50,7 @@ function waitForRetry(delayMs, signal) {
 }
 
 export async function chatWithHermes(agentId, messages, options = {}) {
-  const { baseUrl, apiKey } = getHermesConfig(options)
+  const { baseUrl, apiKey } = getHermesConfig()
   const baseInstructions = typeof options.instructions === 'string'
     ? options.instructions
     : (await getAgentChatInstructions(agentId)).instructions
@@ -80,14 +77,10 @@ export async function chatWithHermes(agentId, messages, options = {}) {
   options.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
-    // The target profile is selected by which gateway/baseUrl we hit (see
-    // getHermesConfig), not by a request param — the gateway is bound to one
-    // profile.
-    const completionsUrl = `${baseUrl}/v1/chat/completions`
     let payload
     let content = ''
     for (let attempt = 0; attempt <= rateLimitRetries; attempt += 1) {
-      const response = await fetch(completionsUrl, {
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

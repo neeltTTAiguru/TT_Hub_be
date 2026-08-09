@@ -6,28 +6,6 @@ import { chatWithHermes } from './hermesChat.js'
 const HUBSPOT_TIMEOUT_MS = Number(process.env.HUBSPOT_HERMES_TIMEOUT_MS || 55000)
 const HUBSPOT_RETRIES = Number(process.env.HUBSPOT_HERMES_RETRIES ?? 1)
 
-// The HubSpot agent has its own lean Hermes profile served by a dedicated
-// gateway on a separate port (default: the shared Hermes URL with :8642 -> :8643).
-// Hitting that gateway is what selects the lean profile (~17k fewer tokens/call).
-// Override with HUBSPOT_HERMES_API_URL; set it empty to use the default gateway.
-// Resolved per call so it tracks the runtime environment.
-function resolveHubSpotHermesUrl() {
-  return (
-    process.env.HUBSPOT_HERMES_API_URL ??
-    String(process.env.HERMES_API_URL || '').replace(':8642', ':8643')
-  )
-}
-
-// The lean gateway is a separate process; if it's ever unreachable (e.g. after a
-// container restart before it's re-launched), a connection-level failure here
-// means we should retry against the default gateway so the agent still answers.
-function isHubSpotGatewayUnreachable(error) {
-  const message = String(error?.message || '')
-  return (
-    error?.code === 'ECONNREFUSED' ||
-    /fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|other side closed|socket hang up/i.test(message)
-  )
-}
 
 // Exported so it can be unit-tested. These instructions steer the agent's tool
 // use; the "Tool-use efficiency" rules exist to stop the failed-call retry loops
@@ -71,28 +49,10 @@ Tool-use efficiency rules (follow exactly; each failed call re-sends the whole c
 - If a tool call returns an error, read the error, adjust the arguments to satisfy the stated constraint, and issue a corrected call. Never repeat the identical failing call.`
 
 export async function chatWithHubSpotDeals(messages, options = {}) {
-  const base = {
+  return chatWithHermes('trusted-tech-hubspot-assistant', messages, {
     ...options,
     timeoutMs: HUBSPOT_TIMEOUT_MS,
     rateLimitRetries: HUBSPOT_RETRIES,
     instructions: HUBSPOT_DEAL_INSTRUCTIONS,
-  }
-
-  const leanUrl = resolveHubSpotHermesUrl()
-  if (!leanUrl) {
-    return chatWithHermes('trusted-tech-hubspot-assistant', messages, base)
-  }
-
-  try {
-    return await chatWithHermes('trusted-tech-hubspot-assistant', messages, {
-      ...base,
-      hermesBaseUrl: leanUrl,
-    })
-  } catch (error) {
-    if (isHubSpotGatewayUnreachable(error)) {
-      // Lean gateway down — answer on the default profile rather than failing.
-      return chatWithHermes('trusted-tech-hubspot-assistant', messages, base)
-    }
-    throw error
-  }
+  })
 }
