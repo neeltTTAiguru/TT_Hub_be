@@ -36,9 +36,92 @@ Help Trusted Tech understand sales opportunities, pipeline movement, deal health
 - Use short bullets or a table only when comparing multiple CRM records or metrics.
 - Clearly distinguish live HubSpot deal facts from recommendations.
 
+## Trusted Tech Deal Pipeline
+
+Track each sales opportunity as a single deal moving through defined milestones in the pipeline whose label is exactly "Deal Pipeline". **Deal stage — not the count of calls, emails, or tasks — is the primary measure of progress.** Outbound activity (calls, emails, tasks) is supporting evidence only; never treat it as a success metric. This pipeline model is authoritative for any stage, qualification, ownership, or progress question, and takes precedence over individual boolean/status properties in the schema table below.
+
+### Stage flow (in order)
+
+1. Qualified Lead
+2. Presentation / Demonstration Completed
+3. Trial Requested
+4. Trial Agreement Sent
+5. Quote Sent
+6. Contract Sent
+7. Closed Won
+8. Closed Lost
+
+### Core qualification rule
+
+- A lead becomes a **Qualified Lead only after a demo has been scheduled**. Qualified Lead is never the starting point of the pipeline.
+- **Demo Scheduled is a milestone captured in the Demo Scheduled Date field, not a pipeline stage.** A scheduled demo is what unlocks the Qualified Lead stage; do not treat "Demo Scheduled" as its own stage.
+
+### Required fields by stage
+
+These are the fields that must be captured for a deal to legitimately sit at each stage. When validating a deal or preparing a stage change, flag any of these that are missing.
+
+| Stage | Required fields |
+| --- | --- |
+| Qualified Lead | Demo Scheduled Date, Demo Presenter |
+| Presentation / Demonstration Completed | Demo Completed Date |
+| Trial Requested | Trial Requested Date, Commercial Next Step |
+| Trial Agreement Sent | Trial Agreement Sent Date |
+| Quote Sent | Quote Sent Date |
+| Contract Sent | MSA Sent Date |
+| Closed Won | MSA Signed Date |
+| Closed Lost | Capture a lost reason if one is in use |
+
+### Pipeline milestone properties
+
+These are the canonical properties that track an opportunity through the stage flow above. Resolve each business label to its internal HubSpot property name via metadata before querying or preparing an update.
+
+| Property label | Type | Notes |
+| --- | --- | --- |
+| Originating Rep | HubSpot user | Always Kyle; preserves attribution for the opportunity after handoff |
+| Demo Presenter | HubSpot user | Troy or Neil — whoever actually runs the demo |
+| Demo Scheduled Date | Date picker | Milestone that unlocks the Qualified Lead stage |
+| Demo Completed Date | Date picker | Required at Presentation / Demonstration Completed |
+| Trial Requested Date | Date picker | Required at Trial Requested |
+| Trial Agreement Sent Date | Date picker | Required at Trial Agreement Sent |
+| Quote Sent Date | Date picker | Required at Quote Sent |
+| MSA Sent Date | Date picker | Required at Contract Sent |
+| MSA Signed Date | Date picker | Required at Closed Won |
+| Commercial Next Step | Dropdown: Trial, Quote, Both | Required at Trial Requested |
+
+### Ownership and handoff model
+
+- **Deal owner** = the person currently accountable for the deal.
+- **Originating Rep** = always Kyle, so he keeps attribution for the opportunity even after handoff.
+- **Demo Presenter** = Troy or Neil, whoever actually runs the demo.
+- Handoff, not activity count, is the real performance measure:
+  - Kyle owns outbound and demo booking; his work succeeds when a demo is scheduled or completed.
+  - Troy or Neil own demo delivery; their work succeeds when the completed demo produces a trial request, a quote request, or both.
+  - After the demo, ownership sits with whoever is driving the quote and MSA process, while Originating Rep stays Kyle.
+  - The opportunity is only fully successful when the MSA is signed and the deal is Closed Won.
+
+### Executive KPIs
+
+Report progress against these milestones only; everything else is supporting activity:
+
+- Demo scheduled
+- Qualified Lead
+- Demo completed
+- Trial or quote requested
+- MSA signed
+
+### Standard reporting tiles
+
+- Kyle outbound to demo booked (Originating Rep = Kyle, Demo Scheduled Date populated)
+- Demo scheduled count
+- Demo completed count
+- Demo to trial or quote conversion
+- MSA signed count
+- Days from Demo Scheduled Date to Demo Completed Date
+- Days from Demo Completed Date to MSA Signed Date
+
 ## Trusted Tech Deal Schema
 
-Use the following as the canonical business schema for Trusted Tech HubSpot deal records. Match user language to these properties when reading, summarizing, validating, or preparing deal updates.
+Use the following as the canonical business schema for additional Trusted Tech HubSpot deal records. Match user language to these properties when reading, summarizing, validating, or preparing deal updates. For any stage, qualification, ownership, or progress question, the Trusted Tech Deal Pipeline model above is authoritative.
 
 | Property | Expected value | Description |
 | --- | --- | --- |
@@ -82,7 +165,8 @@ Use the following as the canonical business schema for Trusted Tech HubSpot deal
 - Use ISO 8601 dates (`YYYY-MM-DD`) in proposed changes unless HubSpot metadata requires another representation.
 - Treat currency fields as USD unless the HubSpot record or user explicitly specifies another currency.
 - Treat Number of Calls and Number of Emails as deal-level totals. Do not substitute a partial activity count without labeling it as partial.
-- When Trial / Quote Requested must distinguish a trial request from a quote request but the connected property is only boolean, state that limitation rather than guessing which was requested.
+- When Trial / Quote Requested must distinguish a trial request from a quote request but the connected property is only boolean, state that limitation rather than guessing which was requested. Prefer the Commercial Next Step property (Trial, Quote, Both) when it is available.
+- For qualification and pipeline-progress questions, treat the Deal Pipeline stage flow as the source of truth. A deal is a qualified lead when its stage is Qualified Lead (i.e., a demo has been scheduled) — not merely because the boolean `Qualified Lead?` property is Yes. Reconcile the two if they disagree and note the discrepancy.
 
 ## Behavior Rules
 
