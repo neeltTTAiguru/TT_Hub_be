@@ -25,17 +25,16 @@ test('tool-use guardrails cover every logged failure mode that caused retry loop
 test('chatWithHubSpotDeals forwards the exported instructions to Hermes', async () => {
   const originalUrl = process.env.HERMES_API_URL
   const originalKey = process.env.HERMES_API_KEY
-  process.env.HERMES_API_URL = 'https://hermes.example.test'
+  process.env.HERMES_API_URL = 'http://10.124.0.2:8642'
   process.env.HERMES_API_KEY = 'test-key'
+  delete process.env.HUBSPOT_HERMES_API_URL
 
   let capturedInstructions
   let capturedUrl
-  let capturedBody
   const originalFetch = global.fetch
   global.fetch = async (url, options) => {
     capturedUrl = String(url)
-    capturedBody = JSON.parse(options.body)
-    capturedInstructions = capturedBody.messages?.[0]?.content
+    capturedInstructions = JSON.parse(options.body).messages?.[0]?.content
     return new Response(
       JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -50,10 +49,46 @@ test('chatWithHubSpotDeals forwards the exported instructions to Hermes', async 
     assert.ok(capturedInstructions, 'expected Hermes to be called with a system message')
     assert.match(capturedInstructions, /does not support DISTINCT/)
     assert.match(capturedInstructions, /at most 5 keywords per call/)
-    // Routes to the dedicated lean Hermes profile (default "hubspot") — both in
-    // the URL and, decisively, in the request body which Hermes honors.
-    assert.match(capturedUrl, /[?&]profile=hubspot\b/)
-    assert.equal(capturedBody.profile, 'hubspot')
+    // Routes to the dedicated lean gateway on :8643, not the default :8642.
+    assert.match(capturedUrl, /:8643\/v1\/chat\/completions$/)
+  } finally {
+    global.fetch = originalFetch
+    if (originalUrl === undefined) delete process.env.HERMES_API_URL
+    else process.env.HERMES_API_URL = originalUrl
+    if (originalKey === undefined) delete process.env.HERMES_API_KEY
+    else process.env.HERMES_API_KEY = originalKey
+  }
+})
+
+test('falls back to the default gateway when the lean gateway is unreachable', async () => {
+  const originalUrl = process.env.HERMES_API_URL
+  const originalKey = process.env.HERMES_API_KEY
+  process.env.HERMES_API_URL = 'http://10.124.0.2:8642'
+  process.env.HERMES_API_KEY = 'test-key'
+  delete process.env.HUBSPOT_HERMES_API_URL
+
+  const urls = []
+  const originalFetch = global.fetch
+  global.fetch = async (url) => {
+    urls.push(String(url))
+    // First call = lean gateway (:8643) refuses the connection; second = default.
+    if (String(url).includes(':8643')) {
+      throw new TypeError('fetch failed')
+    }
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
+  try {
+    const result = await chatWithHubSpotDeals(
+      [{ role: 'user', content: 'how many deals are closed won?' }],
+      { memoryContext: '' },
+    )
+    assert.equal(result.message.content, 'ok')
+    assert.ok(urls.some((u) => u.includes(':8643')), 'should try the lean gateway first')
+    assert.ok(urls.some((u) => u.includes(':8642')), 'should fall back to the default gateway')
   } finally {
     global.fetch = originalFetch
     if (originalUrl === undefined) delete process.env.HERMES_API_URL

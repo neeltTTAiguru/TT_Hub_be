@@ -6,8 +6,11 @@ const REQUEST_TIMEOUT_MS = Number(process.env.HERMES_REQUEST_TIMEOUT_MS || 12000
 const RATE_LIMIT_RETRIES = Number(process.env.HERMES_RATE_LIMIT_RETRIES || 6)
 const MAX_RETRY_DELAY_MS = Number(process.env.HERMES_MAX_RETRY_DELAY_MS || 15000)
 
-function getHermesConfig() {
-  const baseUrl = String(process.env.HERMES_API_URL || '').replace(/\/$/, '')
+function getHermesConfig(options = {}) {
+  // A per-request base URL (options.hermesBaseUrl) lets one agent target a
+  // dedicated Hermes gateway/profile (e.g. the lean HubSpot profile on :8643)
+  // while everyone else uses the shared default.
+  const baseUrl = String(options.hermesBaseUrl || process.env.HERMES_API_URL || '').replace(/\/$/, '')
   const apiKey = String(process.env.HERMES_API_KEY || '')
 
   if (!baseUrl || !apiKey) {
@@ -50,7 +53,7 @@ function waitForRetry(delayMs, signal) {
 }
 
 export async function chatWithHermes(agentId, messages, options = {}) {
-  const { baseUrl, apiKey } = getHermesConfig()
+  const { baseUrl, apiKey } = getHermesConfig(options)
   const baseInstructions = typeof options.instructions === 'string'
     ? options.instructions
     : (await getAgentChatInstructions(agentId)).instructions
@@ -77,13 +80,10 @@ export async function chatWithHermes(agentId, messages, options = {}) {
   options.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
-    // Route to a specific Hermes profile when requested. Each profile is an
-    // isolated instance with its own (leaner) toolset, so this is how an agent
-    // avoids paying for tool schemas it never uses. An unknown/ignored param
-    // simply falls back to the default profile, so this is safe.
-    const completionsUrl = options.profile
-      ? `${baseUrl}/v1/chat/completions?profile=${encodeURIComponent(options.profile)}`
-      : `${baseUrl}/v1/chat/completions`
+    // The target profile is selected by which gateway/baseUrl we hit (see
+    // getHermesConfig), not by a request param — the gateway is bound to one
+    // profile.
+    const completionsUrl = `${baseUrl}/v1/chat/completions`
     let payload
     let content = ''
     for (let attempt = 0; attempt <= rateLimitRetries; attempt += 1) {
@@ -100,10 +100,6 @@ export async function chatWithHermes(agentId, messages, options = {}) {
             ...messages.map(({ role, content }) => ({ role, content })),
           ],
           stream: false,
-          // Hermes honors an explicit `profile` in the request body (it overrides
-          // the query param). This is the switch that actually routes the request
-          // to the agent's dedicated lean profile.
-          ...(options.profile ? { profile: options.profile } : {}),
         }),
         signal: controller.signal,
       })
