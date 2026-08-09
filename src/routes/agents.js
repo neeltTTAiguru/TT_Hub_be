@@ -1,13 +1,13 @@
 import { Router } from 'express'
 import { getAgentById, listAgents } from '../services/agentCatalog.js'
-import { chatWithHermes } from '../services/hermesChat.js'
+import { chatWithHermes, streamHermesChat } from '../services/hermesChat.js'
 import { chatWithAgent } from '../services/openaiChat.js'
 import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
-import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories } from '../services/memoryGateway.js'
+import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listBrainSectionMemories } from '../services/memoryGateway.js'
 import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
-import { chatWithHubSpotDeals } from '../services/hubspotDeals.js'
+import { chatWithHubSpotDeals, HUBSPOT_DEAL_INSTRUCTIONS } from '../services/hubspotDeals.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
 
@@ -183,6 +183,88 @@ router.post('/:id/chat', async (req, res, next) => {
   }
 })
 
+// Streaming chat over Server-Sent Events. Emits `data: {"delta":"..."}` per token
+// and a final `data: {"done":true,"message":...}`. Heartbeat comments keep the
+// connection warm during the (silent) tool-call phase so long HubSpot analyses
+// don't hit a fixed request cap or a proxy idle-timeout.
+const STREAMING_AGENTS = new Set([
+  'trusted-tech-hubspot-assistant',
+  'trusted-tech-assistant',
+  'competitor-analyst',
+  'content-operations-assistant',
+  'trusted-tech-ahrefs-assistant',
+])
+
+router.post('/:id/chat/stream', async (req, res, next) => {
+  const agentId = req.params.id
+  try {
+    if (!STREAMING_AGENTS.has(agentId)) {
+      return res.status(501).json({ message: 'Streaming is not available for this agent.' })
+    }
+    const messages = Array.isArray(req.body?.messages) ? req.body.messages : []
+    const sanitizedMessages = messages
+      .filter(
+        (message) =>
+          message &&
+          (message.role === 'user' || message.role === 'assistant') &&
+          typeof message.content === 'string' &&
+          message.content.trim(),
+      )
+      .slice(-12)
+    if (!sanitizedMessages.length) {
+      return res.status(400).json({ message: 'Provide at least one chat message.' })
+    }
+
+    const user = getAuthenticatedUser(req)
+    const memory = await retrieveMemoryContext({ agentId, messages: sanitizedMessages, user })
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache, no-transform')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    res.flushHeaders?.()
+    res.write(': open\n\n')
+
+    const heartbeat = setInterval(() => {
+      try { res.write(': hb\n\n') } catch { /* client gone */ }
+    }, 15000)
+
+    const clientAbort = new AbortController()
+    req.on('close', () => clientAbort.abort())
+
+    try {
+      const { content } = await streamHermesChat(
+        agentId,
+        sanitizedMessages,
+        {
+          memoryContext: memory.context,
+          timeoutMs: Number(process.env.HERMES_STREAM_TIMEOUT_MS || 240000),
+          instructions: agentId === 'trusted-tech-hubspot-assistant' ? HUBSPOT_DEAL_INSTRUCTIONS : undefined,
+          signal: clientAbort.signal,
+        },
+        (delta) => {
+          res.write(`data: ${JSON.stringify({ delta })}\n\n`)
+        },
+      )
+      res.write(`data: ${JSON.stringify({
+        done: true,
+        message: { role: 'assistant', content },
+        meta: { provider: 'hermes', memory: { status: memory.status, retrieved: memory.memories.length } },
+      })}\n\n`)
+    } catch (error) {
+      if (error?.code !== 'RUN_STOPPED') {
+        res.write(`data: ${JSON.stringify({ error: error?.message || 'Hermes stream failed.' })}\n\n`)
+      }
+    } finally {
+      clearInterval(heartbeat)
+      res.end()
+    }
+  } catch (error) {
+    if (!res.headersSent) return next(error)
+    try { res.end() } catch { /* already closed */ }
+  }
+})
+
 // Triggers the background collector that reads EVERY competitor's website and
 // writes their models into each brain section. Fire-and-forget; returns 202.
 router.post('/:id/collect', async (req, res, next) => {
@@ -245,6 +327,27 @@ router.get('/:id/sections/:competitor/memories', async (req, res, next) => {
       user,
     })
     return res.json({ competitor: req.params.competitor, ...result })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Loads one Brain "section" — the company-wide pool ('company') or a single
+// agent's scoped memories — so the Brain UI can show what a section knows and
+// talk to it directly (mirrors the competitor sections endpoint above).
+router.get('/:id/brain-sections/:section/memories', async (req, res, next) => {
+  try {
+    const user = getAuthenticatedUser(req)
+    const section = req.params.section
+    if (section !== 'company' && section !== 'shared') {
+      const agents = await listAgents()
+      const validAgentIds = new Set(agents.map((agent) => agent.id))
+      if (!validAgentIds.has(section)) {
+        return res.status(400).json({ message: 'Choose a valid brain section.' })
+      }
+    }
+    const result = await listBrainSectionMemories({ agentId: req.params.id, section, user })
+    return res.json({ section, ...result })
   } catch (error) {
     return next(error)
   }

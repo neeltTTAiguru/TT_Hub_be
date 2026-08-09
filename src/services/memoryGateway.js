@@ -343,6 +343,10 @@ export async function saveApprovedMemory({
   const allowedAgents = Array.isArray(proposal?.allowedAgents)
     ? proposal.allowedAgents.map((agentName) => cleanSingleLine(agentName, 80)).filter(Boolean).slice(0, 20)
     : []
+  // When set, overwrite this existing memory in place (a true update to the same
+  // GBrain page) instead of minting a new one. Validated below to be an approved
+  // memory in the same section, so a save can't clobber another section's page.
+  const targetSlug = cleanSingleLine(proposal?.targetSlug || '', 200)
   // Competitor Analyst saves into a per-competitor "section": the memory is
   // scoped to this agent and tagged/namespaced by the competitor slug. Every
   // Competitor Analyst save must name a valid tracked competitor.
@@ -382,9 +386,30 @@ export async function saveApprovedMemory({
   }
 
   const now = new Date().toISOString()
-  const slug = competitor
-    ? memorySlug(title, `competitor-analyst/${competitor.slug}${modelSlug ? `/${modelSlug}` : ''}`)
-    : memorySlug(title)
+  let slug
+  if (targetSlug) {
+    // Update-in-place: confirm the target is an approved memory in this exact
+    // section before overwriting it, so a section save can only edit its own pages.
+    const current = await read(agentId, targetSlug)
+    if (!current) {
+      throw Object.assign(new Error('The memory you are updating no longer exists.'), { statusCode: 404 })
+    }
+    if (String(current.frontmatter?.lifecycle || '').toLowerCase() !== 'approved') {
+      throw Object.assign(new Error('Only approved memories can be updated.'), { statusCode: 400 })
+    }
+    const currentAgents = new Set(listField(current.frontmatter?.allowed_agents))
+    const wantAgents = new Set(allowedAgents)
+    const sameSection =
+      currentAgents.size === wantAgents.size && [...wantAgents].every((agent) => currentAgents.has(agent))
+    if (!sameSection) {
+      throw Object.assign(new Error('That memory belongs to a different brain section.'), { statusCode: 400 })
+    }
+    slug = targetSlug
+  } else {
+    slug = competitor
+      ? memorySlug(title, `competitor-analyst/${competitor.slug}${modelSlug ? `/${modelSlug}` : ''}`)
+      : memorySlug(title)
+  }
   const markdown = [
     '---',
     `title: ${JSON.stringify(title)}`,
@@ -423,6 +448,7 @@ export async function saveApprovedMemory({
     sensitivity,
     source,
     lifecycle: saved.frontmatter.lifecycle,
+    updated: Boolean(targetSlug),
     verified: true,
   }
 }
@@ -565,6 +591,59 @@ export async function listSectionMemories({
       event: 'gbrain_section_unavailable',
       agentId,
       competitor: comp.slug,
+      message: error?.message || String(error),
+    }))
+    return { status: 'unavailable', memories: [] }
+  }
+}
+
+// Loads the approved memories that belong to one "brain section" — either the
+// company-wide pool (memories readable by every agent) or a single agent's
+// scoped section — so the Brain UI can show what a section knows and prime a
+// chat scoped to it. Mirrors listSectionMemories, but keys off allowed_agents
+// instead of a competitor slug.
+export async function listBrainSectionMemories({
+  agentId,
+  section,
+  user,
+  list = (id, args) => callTool(id, 'list_pages', args),
+  read = readPage,
+  limit = 100,
+}) {
+  if (!enabled()) return { status: 'disabled', memories: [] }
+  const isCompany = !section || section === 'company' || section === 'shared'
+  // Evaluate memoryAllowed under the TARGET section's scope, not the asking
+  // agent's: a memory scoped to allowed_agents:[content-operations-assistant]
+  // is only "allowed" under that agent's scope, so checking it as the Brain
+  // (trusted-tech-assistant) would wrongly hide the section's own memories.
+  const scope = getMemoryScope(isCompany ? agentId : section, user)
+  try {
+    const rows = structuredRows(await list(agentId, { limit }))
+      .map((row) => ({ slug: String(row?.slug || '') }))
+      .filter((row) => row.slug)
+    const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
+    const memories = pages
+      .filter((memory) => memoryAllowed(memory, scope))
+      .filter((memory) => {
+        const agents = listField(memory.frontmatter?.allowed_agents)
+        // Company section = the shared pool (no agent restriction). An agent
+        // section = memories explicitly scoped to that agent.
+        return isCompany ? agents.length === 0 : agents.includes(section)
+      })
+      .map((memory) => ({
+        slug: memory.slug,
+        title: memory.title,
+        sensitivity: String(memory.frontmatter?.sensitivity || 'internal'),
+        summary: String(memory.body || '').replace(/\s+/g, ' ').trim().slice(0, 600),
+        // Full body so the edit-existing picker can prefill the editor.
+        content: String(memory.body || ''),
+      }))
+    return { status: 'ok', memories }
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: 'gbrain_brain_section_unavailable',
+      agentId,
+      section,
       message: error?.message || String(error),
     }))
     return { status: 'unavailable', memories: [] }

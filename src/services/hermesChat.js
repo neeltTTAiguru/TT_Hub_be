@@ -49,6 +49,93 @@ function waitForRetry(delayMs, signal) {
   })
 }
 
+// Streaming variant: sends stream:true to Hermes, parses the OpenAI-style SSE,
+// and invokes onDelta(text) for each content chunk. Returns the full text once
+// the stream ends. Keeping the connection flowing is what lets long, tool-heavy
+// HubSpot analyses run past a fixed request cap without the proxy killing them.
+export async function streamHermesChat(agentId, messages, options = {}, onDelta = () => {}) {
+  const { baseUrl, apiKey } = getHermesConfig()
+  const baseInstructions = typeof options.instructions === 'string'
+    ? options.instructions
+    : (await getAgentChatInstructions(agentId)).instructions
+  const memoryContext = typeof options.memoryContext === 'string' ? options.memoryContext.trim() : ''
+  const instructions = memoryContext ? `${baseInstructions}\n\n${memoryContext}` : baseInstructions
+
+  const controller = new AbortController()
+  const timeoutMs = Number(options.timeoutMs || REQUEST_TIMEOUT_MS)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const abortFromCaller = () => controller.abort()
+  options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+
+  try {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: DEFAULT_HERMES_MODEL,
+        messages: [
+          { role: 'system', content: instructions },
+          ...messages.map(({ role, content }) => ({ role, content })),
+        ],
+        stream: true,
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok || !response.body) {
+      const body = await response.text().catch(() => '')
+      const error = new Error(
+        isHermesRateLimit(response.status, body)
+          ? 'The HubSpot query is still processing. Please retry shortly.'
+          : (body || `Hermes request failed with ${response.status}`),
+      )
+      error.statusCode = isHermesRateLimit(response.status, body) ? 503 : response.status
+      throw error
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let full = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let idx
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim()
+        buffer = buffer.slice(idx + 1)
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (!payload || payload === '[DONE]') continue
+        let parsed
+        try { parsed = JSON.parse(payload) } catch { continue }
+        const delta = parsed?.choices?.[0]?.delta?.content
+        if (typeof delta === 'string' && delta) {
+          full += delta
+          onDelta(delta)
+        }
+      }
+    }
+    return { content: full.trim() }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      if (options.signal?.aborted) {
+        const stopped = new Error('Run stopped.')
+        stopped.code = 'RUN_STOPPED'
+        throw stopped
+      }
+      const timeoutError = new Error('Hermes took too long to respond.')
+      timeoutError.statusCode = 504
+      throw timeoutError
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
 export async function chatWithHermes(agentId, messages, options = {}) {
   const { baseUrl, apiKey } = getHermesConfig()
   const baseInstructions = typeof options.instructions === 'string'
