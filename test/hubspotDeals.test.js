@@ -30,10 +30,12 @@ test('chatWithHubSpotDeals forwards the exported instructions to Hermes', async 
 
   let capturedInstructions
   let capturedUrl
+  let capturedBody
   const originalFetch = global.fetch
   global.fetch = async (url, options) => {
     capturedUrl = String(url)
-    capturedInstructions = JSON.parse(options.body).messages?.[0]?.content
+    capturedBody = JSON.parse(options.body)
+    capturedInstructions = capturedBody.messages?.[0]?.content
     return new Response(
       JSON.stringify({ choices: [{ message: { content: 'ok' } }] }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -48,8 +50,10 @@ test('chatWithHubSpotDeals forwards the exported instructions to Hermes', async 
     assert.ok(capturedInstructions, 'expected Hermes to be called with a system message')
     assert.match(capturedInstructions, /does not support DISTINCT/)
     assert.match(capturedInstructions, /at most 5 keywords per call/)
-    // Routes to the dedicated lean Hermes profile (default "hubspot").
+    // Routes to the dedicated lean Hermes profile (default "hubspot") — both in
+    // the URL and, decisively, in the request body which Hermes honors.
     assert.match(capturedUrl, /[?&]profile=hubspot\b/)
+    assert.equal(capturedBody.profile, 'hubspot')
   } finally {
     global.fetch = originalFetch
     if (originalUrl === undefined) delete process.env.HERMES_API_URL

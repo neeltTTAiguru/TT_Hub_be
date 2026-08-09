@@ -100,6 +100,10 @@ export async function chatWithHermes(agentId, messages, options = {}) {
             ...messages.map(({ role, content }) => ({ role, content })),
           ],
           stream: false,
+          // Hermes honors an explicit `profile` in the request body (it overrides
+          // the query param). This is the switch that actually routes the request
+          // to the agent's dedicated lean profile.
+          ...(options.profile ? { profile: options.profile } : {}),
         }),
         signal: controller.signal,
       })
