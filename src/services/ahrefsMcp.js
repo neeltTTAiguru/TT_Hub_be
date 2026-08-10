@@ -17,11 +17,15 @@ const FAIL_TTL_MS = Number(process.env.AHREFS_HEALTH_FAIL_TTL_MS || 90 * 1000)
 // A real tool-calling turn through Hermes takes ~30s, so give it margin.
 const PROBE_TIMEOUT_MS = Number(process.env.AHREFS_HEALTH_TIMEOUT_MS || 45000)
 
-const PROBE_INSTRUCTIONS = `You are an automated health probe for the Ahrefs MCP integration. Do exactly this and nothing else:
-Make ONE successful Ahrefs tool call using the connected Ahrefs MCP — for example keywords_explorer_overview (keywords "body worn camera", country us) or site_explorer_metrics (target trustedtechnology.ai, country us). Pick valid parameters; make at most 2 attempts if the first errors on a parameter.
-- If an Ahrefs tool returns real data, reply with exactly: AHREFS_OK
-- If no Ahrefs tool is available/registered, or every attempt errors, reply with exactly: AHREFS_FAIL: <short reason>
-Output only that single line. Do not call non-Ahrefs tools. Do not fabricate data.`
+const PROBE_INSTRUCTIONS = `You are an automated health probe. Make EXACTLY ONE tool call, then stop.
+Call the tool keywords_explorer_overview with EXACTLY these arguments, unchanged:
+  country = "us"
+  keywords = "body worn camera"
+  select = "keyword,volume_monthly,cpc"
+Do NOT add, remove, or modify any argument. Do NOT call any other tool. Do NOT retry.
+Then reply with ONE line and nothing else:
+- If the tool call returned data rows, reply exactly: AHREFS_OK
+- If keywords_explorer_overview is not available, or the call errored, reply exactly: AHREFS_FAIL: <short reason>`
 
 let cached = null // { status: 'connected' | 'not_configured', ts: number, reason?: string }
 let inflight = null
@@ -33,9 +37,9 @@ async function probeThroughHermes() {
     { instructions: PROBE_INSTRUCTIONS, memoryContext: '', timeoutMs: PROBE_TIMEOUT_MS, rateLimitRetries: 1 },
   )
   const text = String(response?.message?.content || '')
-  if (/AHREFS_OK/.test(text) && !/AHREFS_FAIL/.test(text)) {
-    return { status: 'connected' }
-  }
+  // AHREFS_OK wins: a real data call succeeded even if the model narrated an earlier
+  // retry/param error. Only red when there is no success signal at all.
+  if (/AHREFS_OK/.test(text)) return { status: 'connected' }
   const reason = (text.match(/AHREFS_FAIL:\s*(.*)/)?.[1] || text || 'probe returned no success signal').slice(0, 300)
   return { status: 'not_configured', reason }
 }
