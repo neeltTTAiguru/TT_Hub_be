@@ -20,7 +20,13 @@ import { verifyWordPressAuthentication } from '../services/wordpress.js'
 
 const router = Router()
 
-router.get('/integrations', (_req, res) => res.json(contentIntegrationStatus()))
+router.get('/integrations', async (_req, res, next) => {
+  try {
+    return res.json(await contentIntegrationStatus())
+  } catch (error) {
+    return next(error)
+  }
+})
 
 router.get('/integrations/ga4/status', async (_req, res, next) => {
   try {

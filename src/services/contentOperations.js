@@ -16,6 +16,7 @@ import {
 } from './wordpress.js'
 import { markdownToWordPressHtml, stripProductionNotes } from './markdown.js'
 import { generateAndUploadArticleImages, insertGeneratedImages } from './articleImages.js'
+import { getAhrefsMcpStatus } from './ahrefsMcp.js'
 
 const DEFAULT_DOMAIN = 'trustedtechnology.ai'
 const MAX_TEXT = 12000
@@ -589,9 +590,9 @@ export async function trashWordPressDraftForRun(run) {
   return { run, trashed }
 }
 
-export function contentIntegrationStatus() {
+export async function contentIntegrationStatus() {
   return {
-    ahrefs: { label: 'Ahrefs MCP', status: process.env.AHREFS_MCP_ENABLED === 'true' ? 'connected' : 'not_configured' },
+    ahrefs: { label: 'Ahrefs MCP', status: await getAhrefsMcpStatus() },
     searchConsole: { label: 'Google Search Console', status: 'not_configured' },
     ga4: { label: 'GA4', status: isGa4Configured() ? 'connected' : 'not_configured' },
     googleAds: { label: 'Google Ads', status: 'not_configured' },
