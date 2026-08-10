@@ -1,74 +1,71 @@
-// Ahrefs is not configured in beCRM itself — it runs as an MCP server inside the
-// Hermes container (config.yaml -> mcp.ahrefs, enabled + Bearer ${MCP_AHREFS_API_KEY}).
-// The Content Generator badge must reflect that container reality, but the Hermes
-// gateway exposes no tool/MCP introspection endpoint (only /v1/models and
-// /v1/chat/completions). So instead of reading a disconnected local flag, we do a
-// live MCP `initialize` handshake against the exact same Ahrefs endpoint + key
-// Hermes uses. If that answers, Ahrefs is genuinely reachable and the badge is honest.
+// Ahrefs runs as an MCP server INSIDE the Hermes container. The only honest way to
+// know it actually works is to run a real Ahrefs tool call THROUGH Hermes and see if
+// data comes back — that exercises the whole path (Hermes -> its tool filter -> Ahrefs).
+//
+// Why not simpler checks:
+//   - a static env flag (AHREFS_MCP_ENABLED) lies the moment Ahrefs breaks.
+//   - a direct MCP `initialize` handshake only proves the endpoint is reachable; it
+//     would NOT catch a broken Hermes tool filter, an expired key at Hermes, quota
+//     exhaustion, or Hermes itself being down.
+// This probe catches all of those: if the call can't return Ahrefs data, the badge
+// goes red on its own within one cache window.
 
-const DEFAULT_AHREFS_MCP_URL = 'https://api.ahrefs.com/mcp/mcp'
-const REQUEST_TIMEOUT_MS = Number(process.env.AHREFS_MCP_TIMEOUT_MS || 6000)
-const OK_TTL_MS = Number(process.env.AHREFS_MCP_STATUS_TTL_MS || 5 * 60 * 1000)
-const FAIL_TTL_MS = Number(process.env.AHREFS_MCP_FAIL_TTL_MS || 60 * 1000)
+import { chatWithHermes } from './hermesChat.js'
 
-let cached = null // { status: 'connected' | 'not_configured', expiresAt: number }
+const OK_TTL_MS = Number(process.env.AHREFS_HEALTH_OK_TTL_MS || 5 * 60 * 1000)
+const FAIL_TTL_MS = Number(process.env.AHREFS_HEALTH_FAIL_TTL_MS || 90 * 1000)
+// A real tool-calling turn through Hermes takes ~30s, so give it margin.
+const PROBE_TIMEOUT_MS = Number(process.env.AHREFS_HEALTH_TIMEOUT_MS || 45000)
 
-function ahrefsMcpConfiguration() {
-  const url = String(process.env.AHREFS_MCP_URL || DEFAULT_AHREFS_MCP_URL).trim()
-  const apiKey = String(process.env.MCP_AHREFS_API_KEY || '').trim()
-  return { url, apiKey }
-}
+const PROBE_INSTRUCTIONS = `You are an automated health probe for the Ahrefs MCP integration. Do exactly this and nothing else:
+Make ONE successful Ahrefs tool call using the connected Ahrefs MCP — for example keywords_explorer_overview (keywords "body worn camera", country us) or site_explorer_metrics (target trustedtechnology.ai, country us). Pick valid parameters; make at most 2 attempts if the first errors on a parameter.
+- If an Ahrefs tool returns real data, reply with exactly: AHREFS_OK
+- If no Ahrefs tool is available/registered, or every attempt errors, reply with exactly: AHREFS_FAIL: <short reason>
+Output only that single line. Do not call non-Ahrefs tools. Do not fabricate data.`
 
-// True only when the env carries the pieces needed to even attempt a call.
-export function isAhrefsMcpConfigured() {
-  const { url, apiKey } = ahrefsMcpConfiguration()
-  return Boolean(url && apiKey)
-}
+let cached = null // { status: 'connected' | 'not_configured', ts: number, reason?: string }
+let inflight = null
 
-async function probeAhrefsMcp() {
-  const { url, apiKey } = ahrefsMcpConfiguration()
-  if (!url || !apiKey) return 'not_configured'
-
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json, text/event-stream',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          protocolVersion: '2024-11-05',
-          capabilities: {},
-          clientInfo: { name: 'becrm-healthcheck', version: '1.0' },
-        },
-      }),
-      signal: controller.signal,
-    })
-    if (!response.ok) return 'not_configured'
-    // The server may answer as JSON or as an SSE frame; both carry the handshake result.
-    const body = await response.text().catch(() => '')
-    return /"serverInfo"|"protocolVersion"/.test(body) ? 'connected' : 'not_configured'
-  } catch {
-    return 'not_configured'
-  } finally {
-    clearTimeout(timeout)
+async function probeThroughHermes() {
+  const response = await chatWithHermes(
+    'content-operations-assistant',
+    [{ role: 'user', content: 'Run the Ahrefs health probe now.' }],
+    { instructions: PROBE_INSTRUCTIONS, memoryContext: '', timeoutMs: PROBE_TIMEOUT_MS, rateLimitRetries: 1 },
+  )
+  const text = String(response?.message?.content || '')
+  if (/AHREFS_OK/.test(text) && !/AHREFS_FAIL/.test(text)) {
+    return { status: 'connected' }
   }
+  const reason = (text.match(/AHREFS_FAIL:\s*(.*)/)?.[1] || text || 'probe returned no success signal').slice(0, 300)
+  return { status: 'not_configured', reason }
 }
 
-// Cached so a page-load hitting GET /content-operations/integrations doesn't
-// handshake with Ahrefs every time. Failures cache for a shorter window so the
-// badge recovers quickly once the integration comes back.
+function refresh() {
+  if (inflight) return inflight
+  inflight = probeThroughHermes()
+    .then((result) => {
+      cached = { ...result, ts: Date.now() }
+      if (result.status !== 'connected') console.warn('[ahrefs-health] probe not healthy:', result.reason)
+      return cached.status
+    })
+    .catch((error) => {
+      // Hermes unreachable / unconfigured / timeout -> we cannot verify, so report red.
+      cached = { status: 'not_configured', ts: Date.now(), reason: error?.message?.slice(0, 300) }
+      console.warn('[ahrefs-health] probe error:', error?.message)
+      return cached.status
+    })
+    .finally(() => { inflight = null })
+  return inflight
+}
+
+// On-demand, non-blocking, fail-closed. A real probe takes ~30s so we never block a
+// page load on it. We serve the last VERIFIED status instantly and re-verify in the
+// background once it goes stale. Until the first probe resolves we report 'not_configured'
+// (fail-closed) — the badge is only ever green when a real Ahrefs call actually succeeded,
+// and it flips itself red within one refresh cycle whenever Ahrefs/Hermes breaks.
 export async function getAhrefsMcpStatus() {
-  const now = Date.now()
-  if (cached && cached.expiresAt > now) return cached.status
-  const status = await probeAhrefsMcp()
-  cached = { status, expiresAt: now + (status === 'connected' ? OK_TTL_MS : FAIL_TTL_MS) }
+  if (!cached) { refresh(); return 'not_configured' }
+  const ttl = cached.status === 'connected' ? OK_TTL_MS : FAIL_TTL_MS
+  if (Date.now() - cached.ts > ttl && !inflight) refresh() // fire-and-forget revalidate
   return cached.status
 }
