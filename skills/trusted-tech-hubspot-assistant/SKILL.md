@@ -42,34 +42,38 @@ Track each sales opportunity as a single deal moving through defined milestones 
 
 ### Stage flow (in order)
 
-1. Qualified Lead
-2. Presentation / Demonstration Completed
-3. Trial Requested
-4. Trial Agreement Sent
-5. Quote Sent
-6. Contract Sent
-7. Closed Won
-8. Closed Lost
+1. Demo Scheduled
+2. Qualified Lead
+3. Presentation / Demonstration Completed
+4. Trial Requested
+5. Trial Agreement Sent
+6. Quote Sent
+7. Contract Sent
+8. Closed Won
+9. Closed Lost
 
 ### Core qualification rule
 
-- A lead becomes a **Qualified Lead only after a demo has been scheduled**. Qualified Lead is never the starting point of the pipeline.
-- **Demo Scheduled is a milestone captured in the Demo Scheduled Date field, not a pipeline stage.** A scheduled demo is what unlocks the Qualified Lead stage; do not treat "Demo Scheduled" as its own stage.
+- **Demo Scheduled is the first stage and the entry point.** A deal enters it once the Demo Scheduled Date field is populated.
+- A deal **cannot become a Qualified Lead until a demo has been scheduled**. Qualified Lead is never the starting point of the pipeline.
+- **Trial and Quote are separate motions.** There is no combined "Trial / Quote Requested" stage.
+- **Closed Won counts only deals that also have Date MSA Signed populated.**
 
 ### Required fields by stage
 
-These are the fields that must be captured for a deal to legitimately sit at each stage. When validating a deal or preparing a stage change, flag any of these that are missing.
+These are the fields that must be captured for a deal to legitimately sit at (or advance out of) each stage. When validating a deal or preparing a stage change, flag any of these that are missing.
 
 | Stage | Required fields |
 | --- | --- |
+| Demo Scheduled | Demo Scheduled Date |
 | Qualified Lead | Demo Scheduled Date, Demo Presenter |
 | Presentation / Demonstration Completed | Demo Completed Date |
-| Trial Requested | Trial Requested Date, Commercial Next Step |
-| Trial Agreement Sent | Trial Agreement Sent Date |
-| Quote Sent | Quote Sent Date |
-| Contract Sent | MSA Sent Date |
-| Closed Won | MSA Signed Date |
-| Closed Lost | Capture a lost reason if one is in use |
+| Trial Requested | Date Trial Requested, Commercial Next Step |
+| Trial Agreement Sent | Date Trial Agreement Sent |
+| Quote Sent | Date Quote Sent |
+| Contract Sent | Date MSA Sent |
+| Closed Won | Date MSA Signed |
+| Closed Lost | None specified (capture a lost reason if one is in use) |
 
 ### Pipeline milestone properties
 
@@ -79,13 +83,14 @@ These are the canonical properties that track an opportunity through the stage f
 | --- | --- | --- |
 | Originating Rep | HubSpot user | Always Kyle; preserves attribution for the opportunity after handoff |
 | Demo Presenter | HubSpot user | Troy or Neil — whoever actually runs the demo |
-| Demo Scheduled Date | Date picker | Milestone that unlocks the Qualified Lead stage |
+| Demo Scheduled Date | Date picker | Defines entry into the Demo Scheduled stage; gate into Qualified Lead |
 | Demo Completed Date | Date picker | Required at Presentation / Demonstration Completed |
-| Trial Requested Date | Date picker | Required at Trial Requested |
-| Trial Agreement Sent Date | Date picker | Required at Trial Agreement Sent |
-| Quote Sent Date | Date picker | Required at Quote Sent |
-| MSA Sent Date | Date picker | Required at Contract Sent |
-| MSA Signed Date | Date picker | Required at Closed Won |
+| Date Trial Requested | Date picker | Required at Trial Requested |
+| Date Trial Agreement Sent | Date picker | Required at Trial Agreement Sent; auto-populated by DocuSign send |
+| Date Trial Agreement Signed | Date picker | When the customer signed the Trial Agreement; auto-populated by DocuSign sign |
+| Date Quote Sent | Date picker | Required at Quote Sent |
+| Date MSA Sent | Date picker | Required at Contract Sent; auto-populated by DocuSign send |
+| Date MSA Signed | Date picker | Required at Closed Won; defines Closed Won; auto-populated by DocuSign sign |
 | Commercial Next Step | Dropdown: Trial, Quote, Both | Required at Trial Requested |
 
 ### Ownership and handoff model

@@ -5,7 +5,9 @@ import { HUBSPOT_DEAL_INSTRUCTIONS, chatWithHubSpotDeals } from '../src/services
 test('instructions keep the executive HubSpot deal-pipeline framing', () => {
   assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /HubSpot deal pipeline assistant/)
   // The authoritative pipeline rule must survive any edit to the instructions.
-  assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /Qualified Lead only after a demo has been scheduled/)
+  assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /cannot become a Qualified Lead until a demo has been scheduled/)
+  // Demo Scheduled is now the first pipeline stage, not a milestone.
+  assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /Demo Scheduled is the first stage and the entry point/)
 })
 
 test('tool-use guardrails cover every logged failure mode that caused retry loops', () => {
