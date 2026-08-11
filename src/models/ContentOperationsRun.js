@@ -19,6 +19,7 @@ const contentOperationsRunSchema = new mongoose.Schema(
       index: true,
     },
     researchOnly: { type: Boolean, default: false },
+    keywordListId: { type: String, default: '', trim: true },
     opportunities: { type: [mongoose.Schema.Types.Mixed], default: [] },
     selectedOpportunity: { type: mongoose.Schema.Types.Mixed, default: null },
     brief: { type: mongoose.Schema.Types.Mixed, default: null },
