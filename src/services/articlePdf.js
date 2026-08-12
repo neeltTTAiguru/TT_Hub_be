@@ -19,6 +19,16 @@ function plainMarkdown(value) {
     .trim()
 }
 
+// pdfkit only decodes JPEG and PNG. WordPress often serves generated images as AVIF or
+// WebP, whose bytes make pdfkit throw "Unknown image format" and 500 the whole download.
+// Sniff the magic bytes so we only ever hand pdfkit a format it can render.
+function isPdfKitImage(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 8) return false
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return true // JPEG
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return true // PNG
+  return false
+}
+
 export function createArticlePdfBuffer(title, markdown, options = {}) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
@@ -51,18 +61,26 @@ export function createArticlePdfBuffer(title, markdown, options = {}) {
     doc.fillColor(muted).font('Helvetica').fontSize(12)
       .text(plainMarkdown(options.description || ''), 58, doc.y + 17, { width: contentWidth, lineGap: 4 })
 
-    if (options.heroImage) {
+    let heroRendered = false
+    if (isPdfKitImage(options.heroImage)) {
       const imageY = Math.max(doc.y + 28, 230)
       doc.save()
-      doc.roundedRect(58, imageY, contentWidth, 260, 10).clip()
-      doc.image(options.heroImage, 58, imageY, {
-        cover: [contentWidth, 260],
-        align: 'center',
-        valign: 'center',
-      })
-      doc.restore()
-      doc.y = imageY + 280
-    } else {
+      try {
+        doc.roundedRect(58, imageY, contentWidth, 260, 10).clip()
+        doc.image(options.heroImage, 58, imageY, {
+          cover: [contentWidth, 260],
+          align: 'center',
+          valign: 'center',
+        })
+        heroRendered = true
+      } catch {
+        heroRendered = false // corrupt/unsupported despite the signature — skip it
+      } finally {
+        doc.restore()
+      }
+      if (heroRendered) doc.y = imageY + 280
+    }
+    if (!heroRendered) {
       doc.y += 24
     }
 
