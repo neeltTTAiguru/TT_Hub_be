@@ -11,10 +11,15 @@ const SPEC_LABELS = {
   batteryLife: 'Battery life',
   resolution: 'Video resolution',
   storage: 'Onboard storage',
-  weight: 'Weight / size',
+  fieldOfView: 'Field of view',
+  preRecord: 'Pre-record buffer',
   durability: 'Durability / IP rating',
+  weight: 'Weight / size',
+  lowLight: 'Low-light / night',
   connectivity: 'Connectivity',
   activation: 'Activation',
+  evidenceManagement: 'Evidence / DEMS',
+  price: 'Price / licensing',
 }
 
 let running = false
@@ -56,7 +61,7 @@ export async function refreshAllCompetitorSections({ onlySlugs = null } = {}) {
               model: model.name,
               specs: toSpecs(model),
               notes: model.notes,
-              source: research.pagesRead[0] || comp.website,
+              source: model.source || research.pagesRead[0] || comp.website,
             })
             entry.saved += 1
           } catch (saveError) {
