@@ -48,6 +48,18 @@ const agentDefinitions = [
     ),
   },
   {
+    id: 'trusted-tech-brevo-assistant',
+    name: 'Brevo',
+    status: 'active',
+    productArea: 'Operations Assistant',
+    skillPath: path.join(
+      backendRoot,
+      'skills',
+      'trusted-tech-brevo-assistant',
+      'SKILL.md',
+    ),
+  },
+  {
     id: 'trusted-tech-ahrefs-assistant',
     name: 'Hermes Ahrefs Assistant',
     status: 'active',
