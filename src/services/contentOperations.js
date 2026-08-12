@@ -328,6 +328,8 @@ async function runDraftAutomation(run, body, signal) {
     if (!selected) throw new Error('Ahrefs research did not produce an opportunity to draft.')
     await approveOpportunity(run, selected.id, { signal })
     if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
+    await prepareSurferForRun(run, { signal })
+    if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
     await approveBriefAndDraft(run, { ...run.brief, articleLength: 'standard' }, { signal })
     if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
     await optimizeArticleWithSurfer(run, { signal })
@@ -452,11 +454,18 @@ export async function approveBriefAndDraft(run, briefOverride, options = {}) {
 
   try {
     const length = cleanText(briefOverride?.articleLength || 'standard', 30)
+    const g = run.surferGuidelines
+    const surferGuidance = g ? `
+SurferSEO SERP guidance for this keyword — write the FIRST draft to these targets so it already scores well, but apply them only where they stay truthful and on-brand; never pad, fabricate facts/stats/product claims, or keyword-stuff to hit them:
+- Aim for about ${g.targetWordCount || '1900'} words of genuinely useful content.${g.headings ? ` Use roughly ${g.headings} section headings.` : ''}
+- Naturally weave in these priority terms where they fit the facts: ${(g.terms || []).join(', ')}.${(g.questions && g.questions.length) ? `\n- Directly answer these reader questions where relevant: ${g.questions.join('; ')}.` : ''}
+` : ''
     const content = await askHermes(`
 Write the complete Markdown article from this approved SEO brief:
 ${JSON.stringify(run.brief)}
 
 Length: ${length}
+${surferGuidance}
 Use Trusted Technology's clear, authoritative, useful, non-promotional voice.
 Write for the canonical Trusted Technology Field Guide format established by WordPress article 1113: an answer-first deck, article overview, clear table of contents, narrow readable body column, practical H2/H3 progression, concise paragraphs, restrained lists, summary, FAQ, and a closing brand statement. Use the format only—never copy article 1113's subject matter, claims, comparisons, or wording. The WordPress renderer owns all CSS; do not add inline styles or invent a separate visual theme.
 Ground product facts in the Trusted Tech knowledge records supplied in your system context.
@@ -571,6 +580,58 @@ Return EXACTLY this and nothing else:
 If the editor never reached "completed" or Surfer failed, still return the block with null scores, a notes line explaining why, and the ORIGINAL article unchanged between the ARTICLE markers.`
 }
 
+// Run BEFORE drafting: create the Surfer Content Editor for the keyword and pull its
+// SERP-derived targets (word count, priority terms, questions) so the draft is written to
+// Surfer's spec from the first pass. Stores the editor so optimizeArticleWithSurfer can
+// reuse it (skipping a second create + poll). NON-FATAL — on any failure the draft just
+// proceeds without Surfer guidance.
+export async function prepareSurferForRun(run, options = {}) {
+  const signal = options.signal
+  const workspaceId = cleanText(process.env.CONTENT_OPS_SURFER_WORKSPACE_ID || DEFAULT_SURFER_WORKSPACE_ID, 40).replace(/[^0-9]/g, '')
+  const keyword = cleanText(run.selectedOpportunity?.primaryKeyword || run.brief?.primaryKeyword, 300)
+  if (!workspaceId || !keyword) return run
+
+  const pollMs = Number(process.env.CONTENT_OPS_SURFER_POLL_MS || 15000)
+  const maxPolls = Number(process.env.CONTENT_OPS_SURFER_MAX_POLLS || 18)
+  try {
+    const createRaw = await askSurferHermes(buildSurferCreatePrompt(keyword, workspaceId), signal, 120000)
+    if (/CREATE_FAIL/i.test(createRaw)) return run
+    const editorId = (String(createRaw).match(/"id"\s*:\s*(\d+)/) || [])[1] || null
+    const editorUrl = (String(createRaw).match(/https:\/\/app\.surferseo\.com\/drafts\/s\/[A-Za-z0-9_-]+/) || [])[0] || ''
+    if (!editorId) return run
+    run.surferEditorId = Number(editorId)
+    run.surferEditorUrl = editorUrl
+    await run.save()
+
+    let completed = false
+    for (let i = 0; i < maxPolls; i += 1) {
+      await sleep(pollMs, signal)
+      const stateRaw = await askSurferHermes(`Call mcp__surfer__content_editor__get for id ${editorId} in workspace ${workspaceId}. Reply with ONLY its "state" value as one lowercase word.`, signal, 60000)
+      const state = (String(stateRaw).match(/completed|executing|scheduled|failed|error/i) || [''])[0].toLowerCase()
+      if (state === 'completed') { completed = true; break }
+      if (state === 'failed' || state === 'error') break
+    }
+    if (!completed) return run
+
+    const gRaw = await askSurferHermes(`Call mcp__surfer__seo_guidelines__get for editor ${editorId} (workspace ${workspaceId}). Then reply with ONLY this JSON, using the guideline's own numbers (do not invent): {"targetWordCount": <number or null>, "headings": <recommended number of headings or null>, "terms": ["up to 25 most important 'included' terms, most important first"], "questions": ["key reader questions to answer, if any"]}`, signal, 120000)
+    let guidelines = null
+    try { guidelines = JSON.parse((gRaw.match(/\{[\s\S]*\}/) || ['{}'])[0]) } catch { guidelines = null }
+    if (guidelines) {
+      run.surferGuidelines = {
+        targetWordCount: scoreNum(guidelines.targetWordCount),
+        headings: scoreNum(guidelines.headings),
+        terms: Array.isArray(guidelines.terms) ? guidelines.terms.map((t) => cleanText(t, 100)).filter(Boolean).slice(0, 30) : [],
+        questions: Array.isArray(guidelines.questions) ? guidelines.questions.map((q) => cleanText(q, 300)).filter(Boolean).slice(0, 10) : [],
+      }
+      await run.save()
+    }
+    return run
+  } catch (error) {
+    if (error.code === 'RUN_STOPPED') throw error
+    return run
+  }
+}
+
 // Surfer optimization pass: score the draft in Surfer and have Hermes revise it toward
 // the guidelines. Deliberately NON-FATAL — if Surfer is unavailable/slow or anything
 // throws, we keep the unoptimized draft and let the pipeline continue to images + draft.
@@ -609,23 +670,33 @@ export async function optimizeArticleWithSurfer(run, options = {}) {
   }
 
   try {
-    // Phase 1 — create the Content Editor (Surfer kicks off an async SERP build).
-    const createRaw = await askSurferHermes(buildSurferCreatePrompt(keyword, workspaceId), signal, 120000)
-    if (/CREATE_FAIL/i.test(createRaw)) return skip(`Surfer editor could not be created (${cleanText(createRaw, 200)}).`)
-    editorId = (String(createRaw).match(/"id"\s*:\s*(\d+)/) || [])[1] || null
-    editorUrl = (String(createRaw).match(/https:\/\/app\.surferseo\.com\/drafts\/s\/[A-Za-z0-9_-]+/) || [])[0] || ''
-    if (!editorId) return skip('Surfer create did not return an editor id.')
-
-    // Phase 2 — poll from the backend (which CAN sleep) until the editor is "completed".
-    let completed = false
-    for (let i = 0; i < maxPolls; i += 1) {
-      await sleep(pollMs, signal)
-      const stateRaw = await askSurferHermes(`Call mcp__surfer__content_editor__get for id ${editorId} in workspace ${workspaceId}. Reply with ONLY its current "state" value as one lowercase word (scheduled, executing, completed, or failed).`, signal, 60000)
-      const state = (String(stateRaw).match(/completed|executing|scheduled|failed|error/i) || [''])[0].toLowerCase()
-      if (state === 'completed') { completed = true; break }
-      if (state === 'failed' || state === 'error') return skip(`Surfer editor ${editorId} reported state "${state}".`)
+    // Reuse the editor prepared before drafting (already SERP-analyzed) when it's ready.
+    if (run.surferEditorId) {
+      const check = await askSurferHermes(`Call mcp__surfer__content_editor__get for id ${run.surferEditorId} in workspace ${workspaceId}. Reply with ONLY its "state" value as one lowercase word.`, signal, 60000)
+      if (/completed/i.test(check)) {
+        editorId = String(run.surferEditorId)
+        editorUrl = run.surferEditorUrl || ''
+      }
     }
-    if (!completed) return skip(`Surfer editor ${editorId} was still building after ~${Math.round((pollMs * maxPolls) / 1000)}s.`)
+
+    // Phase 1 + 2 — create a fresh editor and poll to "completed" only if we don't have one.
+    if (!editorId) {
+      const createRaw = await askSurferHermes(buildSurferCreatePrompt(keyword, workspaceId), signal, 120000)
+      if (/CREATE_FAIL/i.test(createRaw)) return skip(`Surfer editor could not be created (${cleanText(createRaw, 200)}).`)
+      editorId = (String(createRaw).match(/"id"\s*:\s*(\d+)/) || [])[1] || null
+      editorUrl = (String(createRaw).match(/https:\/\/app\.surferseo\.com\/drafts\/s\/[A-Za-z0-9_-]+/) || [])[0] || ''
+      if (!editorId) return skip('Surfer create did not return an editor id.')
+
+      let completed = false
+      for (let i = 0; i < maxPolls; i += 1) {
+        await sleep(pollMs, signal)
+        const stateRaw = await askSurferHermes(`Call mcp__surfer__content_editor__get for id ${editorId} in workspace ${workspaceId}. Reply with ONLY its current "state" value as one lowercase word (scheduled, executing, completed, or failed).`, signal, 60000)
+        const state = (String(stateRaw).match(/completed|executing|scheduled|failed|error/i) || [''])[0].toLowerCase()
+        if (state === 'completed') { completed = true; break }
+        if (state === 'failed' || state === 'error') return skip(`Surfer editor ${editorId} reported state "${state}".`)
+      }
+      if (!completed) return skip(`Surfer editor ${editorId} was still building after ~${Math.round((pollMs * maxPolls) / 1000)}s.`)
+    }
 
     // Phase 3 — editor is ready: push the draft in, score it, and revise toward the target.
     const targetScore = Number(process.env.CONTENT_OPS_SURFER_TARGET_SCORE || 90)

@@ -24,6 +24,9 @@ const contentOperationsRunSchema = new mongoose.Schema(
     selectedOpportunity: { type: mongoose.Schema.Types.Mixed, default: null },
     brief: { type: mongoose.Schema.Types.Mixed, default: null },
     article: { type: String, default: '' },
+    surferEditorId: { type: Number, default: null },
+    surferEditorUrl: { type: String, default: '' },
+    surferGuidelines: { type: mongoose.Schema.Types.Mixed, default: null },
     surferOptimization: { type: mongoose.Schema.Types.Mixed, default: null },
     generatedImages: { type: [mongoose.Schema.Types.Mixed], default: [] },
     testPublication: {
