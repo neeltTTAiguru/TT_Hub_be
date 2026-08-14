@@ -228,10 +228,26 @@ function buildInstructions(agent, liveContext) {
   ].join('\n')
 }
 
+// A message's content may be a multimodal array (text + image parts) when the
+// user attached images. This Responses-API path is the OpenAI fallback and
+// doesn't take chat-completions image parts, so flatten to text (keeping any
+// extracted document text) and note that images weren't analyzed here.
+function flattenContent(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const texts = content.filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text)
+    const imageCount = content.filter((part) => part?.type === 'image_url').length
+    let out = texts.join('\n')
+    if (imageCount) out += `${out ? '\n' : ''}[${imageCount} image(s) attached — not analyzed on this path]`
+    return out
+  }
+  return String(content ?? '')
+}
+
 function toOpenAIInput(messages) {
   return messages.map((message) => ({
     role: message.role,
-    content: message.content,
+    content: flattenContent(message.content),
   }))
 }
 

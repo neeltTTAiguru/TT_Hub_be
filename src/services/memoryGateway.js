@@ -650,7 +650,7 @@ export async function listBrainSectionMemories({
   }
 }
 
-export async function retrieveMemoryContext({ agentId, messages, user, search = searchPages, read = readPage }) {
+export async function retrieveMemoryContext({ agentId, messages, user, competitor = '', search = searchPages, read = readPage }) {
   if (!enabled()) return { status: 'disabled', context: '', memories: [] }
   const query = latestUserQuery(messages)
   if (!query) return { status: 'empty-query', context: '', memories: [] }
@@ -658,10 +658,23 @@ export async function retrieveMemoryContext({ agentId, messages, user, search = 
   const scope = getMemoryScope(agentId, user)
   const limit = positiveInteger(process.env.GBRAIN_SEARCH_LIMIT, DEFAULT_LIMIT)
 
+  // The Competitor Analyst reuses one agentId across every competitor section,
+  // so a bare semantic search returns any competitor's BWC spec pages. When a
+  // section is named, keep only that competitor's pages (same rule as
+  // listSectionMemories) so no other competitor's memory leaks into the chat.
+  const comp = agentId === 'competitor-analyst' && competitor ? getCompetitorBySlug(competitor) : null
+  const inSection = (memory) =>
+    !comp ||
+    String(memory.frontmatter?.competitor || '') === comp.slug ||
+    String(memory.slug || '').startsWith(`competitor-analyst/${comp.slug}/`)
+
   try {
     const rows = await search(agentId, query, limit)
     const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
-    const memories = pages.filter((memory) => memoryAllowed(memory, scope)).slice(0, limit)
+    const memories = pages
+      .filter((memory) => memoryAllowed(memory, scope))
+      .filter(inSection)
+      .slice(0, limit)
     return {
       status: 'ok',
       context: buildMemoryInstructions(memories),

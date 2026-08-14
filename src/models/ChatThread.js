@@ -31,6 +31,17 @@ const chatThreadSchema = new mongoose.Schema(
       default: 'market-researcher',
       index: true,
     },
+    // Optional sub-scope within an agent. The Competitor Analyst reuses one
+    // agentId ('competitor-analyst') for every competitor section, so without a
+    // per-competitor key every competitor's saved chats would share one bucket
+    // and surface under the default section (Axon). Blank for agents that don't
+    // subdivide their threads.
+    competitor: {
+      type: String,
+      trim: true,
+      default: '',
+      index: true,
+    },
     title: {
       type: String,
       required: true,

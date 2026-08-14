@@ -45,7 +45,8 @@ app.disable('x-powered-by')
 app.use(helmet())
 app.use(cors(corsOptions))
 app.use(requestRateLimit)
-app.use(express.json({ limit: '1mb' }))
+// Larger limit so chat requests can carry base64 attachments (images/PDFs).
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '25mb' }))
 
 app.get('/', (_req, res) => {
   res.json({

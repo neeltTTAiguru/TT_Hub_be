@@ -7,6 +7,7 @@ import { getAuthenticatedUser } from '../middleware/auth.js'
 import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listBrainSectionMemories } from '../services/memoryGateway.js'
 import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
+import { buildUserContentWithAttachments } from '../services/chatAttachments.js'
 import { chatWithHubSpotDeals, HUBSPOT_DEAL_INSTRUCTIONS } from '../services/hubspotDeals.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
@@ -141,10 +142,12 @@ router.post('/:id/chat', async (req, res, next) => {
     }
 
     const user = getAuthenticatedUser(req)
+    const competitor = typeof req.body?.competitor === 'string' ? req.body.competitor.trim() : ''
     const memory = await retrieveMemoryContext({
       agentId: req.params.id,
       messages: sanitizedMessages,
       user,
+      competitor,
     })
     const memoryOptions = {
       memoryContext: memory.context,
@@ -154,14 +157,28 @@ router.post('/:id/chat', async (req, res, next) => {
       },
     }
 
+    // Fold any attachments (PDF/Word/text -> extracted text; images -> vision
+    // parts) into the latest user message. Memory retrieval above uses the plain
+    // text messages; the model gets the enriched content.
+    const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : []
+    let chatMessages = sanitizedMessages
+    if (attachments.length) {
+      const lastIndex = sanitizedMessages.length - 1
+      const last = sanitizedMessages[lastIndex]
+      if (last && last.role === 'user') {
+        const { content } = await buildUserContentWithAttachments(last.content, attachments)
+        chatMessages = [...sanitizedMessages.slice(0, lastIndex), { ...last, content }]
+      }
+    }
+
     const result = req.params.id === 'trusted-tech-hubspot-assistant'
-      ? await chatWithHubSpotDeals(sanitizedMessages, memoryOptions)
+      ? await chatWithHubSpotDeals(chatMessages, memoryOptions)
       : req.params.id === 'trusted-tech-youtrack-assistant'
-      ? await chatWithYouTrack(sanitizedMessages, memoryOptions)
+      ? await chatWithYouTrack(chatMessages, memoryOptions)
       : req.params.id === 'wordpress-draft-editor'
-      ? await handleWordPressChat(sanitizedMessages, memoryOptions)
+      ? await handleWordPressChat(chatMessages, memoryOptions)
       : req.params.id === 'competitor-analyst'
-      ? await chatWithHermesOrOpenAI(req.params.id, sanitizedMessages, memoryOptions)
+      ? await chatWithHermesOrOpenAI(req.params.id, chatMessages, memoryOptions)
       : req.params.id === 'trusted-tech-assistant' ||
       req.params.id === 'trusted-tech-hubspot-assistant' ||
       req.params.id === 'trusted-tech-youtrack-assistant' ||
@@ -170,12 +187,12 @@ router.post('/:id/chat', async (req, res, next) => {
       req.params.id === 'wordpress-draft-test-agent'
         ? await chatWithHermes(
           req.params.id,
-          sanitizedMessages,
+          chatMessages,
           req.params.id === 'trusted-tech-hubspot-assistant'
             ? { ...memoryOptions, timeoutMs: 30000, rateLimitRetries: 1 }
             : memoryOptions,
         )
-        : await chatWithAgent(req.params.id, sanitizedMessages, memoryOptions)
+        : await chatWithAgent(req.params.id, chatMessages, memoryOptions)
     result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
     return res.json(result)
   } catch (error) {
@@ -216,7 +233,20 @@ router.post('/:id/chat/stream', async (req, res, next) => {
     }
 
     const user = getAuthenticatedUser(req)
-    const memory = await retrieveMemoryContext({ agentId, messages: sanitizedMessages, user })
+    const competitor = typeof req.body?.competitor === 'string' ? req.body.competitor.trim() : ''
+    const memory = await retrieveMemoryContext({ agentId, messages: sanitizedMessages, user, competitor })
+
+    // Fold attachments into the latest user message (docs → text, images → vision).
+    const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : []
+    let chatMessages = sanitizedMessages
+    if (attachments.length) {
+      const lastIndex = sanitizedMessages.length - 1
+      const last = sanitizedMessages[lastIndex]
+      if (last && last.role === 'user') {
+        const { content } = await buildUserContentWithAttachments(last.content, attachments)
+        chatMessages = [...sanitizedMessages.slice(0, lastIndex), { ...last, content }]
+      }
+    }
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
@@ -235,7 +265,7 @@ router.post('/:id/chat/stream', async (req, res, next) => {
     try {
       const { content } = await streamHermesChat(
         agentId,
-        sanitizedMessages,
+        chatMessages,
         {
           memoryContext: memory.context,
           timeoutMs: Number(process.env.HERMES_STREAM_TIMEOUT_MS || 240000),

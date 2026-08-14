@@ -28,6 +28,7 @@ function buildThreadPayload(body, userId) {
   return {
     userId,
     agentId: typeof body?.agentId === 'string' && body.agentId.trim() ? body.agentId.trim() : 'market-researcher',
+    competitor: typeof body?.competitor === 'string' ? body.competitor.trim() : '',
     title: typeof body?.title === 'string' && body.title.trim() ? body.title.trim() : fallbackTitle,
     messages,
     thread:
@@ -43,8 +44,19 @@ export async function listChatThreads(req, res, next) {
   try {
     const userId = getAuthenticatedUser(req).id
     const agentId = typeof req.query.agentId === 'string' ? req.query.agentId.trim() : ''
-    const filter = agentId ? { userId, agentId } : { userId }
-    const threads = await ChatThread.find(filter).sort({ updatedAt: -1 })
+    const competitor = typeof req.query.competitor === 'string' ? req.query.competitor.trim() : ''
+    const filter = { userId }
+    if (agentId) filter.agentId = agentId
+    // Only isolate by competitor when the caller asks for a specific section, so
+    // agents that don't subdivide their threads keep listing everything.
+    if (competitor) filter.competitor = competitor
+    // List is metadata-only (no message bodies) so the Saved-chats dropdown stays
+    // cheap no matter how many chats pile up. The full thread is fetched by id
+    // (getChatThread) when the user actually opens one.
+    const threads = await ChatThread.find(filter)
+      .select('title agentId competitor updatedAt createdAt')
+      .sort({ updatedAt: -1 })
+      .lean()
     res.json(threads)
   } catch (error) {
     next(error)
