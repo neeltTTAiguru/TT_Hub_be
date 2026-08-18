@@ -9,6 +9,11 @@ import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
 import { buildUserContentWithAttachments } from '../services/chatAttachments.js'
 import { chatWithHubSpotDeals, HUBSPOT_DEAL_INSTRUCTIONS } from '../services/hubspotDeals.js'
+import {
+  assertHubSpotToolsAvailable,
+  assertResponseIsLive,
+  createSentinelGate,
+} from '../services/hubspotHealth.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
 
@@ -218,6 +223,10 @@ router.post('/:id/chat/stream', async (req, res, next) => {
     if (!STREAMING_AGENTS.has(agentId)) {
       return res.status(501).json({ message: 'Streaming is not available for this agent.' })
     }
+    // Fail closed before opening the stream, while a clean JSON error is still
+    // possible. See services/hubspotHealth.js for why a confirmed tool drop must
+    // never fall through to a stale-but-fluent answer.
+    if (agentId === 'trusted-tech-hubspot-assistant') assertHubSpotToolsAvailable()
     const messages = Array.isArray(req.body?.messages) ? req.body.messages : []
     const sanitizedMessages = messages
       .filter(
@@ -262,6 +271,12 @@ router.post('/:id/chat/stream', async (req, res, next) => {
     const clientAbort = new AbortController()
     req.on('close', () => clientAbort.abort())
 
+    const writeDelta = (delta) => res.write(`data: ${JSON.stringify({ delta })}\n\n`)
+    // Only the HubSpot agent can emit the unavailable sentinel, so only it needs
+    // its opening tokens held back until they are proven to be a real answer.
+    const gate = agentId === 'trusted-tech-hubspot-assistant' ? createSentinelGate(writeDelta) : null
+    const emit = gate ? gate.emit : writeDelta
+
     try {
       const { content } = await streamHermesChat(
         agentId,
@@ -272,10 +287,10 @@ router.post('/:id/chat/stream', async (req, res, next) => {
           instructions: agentId === 'trusted-tech-hubspot-assistant' ? HUBSPOT_DEAL_INSTRUCTIONS : undefined,
           signal: clientAbort.signal,
         },
-        (delta) => {
-          res.write(`data: ${JSON.stringify({ delta })}\n\n`)
-        },
+        emit,
       )
+      if (gate) assertResponseIsLive(content)
+      gate?.flush()
       res.write(`data: ${JSON.stringify({
         done: true,
         message: { role: 'assistant', content },

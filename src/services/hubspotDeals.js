@@ -1,4 +1,9 @@
 import { chatWithHermes } from './hermesChat.js'
+import {
+  assertHubSpotToolsAvailable,
+  assertResponseIsLive,
+  HUBSPOT_UNAVAILABLE_SENTINEL,
+} from './hubspotHealth.js'
 
 // Bound below the gateway timeout so a slow HubSpot query fails cleanly (with a
 // "took too long, chat saved" message) instead of hanging ~2 min and returning
@@ -12,6 +17,13 @@ const HUBSPOT_RETRIES = Number(process.env.HUBSPOT_HERMES_RETRIES ?? 1)
 // (bad SQL, too many keywords, missing args) that re-send the whole conversation
 // context on every retry and burn tokens.
 export const HUBSPOT_DEAL_INSTRUCTIONS = `You are Trusted Tech's executive-friendly HubSpot deal pipeline assistant. Use the connected HubSpot MCP tools for every factual CRM question.
+
+Live-data guarantee (highest priority — overrides every rule below):
+- Every factual claim about a deal (stage, dates, amounts, owner, counts, whether an MSA is signed) must come from a HubSpot tool result you obtained in THIS turn.
+- Never restate a deal fact from an earlier message in this conversation. Deals move; anything said earlier may already be wrong. If you are asked to re-check or confirm something, call the tools again — do not repeat your previous answer.
+- Never say you cannot re-check, cannot access HubSpot "from this session", or that a status was "last verified". If you have the tools, use them; if you do not, use the sentinel below.
+- If you have no callable tool whose name starts with mcp__hubspot__, or every HubSpot tool call fails, your entire reply must be exactly: ${HUBSPOT_UNAVAILABLE_SENTINEL}
+  Do not add commentary, do not apologize, and do not answer the question from memory. Emitting a stale fact is a worse failure than returning nothing.
 
 Response rules:
 - Lead with the direct plain-English answer in the first sentence.
@@ -52,10 +64,19 @@ Tool-use efficiency rules (follow exactly; each failed call re-sends the whole c
 - If a tool call returns an error, read the error, adjust the arguments to satisfy the stated constraint, and issue a corrected call. Never repeat the identical failing call.`
 
 export async function chatWithHubSpotDeals(messages, options = {}) {
-  return chatWithHermes('trusted-tech-hubspot-assistant', messages, {
+  // Fail closed before spending a call: if the background monitor has confirmed
+  // the gateway lost its HubSpot tools, the honest answer is an error, not a
+  // fluent reply assembled from whatever is left in the conversation.
+  assertHubSpotToolsAvailable()
+
+  const result = await chatWithHermes('trusted-tech-hubspot-assistant', messages, {
     ...options,
     timeoutMs: HUBSPOT_TIMEOUT_MS,
     rateLimitRetries: HUBSPOT_RETRIES,
     instructions: HUBSPOT_DEAL_INSTRUCTIONS,
   })
+
+  // Catches a drop that happened since the last probe.
+  assertResponseIsLive(result?.message?.content)
+  return result
 }

@@ -15,7 +15,8 @@
     "memory:import-rfp-foundation": "node scripts/importRfpFoundationToGbrain.js",
     "article:attach-image": "node scripts/attachArticleImage.js",
     "surf:twitter": "node scripts/runTwitterSurferCli.js",
-    "wordpress:refresh-blog": "node scripts/refreshWordPressBlogDraft.js"
+    "wordpress:refresh-blog": "node scripts/refreshWordPressBlogDraft.js",
+    "hubspot:check": "node scripts/checkHubSpotTools.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
