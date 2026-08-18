@@ -68,7 +68,7 @@ These are the fields that must be captured for a deal to legitimately sit at (or
 | Demo Scheduled | Demo Scheduled Date |
 | Qualified Lead | Demo Scheduled Date, Demo Presenter |
 | Presentation / Demonstration Completed | Demo Completed Date |
-| Trial Requested | Date Trial Requested, Commercial Next Step |
+| Trial Requested | Date Trial Requested?, Next Commercial Step? |
 | Trial Agreement Sent | Date Trial Agreement Sent |
 | Quote Sent | Date Quote Sent |
 | Contract Sent | Date MSA Sent |
@@ -83,15 +83,16 @@ These are the canonical properties that track an opportunity through the stage f
 | --- | --- | --- |
 | Originating Rep | HubSpot user | Always Kyle; preserves attribution for the opportunity after handoff |
 | Demo Presenter | HubSpot user | Troy or Neil — whoever actually runs the demo |
+| Pre-Sales Engineer | HubSpot user | Technical resource supporting the demo, trial, and evaluation |
 | Demo Scheduled Date | Date picker | Defines entry into the Demo Scheduled stage; gate into Qualified Lead |
 | Demo Completed Date | Date picker | Required at Presentation / Demonstration Completed |
-| Date Trial Requested | Date picker | Required at Trial Requested |
+| Date Trial Requested? | Date picker | Required at Trial Requested |
 | Date Trial Agreement Sent | Date picker | Required at Trial Agreement Sent; auto-populated by DocuSign send |
-| Date Trial Agreement Signed | Date picker | When the customer signed the Trial Agreement; auto-populated by DocuSign sign |
+| Date Trial Agreement Signed? | Date picker | When the customer signed the Trial Agreement; auto-populated by DocuSign sign |
 | Date Quote Sent | Date picker | Required at Quote Sent |
 | Date MSA Sent | Date picker | Required at Contract Sent; auto-populated by DocuSign send |
 | Date MSA Signed | Date picker | Required at Closed Won; defines Closed Won; auto-populated by DocuSign sign |
-| Commercial Next Step | Dropdown: Trial, Quote, Both | Required at Trial Requested |
+| Next Commercial Step? | Dropdown: Trial, Quote, Both | Required at Trial Requested |
 
 ### Ownership and handoff model
 
@@ -126,31 +127,29 @@ Report progress against these milestones only; everything else is supporting act
 
 ## Trusted Tech Deal Schema
 
-Use the following as the canonical business schema for additional Trusted Tech HubSpot deal records. Match user language to these properties when reading, summarizing, validating, or preparing deal updates. For any stage, qualification, ownership, or progress question, the Trusted Tech Deal Pipeline model above is authoritative.
+Use the following as the canonical business schema for Trusted Tech HubSpot deal records. Match user language to these properties when reading, summarizing, validating, or preparing deal updates. For any stage, qualification, ownership, or progress question, the Trusted Tech Deal Pipeline model above is authoritative.
 
 | Property | Expected value | Description |
 | --- | --- | --- |
 | Deal Name | Text | Human-readable name of the sales opportunity. Usually includes the customer name and project. |
-| Deal Stage | HubSpot pipeline stage | Current stage of the opportunity in the sales pipeline. |
 | Presentation/Demo Completed | Yes/No | Indicates whether a product demo or presentation has been completed. |
-| Trial / Quote Requested | Yes/No | Indicates whether the customer requested a trial or a pricing quote. |
-| Date Trial Agreement Sent | Date | Date the trial agreement was sent to the customer. |
-| Trial Agreement Executed | Yes/No | Indicates whether the customer signed the trial agreement. |
-| Date Trial Started | Date | Date the customer began the trial period. |
-| Date Trial Ends | Date | Date the customer's trial expires. |
-| Trial Outcome | Enumeration | Result of the trial, such as Successful, Extended, or Lost. |
+| Deal Stage | HubSpot pipeline stage | Current stage of the opportunity in the sales pipeline. |
+| Demo Scheduled Date | Date | Date the demo is scheduled for. Defines entry into the Demo Scheduled stage. |
+| Demo Presenter | HubSpot user | Troy or Neil — whoever actually runs the demo. |
+| Demo Completed Date | Date | Date the demo or presentation was actually delivered. |
+| Date Trial Requested? | Date | Date the customer requested a trial. |
+| Date Trial Agreement Sent | Date | Date the trial agreement was sent to the customer. Auto-populated by DocuSign send. |
+| Date Trial Agreement Signed? | Date | Date the customer signed the trial agreement. Auto-populated by DocuSign sign. |
+| Trial Agreement Executed | Yes/No | Indicates whether the trial agreement is fully executed by all parties. |
+| Next Commercial Step? | Enumeration: Trial, Quote, Both | The commercial motion the deal moves into after the demo. |
 | Date Quote Sent | Date | Date the sales quote was sent to the customer. |
-| Date Purchase Order Received | Date | Date the customer's purchase order (PO) was received. |
-| Purchase Order Amount | Currency | Dollar amount listed on the customer's purchase order. |
-| Date MSA Sent | Date | Date the Master Service Agreement (MSA) was sent to the customer. |
+| Date MSA Sent | Date | Date the Master Service Agreement (MSA) was sent. Auto-populated by DocuSign send. |
+| Date MSA Signed | Date | Date the MSA was signed. Auto-populated by DocuSign sign. Defines Closed Won. |
 | MSA Executed? | Yes/No | Indicates whether the MSA has been fully signed by all parties. |
-| Term of the MSA | Duration | Length of the MSA contract, such as 12 months or 36 months. |
-| Payment Cycle | Enumeration | Customer's billing frequency, such as Monthly, Quarterly, or Annually. |
-| Number of Cameras Purchased | Number | Total number of cameras included in the purchase. |
-| MSA Renewal Date | Date | Date the MSA is scheduled to renew or expire. |
 | Redaction Amount | Currency | Dollar amount charged for redaction services. |
 | Term, Payment, Rate | Text | Summary of the contract term, payment schedule, and pricing rate. |
-| Close Date | Date | Expected or actual date the deal closes. |
+| SDR Sourced | Yes/No | Indicates whether the opportunity was sourced by an SDR. |
+| Kensington Sourced? | Yes/No | Indicates whether the opportunity was sourced through Kensington. |
 | Number of Calls | Number | Total sales calls made for this deal. |
 | Number of Emails | Number | Total sales emails sent for this deal. |
 | Connected Over Call? | Yes/No | Indicates whether direct contact was made with the customer by phone. |
@@ -158,8 +157,9 @@ Use the following as the canonical business schema for additional Trusted Tech H
 | Qualified Lead? | Yes/No | Indicates whether the lead meets qualification criteria and is worth pursuing. |
 | Meeting Status | Enumeration | Current status of the latest customer meeting, such as Scheduled, Completed, or Cancelled. |
 | Handed Off To SAE? | Yes/No | Indicates whether the opportunity has been transferred to a Sales Account Executive (SAE). |
-| Deal Owner | HubSpot owner | Primary salesperson responsible for managing the deal. |
-| SDR Deal Owner | HubSpot owner | Sales Development Representative (SDR) assigned to the deal before handoff. |
+| Deal Owner | HubSpot owner | Person currently accountable for the deal; changes with handoffs. |
+| Originating Rep | HubSpot user | Always Kyle; preserves attribution for the opportunity after handoff. |
+| Pre-Sales Engineer | HubSpot user | Technical resource supporting the demo, trial, and evaluation. |
 
 ### Schema Handling Rules
 
@@ -170,7 +170,8 @@ Use the following as the canonical business schema for additional Trusted Tech H
 - Use ISO 8601 dates (`YYYY-MM-DD`) in proposed changes unless HubSpot metadata requires another representation.
 - Treat currency fields as USD unless the HubSpot record or user explicitly specifies another currency.
 - Treat Number of Calls and Number of Emails as deal-level totals. Do not substitute a partial activity count without labeling it as partial.
-- When Trial / Quote Requested must distinguish a trial request from a quote request but the connected property is only boolean, state that limitation rather than guessing which was requested. Prefer the Commercial Next Step property (Trial, Quote, Both) when it is available.
+- Use Next Commercial Step? (Trial, Quote, Both) to distinguish a trial motion from a quote motion. Do not infer the motion from a date field alone; if Next Commercial Step? is empty, say the motion is unspecified.
+- Sourcing attribution comes from SDR Sourced and Kensington Sourced?; these are independent flags and neither implies the other. Originating Rep is attribution for the rep, not the source channel.
 - For qualification and pipeline-progress questions, treat the Deal Pipeline stage flow as the source of truth. A deal is a qualified lead when its stage is Qualified Lead (i.e., a demo has been scheduled) — not merely because the boolean `Qualified Lead?` property is Yes. Reconcile the two if they disagree and note the discrepancy.
 
 ## Behavior Rules

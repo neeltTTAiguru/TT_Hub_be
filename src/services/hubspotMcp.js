@@ -1,14 +1,14 @@
 const REQUEST_TIMEOUT_MS = Number(process.env.HUBSPOT_MCP_REQUEST_TIMEOUT_MS || 25000)
 
 const DEAL_COLUMNS = [
-  'Deal Name', 'Deal Stage', 'Presentation/Demo Completed', 'Trial / Quote Requested',
-  'Date Trial Agreement Sent', 'Trial Agreement Executed', 'Date Trial Started', 'Date Trial Ends',
-  'Trial Outcome', 'Date Quote Sent', 'Date Purchase Order Received', 'Purchase Order Amount',
-  'Date MSA Sent', 'MSA Executed?', 'Term of the MSA', 'Payment Cycle',
-  'Number of Cameras Purchased', 'MSA Renewal Date', 'Redaction Amount', 'Term, Payment, Rate',
-  'Close Date', 'Number of Calls', 'Number of Emails', 'Connected Over Call?',
-  'Connected Over Email?', 'Qualified Lead?', 'Meeting Status', 'Handed Off To SAE?',
-  'Deal Owner', 'SDR Deal Owner', 'Amount', 'Description',
+  'Deal Name', 'Presentation/Demo Completed', 'Deal Stage', 'Demo Scheduled Date',
+  'Demo Presenter', 'Demo Completed Date', 'Date Trial Requested?', 'Date Trial Agreement Sent',
+  'Date Trial Agreement Signed?', 'Trial Agreement Executed', 'Next Commercial Step?', 'Date Quote Sent',
+  'Date MSA Sent', 'Date MSA Signed', 'MSA Executed?', 'Redaction Amount',
+  'Term, Payment, Rate', 'SDR Sourced', 'Kensington Sourced?', 'Number of Calls',
+  'Number of Emails', 'Connected Over Call?', 'Connected Over Email?', 'Qualified Lead?',
+  'Meeting Status', 'Handed Off To SAE?', 'Deal Owner', 'Originating Rep',
+  'Pre-Sales Engineer', 'Amount', 'Description',
 ]
 
 let cachedAccessToken = ''
