@@ -26,6 +26,50 @@ function isImageMime(mime) {
   return /^image\//i.test(String(mime || ''))
 }
 
+// Vision only accepts these. HEIC/HEIF and friends must be reported, not sent.
+const VISION_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+
+// A browser hands us whatever MIME the OS declared, which for a dragged file is
+// often empty or `application/octet-stream`. Trusting it verbatim sent photos
+// down the document path, where they extracted to nothing and vanished — the
+// model then answered from context alone. Recover the real type from the bytes.
+function sniffMimeFromBytes(buffer) {
+  if (buffer.length < 12) return ''
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg'
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png'
+  if (buffer.subarray(0, 4).toString('latin1') === 'GIF8') return 'image/gif'
+  if (buffer.subarray(0, 4).toString('latin1') === 'RIFF' && buffer.subarray(8, 12).toString('latin1') === 'WEBP') {
+    return 'image/webp'
+  }
+  if (buffer.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf'
+  // ISO base media container: `ftyp` at offset 4, brand tells HEIC from MP4.
+  if (buffer.subarray(4, 8).toString('latin1') === 'ftyp') {
+    const brand = buffer.subarray(8, 12).toString('latin1')
+    if (/^(heic|heix|hevc|heim|heis|hevm|hevs|mif1|msf1)$/i.test(brand)) return 'image/heic'
+  }
+  return ''
+}
+
+const EXTENSION_MIME_TYPES = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heic',
+  pdf: 'application/pdf',
+}
+
+function effectiveMimeType(attachment, buffer) {
+  const declared = String(attachment?.mimeType || '').toLowerCase()
+  const sniffed = sniffMimeFromBytes(buffer)
+  if (sniffed) return sniffed
+  if (declared && declared !== 'application/octet-stream') return declared
+  const extension = String(attachment?.name || '').split('.').pop()?.toLowerCase() || ''
+  return EXTENSION_MIME_TYPES[extension] || declared || 'application/octet-stream'
+}
+
 function isPdf(name, mime) {
   return /\.pdf$/i.test(String(name || '')) || /application\/pdf/i.test(String(mime || ''))
 }
@@ -74,15 +118,32 @@ export async function extractAttachmentText(attachment) {
 // images are present.
 export async function buildUserContentWithAttachments(userText, attachments = []) {
   const atts = (Array.isArray(attachments) ? attachments : []).slice(0, MAX_ATTACHMENTS)
-  if (!atts.length) return { content: userText, meta: { docs: 0, images: 0 } }
+  if (!atts.length) return { content: userText, meta: { docs: 0, images: 0, unreadable: [] } }
 
-  const images = atts.filter((a) => isImageMime(a?.mimeType)).slice(0, MAX_IMAGES)
-  const docs = atts.filter((a) => !isImageMime(a?.mimeType))
+  // Resolve every attachment's real type from its bytes before routing it, so a
+  // mislabelled photo still reaches vision instead of dying in the doc path.
+  const resolved = atts.map((attachment) => {
+    const buffer = decodeBase64(attachment?.dataBase64)
+    return { ...attachment, buffer, mimeType: effectiveMimeType(attachment, buffer) }
+  })
+
+  const images = resolved.filter((a) => VISION_MIME_TYPES.has(a.mimeType)).slice(0, MAX_IMAGES)
+  const docs = resolved.filter((a) => !VISION_MIME_TYPES.has(a.mimeType))
 
   const blocks = []
+  const unreadable = []
   for (const doc of docs) {
     const text = await extractAttachmentText(doc)
     if (text) blocks.push(`--- Attached file: ${doc.name || 'file'} ---\n${text}`)
+    else {
+      unreadable.push({
+        name: doc.name || 'file',
+        // HEIC is the common case: an iPhone photo no vision model accepts.
+        reason: isImageMime(doc.mimeType)
+          ? `image format ${doc.mimeType} is not supported (convert to JPEG or PNG)`
+          : 'unsupported file type',
+      })
+    }
   }
   const docText = blocks.join('\n\n').slice(0, MAX_DOC_TEXT_CHARS)
 
@@ -90,16 +151,25 @@ export async function buildUserContentWithAttachments(userText, attachments = []
   if (docText) {
     combinedText = `${combinedText}\n\nThe user attached the following file(s); use their contents to answer:\n\n${docText}`.trim()
   }
+  // Without this the model answers from surrounding context and invents a
+  // confident description of a file it never received.
+  if (unreadable.length) {
+    const list = unreadable.map((entry) => `${entry.name} (${entry.reason})`).join(', ')
+    combinedText = `${combinedText}\n\nSYSTEM NOTE: the user attached ${list}. You did NOT receive this content. Tell the user you could not read it and why — do not describe or guess at its contents.`.trim()
+  }
 
   if (!images.length) {
-    return { content: combinedText, meta: { docs: blocks.length, images: 0 } }
+    return { content: combinedText, meta: { docs: blocks.length, images: 0, unreadable } }
   }
 
   const parts = [{ type: 'text', text: combinedText || 'Please analyze the attached image(s).' }]
   for (const img of images) {
-    const raw = String(img.dataBase64 || '')
-    const url = raw.startsWith('data:') ? raw : `data:${img.mimeType || 'image/png'};base64,${raw}`
-    parts.push({ type: 'image_url', image_url: { url } })
+    // Re-encode from the decoded bytes so the data URI always carries the
+    // resolved MIME type, not whatever the browser mislabelled it as.
+    parts.push({
+      type: 'image_url',
+      image_url: { url: `data:${img.mimeType};base64,${img.buffer.toString('base64')}` },
+    })
   }
-  return { content: parts, meta: { docs: blocks.length, images: images.length } }
+  return { content: parts, meta: { docs: blocks.length, images: images.length, unreadable } }
 }
