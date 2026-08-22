@@ -169,3 +169,29 @@ test('a revision snapshot without a brief leaves the current brief alone', async
   assert.equal(run.article, 'older')
   assert.equal(run.brief.proposedTitle, 'Current title')
 })
+
+test('reverting a re-targeted revision restores the keyword and its Surfer editor', async () => {
+  const run = fakeRun({
+    article: 'the EMS rewrite',
+    brief: { proposedTitle: 'T500 for EMS', primaryKeyword: 'body worn camera for ems' },
+    selectedOpportunity: { primaryKeyword: 'body worn camera for ems' },
+    surferEditorId: 999,
+    surferEditorUrl: 'https://app.surferseo.com/drafts/999',
+    surferGuidelines: { terms: [{ term: 'ems' }] },
+    revisions: [{
+      id: 'rev-1',
+      instruction: 'Re-aim this at EMS.',
+      article: 'the law enforcement original',
+      brief: { proposedTitle: 'T500 for Law Enforcement', primaryKeyword: 'body worn camera for law enforcement' },
+      opportunity: { primaryKeyword: 'body worn camera for law enforcement' },
+      surfer: { editorId: 111, editorUrl: 'https://app.surferseo.com/drafts/111', guidelines: { terms: [{ term: 'police' }] } },
+      status: 'applied',
+      revertedAt: null,
+    }],
+  })
+  await revertArticleRevision(run, 'rev-1')
+  assert.equal(run.brief.primaryKeyword, 'body worn camera for law enforcement')
+  assert.equal(run.selectedOpportunity.primaryKeyword, 'body worn camera for law enforcement')
+  assert.equal(run.surferEditorId, 111)
+  assert.deepEqual(run.surferGuidelines, { terms: [{ term: 'police' }] })
+})

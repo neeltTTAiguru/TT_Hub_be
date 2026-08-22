@@ -177,7 +177,9 @@ router.post('/runs/:runId/revise', async (req, res, next) => {
       // images is an explicit choice rather than a side effect of editing text.
       regenerateImages: req.body?.regenerateImages === true,
       reoptimize: req.body?.reoptimize !== false,
-      enforceScoreFloor: req.body?.enforceScoreFloor !== false,
+      // Opt-in: by default a revision finishes and reports a score drop rather than
+      // abandoning the edit halfway through.
+      enforceScoreFloor: req.body?.enforceScoreFloor === true,
       // Editing a live post changes public content, so the client has to ask for it
       // explicitly. Drafts sync without this flag.
       applyToLive: req.body?.applyToLive === true,
