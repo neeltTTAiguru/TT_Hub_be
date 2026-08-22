@@ -9,6 +9,9 @@ import {
   createWordPressDraftForRun,
   publishWordPressPostForRun,
   restartContentOperationsRun,
+  applyRejectedRevision,
+  reviseArticleForRun,
+  revertArticleRevision,
   startContentOperationsRun,
   stopContentOperationsRun,
   trashWordPressDraftForRun,
@@ -156,6 +159,53 @@ router.post('/runs/:runId/approve', async (req, res, next) => {
     if (gate === 'brief') return res.json(await approveBriefAndDraft(run, req.body.brief))
     if (gate === 'article') return res.json(await approveArticle(run))
     return res.status(400).json({ message: 'Unknown approval gate.' })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/runs/:runId/revise', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    // 202: the revision re-runs the pipeline (Ahrefs, rewrite, Surfer passes, sync), so
+    // it returns immediately and the client polls the run for stage progress.
+    return res.status(202).json(await reviseArticleForRun(run, {
+      instruction: req.body?.instruction,
+      research: req.body?.research !== false,
+      // Off unless asked: regenerating artwork costs money and time, so re-rendering
+      // images is an explicit choice rather than a side effect of editing text.
+      regenerateImages: req.body?.regenerateImages === true,
+      reoptimize: req.body?.reoptimize !== false,
+      enforceScoreFloor: req.body?.enforceScoreFloor !== false,
+      // Editing a live post changes public content, so the client has to ask for it
+      // explicitly. Drafts sync without this flag.
+      applyToLive: req.body?.applyToLive === true,
+    }))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/runs/:runId/apply-revision', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    return res.json(await applyRejectedRevision(run, req.body?.revisionId, {
+      applyToLive: req.body?.applyToLive === true,
+    }))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/runs/:runId/revert', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    return res.json(await revertArticleRevision(run, req.body?.revisionId, {
+      applyToLive: req.body?.applyToLive === true,
+    }))
   } catch (error) {
     return next(error)
   }

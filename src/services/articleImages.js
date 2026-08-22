@@ -128,6 +128,7 @@ export async function generateAndUploadArticleImages(run, { signal } = {}) {
     })
     run.generatedImages = images
     run.stages.push({
+      cycle: Number(run.currentCycle || 0),
       stage: 'image_generation', status: 'complete', tool: 'OpenAI Images + WordPress Media API',
       result: `${images.length} topic-specific article images are generated and uploaded.`,
       explanation: 'The article topic drove each scene, while the approved T500 reference preserved product identity.',

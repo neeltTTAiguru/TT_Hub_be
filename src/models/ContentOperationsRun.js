@@ -45,6 +45,15 @@ const contentOperationsRunSchema = new mongoose.Schema(
       url: { type: String, default: '' },
     },
     stages: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // Which pass through the pipeline the run is on. 0 is the original generation; each
+    // editor revision increments it. Every stage record is stamped with the cycle it
+    // belongs to, so the progress panel can show the current pass without losing history.
+    currentCycle: { type: Number, default: 0 },
+    // Post-generation editing. editorChat is the running conversation the user has with
+    // the finished article; revisions is the undo stack (each entry stores the article as
+    // it was BEFORE that instruction was applied).
+    editorChat: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    revisions: { type: [mongoose.Schema.Types.Mixed], default: [] },
     toolCallsUsed: { type: [String], default: [] },
     approval: {
       opportunity: { type: Boolean, default: false },
