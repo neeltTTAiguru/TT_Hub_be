@@ -26,6 +26,7 @@ import adminRouter from './routes/admin.js'
 import seoContentRouter from './routes/seoContent.js'
 import contentOperationsRouter from './routes/contentOperations.js'
 import brevoRouter from './routes/brevo.js'
+import emailAssetsRouter from './routes/emailAssets.js'
 import contentOperationsDownloadsRouter from './routes/contentOperationsDownloads.js'
 import { startCompetitorCollectorSchedule } from './services/competitorCollector.js'
 import { startHubSpotHealthMonitor } from './services/hubspotHealth.js'
@@ -60,6 +61,7 @@ app.get('/', (_req, res) => {
 app.use('/health', healthRouter)
 app.use('/rfp-opportunities', rfpOpportunitiesRouter)
 app.use('/content-operations-download', contentOperationsDownloadsRouter)
+app.use('/email-assets', emailAssetsRouter)
 app.use(requireAuth)
 app.use('/agents', agentsRouter)
 app.use('/company-context', companyContextRouter)

@@ -7,6 +7,7 @@ import {
   sendCampaignNow,
   sendTransactionalEmail,
 } from '../services/brevoApi.js'
+import { hostInlineImages, publicBaseUrl } from '../services/emailAssets.js'
 
 const router = Router()
 
@@ -39,12 +40,14 @@ router.post('/campaigns', async (req, res, next) => {
       return res.status(400).json({ message: 'Select at least one recipient list' })
     }
 
+    const hosted = await hostInlineImages(htmlContent, publicBaseUrl(req))
+
     const campaign = await createCampaign({
       name: name?.trim() || subject.trim(),
       subject: subject.trim(),
       senderName: senderName?.trim() || senderEmail.trim(),
       senderEmail: senderEmail.trim(),
-      htmlContent,
+      htmlContent: hosted,
       listIds: listIds.map(Number),
     })
 
@@ -69,7 +72,7 @@ router.post('/send-direct', async (req, res, next) => {
       subject: subject.trim(),
       senderName: senderName?.trim() || senderEmail.trim(),
       senderEmail: senderEmail.trim(),
-      htmlContent,
+      htmlContent: await hostInlineImages(htmlContent, publicBaseUrl(req)),
       to,
     })
 
