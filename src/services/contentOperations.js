@@ -69,8 +69,16 @@ function stageRecord(stage, tool, result, explanation, output) {
 // Stage records are stamped with the pipeline pass they belong to so a revision can
 // re-run the same stage ids without the progress panel showing last pass's results.
 function pushStage(run, record) {
-  run.stages.push({ ...record, cycle: Number(run.currentCycle || 0) })
+  const cycle = Number(run.currentCycle || 0)
+  run.stages.push({ ...record, cycle })
+  logRun(run, `stage ${record.stage} complete — ${record.result}`)
   return record
+}
+
+// The pipeline runs detached from any request, so console output is the only trace it
+// leaves. Without it a stalled run is indistinguishable from a crashed one in the logs.
+function logRun(run, message) {
+  console.log(`[content-ops] ${run.runId} c${Number(run.currentCycle || 0)} ${message}`)
 }
 
 async function askHermes(prompt, signal) {
@@ -583,21 +591,42 @@ export async function prepareSurferForRun(run, options = {}) {
 
   const pollMs = Number(process.env.CONTENT_OPS_SURFER_POLL_MS || 12000)
   const maxPolls = Number(process.env.CONTENT_OPS_SURFER_MAX_POLLS || 30)
+  // Building the SERP guidelines can take minutes. This used to happen with currentStage
+  // still on the previous step and nothing written to the database, so the UI showed the
+  // NEXT step as running and a normal wait was indistinguishable from a hang.
+  run.currentStage = 'surfer_setup'
+  run.status = 'running'
+  await run.save()
+  const waitBudget = Math.round((pollMs * maxPolls) / 1000)
   try {
     const editor = await createContentEditor(workspaceId, keyword, { signal })
     run.surferEditorId = Number(editor.id)
     run.surferEditorUrl = editorEditUrl(editor)
     await run.save()
+    logRun(run, `surfer editor ${editor.id} created for "${keyword}", waiting up to ${waitBudget}s for guidelines`)
 
     let ready = editor
     let completed = editor.state === 'completed'
     for (let i = 0; i < maxPolls && !completed; i += 1) {
       await sleep(pollMs, signal)
       ready = await getContentEditor(workspaceId, editor.id, { signal })
+      logRun(run, `surfer editor ${editor.id} state=${ready.state} (${i + 1}/${maxPolls})`)
       if (ready.state === 'completed') completed = true
       else if (ready.state === 'failed' || ready.state === 'error') break
+      // Heartbeat: proves to anyone watching the run that it is progressing, not wedged.
+      run.markModified('updatedAt')
+      await run.save()
     }
-    if (!completed) return run
+    if (!completed) {
+      pushStage(run, stageRecord(
+        'surfer_setup', 'SurferSEO API',
+        `Surfer guidelines were not ready within ${waitBudget}s.`,
+        'The draft is written without SERP targets; the optimization step scores and revises it afterwards.',
+        run.surferEditorUrl || `Surfer editor ${run.surferEditorId}`,
+      ))
+      await run.save()
+      return run
+    }
 
     const guidelines = await getSeoGuidelines(workspaceId, editor.id, { signal }).catch(() => null)
     const terms = Array.isArray(guidelines?.terms)
@@ -608,10 +637,23 @@ export async function prepareSurferForRun(run, options = {}) {
           .slice(0, 40)
       : []
     run.surferGuidelines = { targetWordCount: scoreNum(ready.target_word_count), terms }
+    pushStage(run, stageRecord(
+      'surfer_setup', 'SurferSEO API',
+      `Surfer guidelines ready: ${terms.length} priority term(s), target ${run.surferGuidelines.targetWordCount || '—'} words.`,
+      'The draft is written to these SERP-derived targets from the start, rather than being rewritten toward them afterwards.',
+      run.surferEditorUrl || `Surfer editor ${run.surferEditorId}`,
+    ))
     await run.save()
     return run
   } catch (error) {
     if (error.code === 'RUN_STOPPED') throw error
+    logRun(run, `surfer setup failed: ${error.message}`)
+    pushStage(run, stageRecord(
+      'surfer_setup', 'SurferSEO API', 'Surfer setup was skipped.',
+      `${cleanText(error.message, 300)} The draft is written without SERP targets and scored afterwards.`,
+      'skipped',
+    ))
+    await run.save().catch(() => {})
     return run
   }
 }
@@ -1600,6 +1642,24 @@ export async function revertArticleRevision(run, revisionId, options = {}) {
   run.status = 'completed'
   await run.save()
   return run
+}
+
+// A pipeline pass is an in-memory async task, not a durable job. If the process dies
+// mid-run — a deploy, a crash, a restart — nothing resumes it and the record sits at
+// status "running" forever, which reads in the UI as a step that never finishes. Called
+// once at boot: any run still marked running belongs to a process that no longer exists.
+export async function failOrphanedRuns() {
+  const orphans = await ContentOperationsRun.find({ status: 'running' })
+  if (!orphans.length) return 0
+  const note = 'The server restarted while this run was in progress, so it was stopped. Nothing was published. Use Restart to run it again.'
+  for (const run of orphans) {
+    run.status = 'error'
+    if (!run.errors.includes(note)) run.errors.push(note)
+    await run.save().catch(() => {})
+    console.log(`[content-ops] ${run.runId} orphaned at stage ${run.currentStage} — marked failed`)
+  }
+  console.log(`[content-ops] released ${orphans.length} orphaned run(s) left running by a previous process`)
+  return orphans.length
 }
 
 export async function contentIntegrationStatus() {

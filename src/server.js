@@ -1,4 +1,5 @@
 import express from 'express'
+import { failOrphanedRuns } from './services/contentOperations.js'
 import cors from 'cors'
 import mongoose from 'mongoose'
 import dotenv from 'dotenv'
@@ -121,6 +122,10 @@ async function start() {
 
   const server = app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`)
+    // Only after the port is ours. A process that cannot bind is not the live server —
+    // it may be a stale watcher about to exit on EADDRINUSE — and must never touch runs
+    // the real server is actively executing.
+    void failOrphanedRuns().catch((error) => console.error('Failed to release orphaned content runs', error))
     startCompetitorCollectorSchedule()
     startHubSpotHealthMonitor()
   })
