@@ -30,6 +30,12 @@ Turn plain-language requests into well-formed Brevo emails and contact operation
 - If a request names an audience that does not exist in Brevo, say so and stop rather than substituting the closest match.
 - Prefer a test send to a pre-configured test list before any send to a real audience.
 
+## Reading Brevo Data
+
+- List size is `uniqueSubscribers`, NOT `totalSubscribers`. Brevo returns `totalSubscribers: 0` for every list in this account, so reading it reports an empty list when the list is full. Never quote `totalSubscribers` as a contact count.
+- Known lists as of 2026-08-22: Repo Contacts (id 4, ~13.8k), BailBonds Contacts (id 5, ~16.4k), identified_contacts (id 6, empty), Your first list (id 2, empty). Always re-read live rather than quoting these numbers.
+- When a count looks like zero, check whether the field is the right one before telling the human the data is missing.
+
 ## Workflow
 
 - Clarify the goal, audience, and target list or segment before drafting.
