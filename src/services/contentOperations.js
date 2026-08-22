@@ -868,6 +868,42 @@ export async function publishToTestBlog(run) {
   return run
 }
 
+// Which WordPress draft, if any, this run may write over.
+//
+// Reuse exists so a restarted pipeline updates its own draft instead of piling up
+// duplicates. Matching on title/slug alone did not express that: it matched ANY draft on
+// the site, so a second article that produced the same slug — near-certain when two runs
+// start from the same curated keyword — silently overwrote the first run's post and
+// adopted its id. Both runs then pointed at one post, and opening the older one showed
+// the newer article.
+export async function findReusableDraftForRun(run, { slug, title }, deps = {}) {
+  const loadOwnDraft = deps.getWordPressDraft || getWordPressDraft
+  const searchDrafts = deps.findWordPressDraft || findWordPressDraft
+  const isClaimed = deps.isClaimedByAnotherRun || ((runId, postId) => ContentOperationsRun.exists({
+    runId: { $ne: runId },
+    'wordpressPublication.postId': postId,
+  }))
+  // A run's own post is always the right thing to update, whatever it is called now.
+  const ownPostId = run.wordpressPublication?.postId
+  if (ownPostId) {
+    const own = await loadOwnDraft(ownPostId).catch(() => null)
+    if (own) return own
+    // Its post exists but is no longer a draft (published, trashed): leave it alone.
+    return null
+  }
+
+  const candidate = await searchDrafts({ slug, title })
+  if (!candidate) return null
+
+  // A same-titled draft that another run already owns is that run's article, not ours.
+  // Creating a new post instead is correct; WordPress de-duplicates the slug itself.
+  if (await isClaimed(run.runId, candidate.id)) {
+    console.log(`[content-ops] ${run.runId} not reusing WordPress draft ${candidate.id} — owned by another run`)
+    return null
+  }
+  return candidate
+}
+
 export async function createWordPressDraftForRun(run, options = {}) {
   if (!run.article || !run.approval.article) {
     throw Object.assign(new Error('Approve the article before creating a WordPress draft.'), { statusCode: 400 })
@@ -882,7 +918,7 @@ export async function createWordPressDraftForRun(run, options = {}) {
   const [categories, tags, existingDraft] = await Promise.all([
     listWordPressCategories(),
     listWordPressTags(),
-    findWordPressDraft({ slug, title }),
+    findReusableDraftForRun(run, { slug, title }),
   ])
   const categoryName = cleanText(run.brief?.category, 200).toLowerCase()
   const requestedTags = Array.isArray(run.brief?.tags)
