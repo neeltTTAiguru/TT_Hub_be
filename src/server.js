@@ -25,6 +25,7 @@ import usersRouter from './routes/users.js'
 import adminRouter from './routes/admin.js'
 import seoContentRouter from './routes/seoContent.js'
 import contentOperationsRouter from './routes/contentOperations.js'
+import brevoRouter from './routes/brevo.js'
 import contentOperationsDownloadsRouter from './routes/contentOperationsDownloads.js'
 import { startCompetitorCollectorSchedule } from './services/competitorCollector.js'
 import { startHubSpotHealthMonitor } from './services/hubspotHealth.js'
@@ -77,6 +78,7 @@ app.use('/users', usersRouter)
 app.use('/admin', adminRouter)
 app.use('/api/seo-content', seoContentRouter)
 app.use('/content-operations', contentOperationsRouter)
+app.use('/brevo', brevoRouter)
 
 app.use((err, _req, res, _next) => {
   if (typeof err?.statusCode === 'number') {
