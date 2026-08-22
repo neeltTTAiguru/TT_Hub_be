@@ -5,6 +5,7 @@ import {
   createCampaign,
   sendTestEmail,
   sendCampaignNow,
+  sendTransactionalEmail,
 } from '../services/brevoApi.js'
 
 const router = Router()
@@ -48,6 +49,31 @@ router.post('/campaigns', async (req, res, next) => {
     })
 
     res.status(201).json({ id: campaign?.id })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post('/send-direct', async (req, res, next) => {
+  try {
+    const { subject, senderName, senderEmail, htmlContent, to } = req.body || {}
+
+    if (!subject?.trim()) return res.status(400).json({ message: 'Subject is required' })
+    if (!senderEmail?.trim()) return res.status(400).json({ message: 'A sender is required' })
+    if (!htmlContent?.trim()) return res.status(400).json({ message: 'Email content is empty' })
+    if (!Array.isArray(to) || to.length === 0) {
+      return res.status(400).json({ message: 'Provide at least one recipient address' })
+    }
+
+    await sendTransactionalEmail({
+      subject: subject.trim(),
+      senderName: senderName?.trim() || senderEmail.trim(),
+      senderEmail: senderEmail.trim(),
+      htmlContent,
+      to,
+    })
+
+    res.json({ sent: true })
   } catch (error) {
     next(error)
   }

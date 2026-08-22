@@ -87,3 +87,17 @@ export async function sendTestEmail(campaignId, emails) {
 export async function sendCampaignNow(campaignId) {
   return brevoFetch(`/emailCampaigns/${campaignId}/sendNow`, { method: 'POST' })
 }
+
+// Transactional send — used for one-off addresses typed straight into "To",
+// which are not part of any list and so cannot go out as a campaign.
+export async function sendTransactionalEmail({ subject, senderName, senderEmail, htmlContent, to }) {
+  return brevoFetch('/smtp/email', {
+    method: 'POST',
+    body: {
+      sender: { name: senderName, email: senderEmail },
+      to: to.map((email) => ({ email })),
+      subject,
+      htmlContent,
+    },
+  })
+}
