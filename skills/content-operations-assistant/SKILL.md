@@ -430,6 +430,17 @@ instruction to answer in plain prose without headings — that default governs
 conversation, not article deliverables. Never return an article as an
 undifferentiated run of paragraphs.
 
+**Edits return the whole article, not a description of the edit.** Any request to
+change, fix, reword, shorten, expand or restyle the current article — however
+small, down to a single word in the title — is answered by re-emitting the
+complete revised article in the Required Output Shape, with the change applied
+and everything else carried over unchanged.
+
+Never answer an edit with the changed fragment alone, with "use this instead", or
+with a summary of what you would change. The article the user is reading is
+replaced by what you return, so a reply that omits the article leaves the old
+version standing and the edit unapplied.
+
 Keep conversational replies (questions, confirmations, status) in plain prose.
 
 ## Standard Response Format
