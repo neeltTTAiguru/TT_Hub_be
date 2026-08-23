@@ -6,6 +6,18 @@ import KnowledgeRecord from '../models/KnowledgeRecord.js'
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
+// The browser's reported type is a hint, not a guarantee, and it is absent
+// entirely if the header is stripped in transit. The extension decides.
+function mimeFor(fileName, contentType) {
+  const name = String(fileName || '').toLowerCase()
+  if (name.endsWith('.pdf')) return 'application/pdf'
+  if (name.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  if (name.endsWith('.doc')) return 'application/msword'
+  if (name.endsWith('.md')) return 'text/markdown'
+  if (name.endsWith('.txt')) return 'text/plain'
+  return String(contentType || 'application/octet-stream')
+}
+
 function kindOf(fileName, contentType) {
   const name = String(fileName || '').toLowerCase()
   const type = String(contentType || '').toLowerCase()
@@ -86,7 +98,7 @@ export async function saveCompanyFile({ buffer, fileName, contentType, title, us
   const document = await KnowledgeDocument.create({
     title: cleanTitle,
     originalFilename: fileName,
-    mimeType: contentType || 'application/octet-stream',
+    mimeType: mimeFor(fileName, contentType),
     sizeBytes: buffer.length,
     sha256,
     sourceType: 'company_file',

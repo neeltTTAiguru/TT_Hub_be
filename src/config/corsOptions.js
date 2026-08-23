@@ -13,7 +13,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-File-Name'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-File-Name', 'X-File-Type'],
   maxAge: 86400,
 }
 
