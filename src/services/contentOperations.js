@@ -369,6 +369,14 @@ async function runDraftAutomation(run, body, signal) {
   }
 }
 
+// Lets work started outside this module — the chat-driven SEO pass — put its
+// controller where stopContentOperationsRun can find it. Without this, stopping
+// marks the run stopped while the Surfer polling carries on underneath.
+export function registerRunController(runId, controller) {
+  activeRunControllers.set(runId, controller)
+  return () => activeRunControllers.delete(runId)
+}
+
 export async function stopContentOperationsRun(run) {
   activeRunControllers.get(run.runId)?.abort()
   run.status = 'stopped'

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import ContentOperationsRun from '../models/ContentOperationsRun.js'
-import { optimizeArticleWithSurfer, prepareSurferForRun } from './contentOperations.js'
+import { optimizeArticleWithSurfer, prepareSurferForRun, registerRunController } from './contentOperations.js'
 import { chatWithHermes } from './hermesChat.js'
 
 // The chat writes an article with no run behind it, but every Surfer function
@@ -41,6 +41,11 @@ export async function startSeoPassForDraft({ article, title = '', primaryKeyword
 
   // Fire and forget. Building guidelines alone polls for minutes, so the caller
   // is handed the run id and polls it rather than holding a request open.
+  // Registered so Stop actually aborts the Surfer polling rather than only
+  // marking the run stopped.
+  const controller = new AbortController()
+  const release = registerRunController(run.runId, controller)
+
   void (async () => {
     try {
       // Ahrefs first: confirm the keyword is worth targeting before Surfer spends
@@ -79,15 +84,18 @@ export async function startSeoPassForDraft({ article, title = '', primaryKeyword
       }
       await run.save()
 
-      await prepareSurferForRun(run)
-      await optimizeArticleWithSurfer(run, { editorialGuidance: guidance })
+      await prepareSurferForRun(run, { signal: controller.signal })
+      await optimizeArticleWithSurfer(run, { editorialGuidance: guidance, signal: controller.signal })
       run.status = 'completed'
       await run.save()
     } catch (error) {
-      run.status = 'error'
+      // A user-initiated stop is not a failure.
+      run.status = error?.code === 'RUN_STOPPED' || controller.signal.aborted ? 'stopped' : 'error'
       const message = error?.message || String(error)
       if (!run.errors.includes(message)) run.errors.push(message)
       await run.save().catch(() => {})
+    } finally {
+      release()
     }
   })()
 
