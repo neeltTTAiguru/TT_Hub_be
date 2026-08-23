@@ -386,41 +386,70 @@ Confirm that the WordPress operation produced the intended review-only draft.
 
 ## Required Output Shape
 
-Every article uses exactly this skeleton, in this order, with these labels:
+An article is a finished, publishable piece of writing. It reads as prose, not as
+a work order. Nothing about the production process appears inside it.
+
+The house style is the published Trusted Technology use-case article
+(`trustedtechnology.ai/commercial-body-worn-camera-use-cases/`). Match it:
 
 ```markdown
 # <Article title>
 
-<Answer-first opening: what the reader gets, in one short paragraph.>
+<Opening: two short paragraphs, about 80 words total. What this is about and why
+it matters to this reader. No throat-clearing.>
 
-Meta title: <=60 characters>
+## <Section heading>
 
-Meta description: <=155 characters>
+<3-5 sentence paragraphs. Bulleted lists where a set of things is genuinely a
+set. Sub-groups get a bolded lead-in line above their bullets.>
 
-Recommended slug: <kebab-case-slug>
+## <Further sections — five to seven in total>
 
-## <First section heading>
+<Somewhere in the second half, one restrained Trusted Technology line in the
+flow of the prose, e.g. "If you are evaluating that fit, Trusted Technology can
+help you review the use case." Not a banner, not a sign-off block.>
 
-<Body. Lists, tables and an FAQ where they genuinely help the reader.>
+## Summary
 
-## <Further sections>
+<One short paragraph recapping the core value. No new information.>
 
-<Body, ending in a restrained Trusted Technology call to action.>
+## Frequently Asked Questions
 
+**<Question a buyer actually asks?>**
+
+<Two to four sentences.>
+
+**<Next question?>**
+
+<Answer.>
+
+---
+
+Meta title: <=60 characters
+Meta description: <=155 characters
+Slug: <kebab-case-slug>
 Sources: <markdown links, or "None retrieved">
+Needs verification: <claims a human must confirm, or "None">
 ```
+
+Everything above the `---` is the article. Everything below it is publishing
+metadata for the editor, and is never written as if it were part of the piece.
 
 Rules that hold for every article:
 
-- One H1 only; sections are H2 with H3 beneath where a section needs subdivision.
-- The three meta lines sit directly under the opening paragraph, each on its own
-  line, spelled exactly `Meta title:`, `Meta description:`, `Recommended slug:`.
-- Cite in place as `[SOURCE: <name>]`; mark anything unverified `[SOURCE NEEDED]`
-  or `[INTERNAL CONFIRMATION NEEDED]`.
+- **No inline source tags.** Never write `[SOURCE: ...]`, `[SOURCE NEEDED]` or
+  `[INTERNAL CONFIRMATION NEEDED]` in the prose. Attribute in the sentence when it
+  matters to the reader ("the IAHSS Foundation study found ..."), and put
+  everything else under `Sources:` and `Needs verification:` below the rule.
+- **No metadata in the body.** Meta title, meta description and slug live only
+  below the `---`.
+- Headings are sentence case noun phrases or plain questions — never title case.
+- One H1 only; sections are H2. Use H3 only when a section genuinely subdivides.
+- Bulleted lists only. No numbered lists unless the order is the point.
 - Never describe a source that was not actually retrieved. If a link could not be
-  fetched, say so plainly and omit findings rather than inferring them.
-- No image placement notes, role labels or production asides in the prose — the
-  artwork is attached separately.
+  fetched, say so plainly and omit the findings rather than inferring them.
+- No image placement notes, role labels, or production asides in the prose.
+- Write the whole piece. No "if you want, I can ..." offers inside the article.
 
 ## Article Response Rule
 
@@ -445,7 +474,13 @@ Keep conversational replies (questions, confirmations, status) in plain prose.
 
 ## Standard Response Format
 
-Use this compact structure during every pipeline interaction:
+**This structure is for staged pipeline runs only.** Never wrap an article in it.
+A chat request for an article is answered with the article itself, in the Required
+Output Shape above — no `Pipeline Status`, no `Stage Output`, no `Cautions`, no
+`Next Action` headings. Anything you would have put under `Cautions` belongs in
+`Needs verification:` below the rule.
+
+Use this compact structure during a staged pipeline interaction:
 
 ```markdown
 ## Pipeline Status
