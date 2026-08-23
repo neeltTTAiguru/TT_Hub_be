@@ -681,7 +681,12 @@ export async function retrieveMemoryContext({ agentId, messages, user, competito
     listField(memory.frontmatter?.allowed_agents).includes(agentId)
 
   try {
-    const rows = await search(agentId, query, limit)
+    // Over-fetch before filtering. The search ranks across the whole brain, so
+    // asking for `limit` and then discarding everything outside this agent's
+    // section leaves far fewer than `limit` — the section's own memories lose
+    // slots to company-wide pages that are then thrown away. Fetching a wider
+    // candidate set lets the section fill its slots properly.
+    const rows = await search(agentId, query, Math.max(limit * 6, 40))
     const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
     const memories = pages
       .filter((memory) => memoryAllowed(memory, scope))
