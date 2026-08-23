@@ -20,6 +20,7 @@ import {
   publishToTestBlog,
 } from '../services/contentOperations.js'
 import { generateArticleImagesForDraft } from '../services/articleImages.js'
+import { startSeoPassForDraft } from '../services/contentSeoPass.js'
 import { createPdfDownloadToken } from '../services/articlePdf.js'
 import { getGa4ConnectionStatus, getGa4Snapshot } from '../services/ga4Analytics.js'
 import { verifyWordPressAuthentication } from '../services/wordpress.js'
@@ -42,6 +43,28 @@ router.post('/draft-images', async (req, res, next) => {
       instructions: String(req.body?.instructions || '').trim(),
     })
     return res.json({ images })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Takes an article written in chat through the SEO pass: a run is minted to
+// hold it, Surfer builds SERP guidelines for the keyword, scores the draft and
+// revises it. Guidelines alone can take minutes, so this returns immediately and
+// the caller polls GET /runs/:runId.
+router.post('/seo-pass', async (req, res, next) => {
+  try {
+    const article = String(req.body?.article || '').trim()
+    if (article.length < 200) {
+      return res.status(400).json({ message: 'Send the article to optimise.' })
+    }
+    const run = await startSeoPassForDraft({
+      article,
+      title: String(req.body?.title || '').trim(),
+      primaryKeyword: String(req.body?.primaryKeyword || '').trim(),
+      guidance: String(req.body?.guidance || '').trim(),
+    })
+    return res.status(202).json({ runId: run.runId, status: run.status })
   } catch (error) {
     return next(error)
   }
