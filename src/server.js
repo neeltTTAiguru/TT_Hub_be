@@ -25,6 +25,7 @@ import twitterSurferRouter from './routes/twitterSurfer.js'
 import usersRouter from './routes/users.js'
 import adminRouter from './routes/admin.js'
 import seoContentRouter from './routes/seoContent.js'
+import companyFilesRouter from './routes/companyFiles.js'
 import contentOperationsRouter from './routes/contentOperations.js'
 import brevoRouter from './routes/brevo.js'
 import emailAssetsRouter from './routes/emailAssets.js'
@@ -80,6 +81,7 @@ app.use('/twitter-surfer', twitterSurferRouter)
 app.use('/users', usersRouter)
 app.use('/admin', adminRouter)
 app.use('/api/seo-content', seoContentRouter)
+app.use('/company-files', companyFilesRouter)
 app.use('/content-operations', contentOperationsRouter)
 app.use('/brevo', brevoRouter)
 
