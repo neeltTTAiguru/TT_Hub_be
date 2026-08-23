@@ -9,7 +9,9 @@ import {
   createWordPressDraftForRun,
   publishWordPressPostForRun,
   restartContentOperationsRun,
+  applyQuickFixToRun,
   applyRejectedRevision,
+  revertQuickFix,
   reviseArticleForRun,
   revertArticleRevision,
   startContentOperationsRun,
@@ -182,6 +184,33 @@ router.post('/runs/:runId/revise', async (req, res, next) => {
       enforceScoreFloor: req.body?.enforceScoreFloor === true,
       // Editing a live post changes public content, so the client has to ask for it
       // explicitly. Drafts sync without this flag.
+      applyToLive: req.body?.applyToLive === true,
+    }))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Little fixes. Unlike /revise this is a single Hermes call that patches the draft in
+// place, so it answers on the request rather than handing the client a run to poll.
+router.post('/runs/:runId/quick-fix', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    return res.json(await applyQuickFixToRun(run, {
+      instruction: req.body?.instruction,
+      applyToLive: req.body?.applyToLive === true,
+    }))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/runs/:runId/quick-fix-revert', async (req, res, next) => {
+  try {
+    const run = await ContentOperationsRun.findOne({ runId: req.params.runId })
+    if (!run) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    return res.json(await revertQuickFix(run, req.body?.fixId, {
       applyToLive: req.body?.applyToLive === true,
     }))
   } catch (error) {

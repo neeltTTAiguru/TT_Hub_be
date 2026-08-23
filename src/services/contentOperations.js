@@ -1037,12 +1037,25 @@ function wordCount(value) {
 // The accumulated editorial direction: every instruction the editor has given on this
 // article, oldest first. Passed to both the rewrite and the Surfer re-optimization so a
 // later edit never silently undoes an earlier one.
+//
+// Little fixes count as direction too. They are already in run.article, but a heavy
+// rewrite rewrites from that article and would happily undo them — so they are replayed
+// alongside the heavy instructions, in the order they were actually given, and labelled
+// so the rewrite knows they are line edits to preserve rather than new work to do.
 function editorialGuidanceHistory(run, latestInstruction) {
-  const previous = (run.editorChat || [])
+  const heavy = (run.editorChat || [])
     .filter((entry) => entry?.role === 'user' && cleanText(entry.content, 2000))
-    .map((entry) => cleanText(entry.content, 2000))
-  return [...previous, cleanText(latestInstruction, 2000)]
-    .map((text, index) => `${index + 1}. ${text}`)
+    .map((entry) => ({ at: entry.createdAt || '', text: cleanText(entry.content, 2000) }))
+  const little = (run.quickFixes || [])
+    .filter((entry) => entry && !entry.revertedAt && cleanText(entry.instruction, 2000))
+    .map((entry) => ({
+      at: entry.createdAt || '',
+      text: `${cleanText(entry.instruction, 2000)} (line edit already applied to the draft — keep it in place)`,
+    }))
+  return [...heavy, ...little]
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)))
+    .concat([{ at: '', text: cleanText(latestInstruction, 2000) }])
+    .map((entry, index) => `${index + 1}. ${entry.text}`)
     .join('\n')
 }
 
@@ -1676,6 +1689,232 @@ export async function revertArticleRevision(run, revisionId, options = {}) {
     createdAt: new Date().toISOString(),
   })
   run.status = 'completed'
+  await run.save()
+  return run
+}
+
+/* ------------------------------------------------------------------ *
+ * Little fixes — surgical, single-call edits to a finished article.
+ *
+ * Distinct from reviseArticleForRun (Heavy fixes), which re-runs the whole
+ * pipeline. A little fix is a conversation: Hermes returns find/replace
+ * patches instead of a whole new article, so it physically cannot rewrite
+ * the piece behind the editor's back, and it answers in a second rather
+ * than several minutes.
+ * ------------------------------------------------------------------ */
+
+const QUICK_FIX_JSON_SHAPE = `{
+  "reply": "one short paragraph to the editor: what you changed, or why you did not",
+  "edits": [{"find": "text copied verbatim from the article", "replace": "the replacement text", "why": "short reason"}]
+}`
+
+// Undo needs the article as it was before the fix, but a long editing session would
+// otherwise carry dozens of full article copies in one Mongo document. Only the most
+// recent fixes stay undoable; older ones keep their record without the snapshot.
+const QUICK_FIX_UNDO_DEPTH = 10
+
+function buildQuickFixPrompt(run, instruction, conversation) {
+  const keyword = cleanText(run.selectedOpportunity?.primaryKeyword || run.brief?.primaryKeyword, 300)
+  return `
+You are Hermes, editing a finished Trusted Technology article side by side with its editor. This is the LITTLE FIXES desk: small, surgical corrections to the text in front of you — wording, a wrong word, a clumsy sentence, a heading, a typo, cutting a line, tightening a paragraph, adding a sentence where one is missing.
+
+You do NOT rewrite the article here. A change of angle, audience, structure, or a request to "rewrite" belongs at the Heavy Fixes desk, which re-runs research and SEO. If the editor asks for something that big, make no edits and say so in your reply.
+
+THE EDITOR'S REQUEST:
+${cleanText(instruction, 4000)}
+${conversation ? `
+EARLIER IN THIS CONVERSATION (oldest first):
+${conversation}` : ''}
+${keyword ? `
+The article must stay rankable for its keyword: ${keyword}. Do not remove it from the title, the intro, or the headings.` : ''}
+
+HOW TO ANSWER
+Return ONLY valid JSON with this shape:
+${QUICK_FIX_JSON_SHAPE}
+
+EDIT RULES (a broken rule means the edit is dropped and the editor sees nothing happen):
+- "find" must be copied from the article below character for character, including punctuation, markdown markers and capitalisation. Do not paraphrase it, do not re-wrap it, do not add or drop whitespace.
+- Make "find" long enough to be unique. If the phrase appears more than once, include the surrounding words that make it the one you mean; only the first match is replaced.
+- Keep each edit small — a phrase, a sentence, a heading, at most a paragraph. Use several small edits rather than one huge one. Never put the whole article in "find".
+- To delete text, set "replace" to an empty string. To add text, "find" an existing nearby sentence and put it back in "replace" followed by the new sentence.
+- Never invent statistics, laws, customers, certifications, prices or product capabilities. Cut a claim rather than fabricate one, and leave any [SOURCE NEEDED] marker in place.
+- Keep the Trusted Technology voice: clear, authoritative, useful, not promotional. Keep the Field Guide structure intact — do not remove headings, the CTA, the summary or the FAQ section.
+- Write only reader-facing prose. No image notes, alt text, captions, asset paths or production direction.
+- If the editor asked a question rather than for a change, answer it in "reply" and return an empty "edits" array.
+
+THE ARTICLE (markdown):
+${cleanText(run.article, 45000)}
+
+Return only the JSON.`
+}
+
+// Hermes copies "find" out of the article, and a copy that is right in substance can
+// still miss on whitespace — a re-wrapped line, a doubled space. The exact match is
+// tried first so the common case stays predictable; the whitespace-tolerant pass only
+// rescues an edit that would otherwise be silently dropped.
+function findInArticle(article, find) {
+  const exact = article.indexOf(find)
+  if (exact >= 0) return { index: exact, length: find.length }
+  const pattern = find
+    .trim()
+    .split(/\s+/)
+    .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s+')
+  if (!pattern) return null
+  const match = new RegExp(pattern).exec(article)
+  return match ? { index: match.index, length: match[0].length } : null
+}
+
+function applyQuickEdits(article, edits) {
+  let text = article
+  const applied = []
+  const skipped = []
+  for (const edit of edits) {
+    const find = String(edit?.find ?? '')
+    const replace = String(edit?.replace ?? '')
+    const why = cleanText(edit?.why, 300)
+    if (!find.trim()) {
+      skipped.push({ find, why, reason: 'no text to find' })
+      continue
+    }
+    if (find === replace) {
+      skipped.push({ find, why, reason: 'the replacement was identical' })
+      continue
+    }
+    const hit = findInArticle(text, find)
+    if (!hit) {
+      skipped.push({ find, why, reason: 'that exact wording is not in the article' })
+      continue
+    }
+    text = text.slice(0, hit.index) + replace + text.slice(hit.index + hit.length)
+    applied.push({ find: cleanText(find, 400), replace: cleanText(replace, 400), why })
+  }
+  return { article: text, applied, skipped }
+}
+
+// The chat Hermes sees on the next little fix. Trimmed to the recent turns: the article
+// itself carries every change already made, so older turns add tokens, not information.
+function quickFixConversation(run) {
+  return (run.quickFixChat || [])
+    .slice(-8)
+    .map((entry) => `${entry?.role === 'assistant' ? 'You' : 'Editor'}: ${cleanText(entry?.content, 800)}`)
+    .join('\n')
+}
+
+export async function applyQuickFixToRun(run, options = {}) {
+  const instruction = cleanText(options.instruction, 4000)
+  if (!instruction) throw Object.assign(new Error('Tell Hermes what to fix in the draft.'), { statusCode: 400 })
+  if (!run.article) throw Object.assign(new Error('This run does not have an article to edit yet.'), { statusCode: 400 })
+  if (run.status === 'running') throw Object.assign(new Error('This run is still working — wait for it to finish before editing.'), { statusCode: 409 })
+
+  const now = new Date().toISOString()
+  if (!Array.isArray(run.quickFixChat)) run.quickFixChat = []
+  if (!Array.isArray(run.quickFixes)) run.quickFixes = []
+  const conversation = quickFixConversation(run)
+  run.quickFixChat.push({ id: crypto.randomUUID(), role: 'user', content: instruction, createdAt: now })
+
+  const previousArticle = run.article
+  let parsed
+  try {
+    parsed = await askHermesForJson(buildQuickFixPrompt(run, instruction, conversation), QUICK_FIX_JSON_SHAPE)
+  } catch (error) {
+    run.quickFixChat.push({
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: `That fix could not be made: ${cleanText(error?.message, 400) || 'Hermes did not answer.'} Try again, or send the request as a heavy fix.`,
+      failed: true,
+      createdAt: new Date().toISOString(),
+    })
+    run.markModified('quickFixChat')
+    await run.save()
+    return run
+  }
+
+  const edits = Array.isArray(parsed?.edits) ? parsed.edits.slice(0, 40) : []
+  const { article, applied, skipped } = applyQuickEdits(previousArticle, edits)
+  const reply = cleanText(parsed?.reply, 2000)
+
+  let sync = { synced: false, reason: 'no_change' }
+  const fixId = crypto.randomUUID()
+  if (applied.length) {
+    run.article = article
+    sync = await syncArticleToWordPress(run, { applyToLive: Boolean(options.applyToLive) })
+    run.quickFixes.push({
+      id: fixId,
+      instruction,
+      article: previousArticle,
+      applied,
+      skipped,
+      wordCountBefore: wordCount(previousArticle),
+      wordCountAfter: wordCount(article),
+      wordpressSynced: Boolean(sync.synced),
+      appliedToLive: Boolean(sync.live),
+      revertedAt: null,
+      createdAt: new Date().toISOString(),
+    })
+    // Keep only the recent snapshots; see QUICK_FIX_UNDO_DEPTH.
+    const cutoff = run.quickFixes.length - QUICK_FIX_UNDO_DEPTH
+    if (cutoff > 0) {
+      run.quickFixes = run.quickFixes.map((entry, index) => (
+        index < cutoff && entry?.article ? { ...entry, article: '' } : entry
+      ))
+    }
+    run.markModified('quickFixes')
+  }
+
+  const notes = []
+  if (applied.length) {
+    notes.push(`${applied.length} change${applied.length === 1 ? '' : 's'} made to the draft.`)
+    notes.push(sync.synced
+      ? (sync.live ? 'The live post was updated.' : 'The WordPress draft was updated.')
+      : (SYNC_SKIP_EXPLANATION[sync.reason] || 'Nothing was pushed to WordPress.'))
+  }
+  if (skipped.length) {
+    notes.push(`${skipped.length} suggested change${skipped.length === 1 ? '' : 's'} could not be located in the draft and ${skipped.length === 1 ? 'was' : 'were'} not applied.`)
+  }
+  run.quickFixChat.push({
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    content: [reply || (applied.length ? 'Done.' : 'No change was made.'), notes.join(' ')].filter(Boolean).join('\n\n'),
+    fixId: applied.length ? fixId : undefined,
+    edits: applied,
+    skipped,
+    createdAt: new Date().toISOString(),
+  })
+  run.markModified('quickFixChat')
+  await run.save()
+  return run
+}
+
+export async function revertQuickFix(run, fixId, options = {}) {
+  const index = (run.quickFixes || []).findIndex((entry) => entry?.id === fixId)
+  if (index < 0) throw Object.assign(new Error('That fix is not on this article.'), { statusCode: 404 })
+  if (run.status === 'running') throw Object.assign(new Error('This run is still working — wait for it to finish before undoing.'), { statusCode: 409 })
+  const fix = run.quickFixes[index]
+  if (fix.revertedAt) throw Object.assign(new Error('That fix has already been undone.'), { statusCode: 400 })
+  if (!fix.article) throw Object.assign(new Error('This fix is too far back to undo — the earlier version is no longer stored.'), { statusCode: 400 })
+
+  // Same rule as the heavy editor: restoring an older article discards every fix made
+  // after it, because those edits were made against text that no longer exists.
+  const discarded = run.quickFixes.slice(index)
+  run.article = fix.article
+  run.quickFixes = run.quickFixes.map((entry, position) => (
+    position >= index ? { ...entry, revertedAt: new Date().toISOString() } : entry
+  ))
+  run.markModified('quickFixes')
+  const sync = await syncArticleToWordPress(run, { applyToLive: Boolean(options.applyToLive) })
+  run.quickFixChat.push({
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    content: `Undid "${cleanText(fix.instruction, 160)}"${discarded.length > 1 ? ` and the ${discarded.length - 1} fix${discarded.length === 2 ? '' : 'es'} made after it` : ''}. ${
+      sync.synced
+        ? (sync.live ? 'The live post was rolled back too.' : 'The WordPress draft was rolled back too.')
+        : (SYNC_SKIP_EXPLANATION[sync.reason] || 'Nothing was pushed to WordPress.')
+    }`,
+    revert: true,
+    createdAt: new Date().toISOString(),
+  })
+  run.markModified('quickFixChat')
   await run.save()
   return run
 }

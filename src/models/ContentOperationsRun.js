@@ -54,6 +54,11 @@ const contentOperationsRunSchema = new mongoose.Schema(
     // it was BEFORE that instruction was applied).
     editorChat: { type: [mongoose.Schema.Types.Mixed], default: [] },
     revisions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // Little fixes: the surgical line-edit conversation, kept apart from editorChat so a
+    // heavy rewrite's thread and the draft's line edits never read as the same history.
+    // quickFixes is that stack's undo, each entry holding the article before the fix.
+    quickFixChat: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    quickFixes: { type: [mongoose.Schema.Types.Mixed], default: [] },
     toolCallsUsed: { type: [String], default: [] },
     approval: {
       opportunity: { type: Boolean, default: false },
