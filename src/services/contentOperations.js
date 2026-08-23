@@ -560,7 +560,7 @@ SCORE RECOVERY — THIS IS THE JOB THIS PASS: before the rewrite this article sc
 EDITORIAL DIRECTION FROM THE EDITOR — this outranks the SEO target. The article has already been rewritten to this direction; every SEO change you make must preserve it. If a recommended term can only be worked in by contradicting this direction, skip the term:
 ${editorialGuidance}
 ` : ''}
-${targetWordCount ? `Target length: about ${targetWordCount} words of genuinely useful content.` : ''}
+${targetWordCount ? `LENGTH — SurferSEO's target for this keyword is ${targetWordCount} words. Match it. If the article is materially longer, CUT it: merge overlapping sections, delete restatement, and remove any section that does not earn its place. Length is not depth, and a page far over its SERP target reads as padding to both the reader and the ranking. Never add words to reach a term count.` : ''}
 ${guidelineTerms ? `SurferSEO recommends naturally including these terms (target frequency in parentheses; [heading] = works well as/inside a heading): ${guidelineTerms}.` : ''}
 
 WRITING RULES (never violate, even to raise the score):

@@ -85,6 +85,27 @@ export async function startSeoPassForDraft({ article, title = '', primaryKeyword
       await run.save()
 
       await prepareSurferForRun(run, { signal: controller.signal })
+
+      // Record what Surfer asked for against what the article actually is. A
+      // draft several thousand words over its SERP target is the single most
+      // common reason these read as padded, and it was previously invisible.
+      const target = run.surferGuidelines?.targetWordCount
+      if (target) {
+        const words = String(run.article || '').trim().split(/\s+/).filter(Boolean).length
+        run.stages.push({
+          cycle: 0,
+          stage: 'surfer_setup',
+          status: 'complete',
+          tool: 'SurferSEO guidelines',
+          result: `Target ${target} words; draft is ${words}.`,
+          explanation: words > target * 1.25
+            ? `The draft is ${words} words against a SurferSEO target of ${target} for "${keyword}" — roughly ${Math.round((words / target - 1) * 100)}% over. The rewrite will cut toward the target.`
+            : `The draft is ${words} words against a SurferSEO target of ${target} for "${keyword}".`,
+          output: String(target),
+          completedAt: new Date().toISOString(),
+        })
+        await run.save()
+      }
       await optimizeArticleWithSurfer(run, { editorialGuidance: guidance, signal: controller.signal })
       run.status = 'completed'
       await run.save()

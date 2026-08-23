@@ -443,6 +443,11 @@ Rules that hold for every article:
   everything else under `Sources:` and `Needs verification:` below the rule.
 - **No metadata in the body.** Meta title, meta description and slug live only
   below the `---`.
+- **Length: 1,200-1,800 words unless a SurferSEO target says otherwise.** That
+  target, when one exists, always wins. A reader will not finish a 4,000-word
+  page, and search engines do not reward length for its own sake — depth means
+  answering the question fully, not writing more. If the piece will not fit,
+  narrow the subject rather than expanding the word count.
 - Headings are sentence case noun phrases or plain questions — never title case.
 - One H1 only; sections are H2. Use H3 only when a section genuinely subdivides.
 - Bulleted lists only. No numbered lists unless the order is the point.
