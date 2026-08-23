@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import ContentOperationsRun from '../models/ContentOperationsRun.js'
 import { optimizeArticleWithSurfer, prepareSurferForRun } from './contentOperations.js'
+import { chatWithHermes } from './hermesChat.js'
 
 // The chat writes an article with no run behind it, but every Surfer function
 // speaks the run model. This mints one to carry the draft through the SEO pass,
@@ -42,6 +43,42 @@ export async function startSeoPassForDraft({ article, title = '', primaryKeyword
   // is handed the run id and polls it rather than holding a request open.
   void (async () => {
     try {
+      // Ahrefs first: confirm the keyword is worth targeting before Surfer spends
+      // minutes analysing its SERP. Hermes carries the Ahrefs MCP tools, so the
+      // check runs through it. A failure here is not fatal — the pass continues
+      // on the derived keyword rather than stopping.
+      run.currentStage = 'opportunity_research'
+      await run.save()
+      const ahrefsPrompt = `Use the Ahrefs tools to check the keyword "${keyword}" for trustedtechnology.ai. Report, in under 120 words: monthly search volume, keyword difficulty, and whether it is worth targeting. If a closely related keyword is clearly better, name it and say why. Do not write an article. If the Ahrefs tools are unavailable, say so plainly.`
+      try {
+        const { content } = await chatWithHermes(
+          'content-operations-assistant',
+          [{ role: 'user', content: ahrefsPrompt }],
+        )
+        run.stages.push({
+          cycle: 0,
+          stage: 'opportunity_research',
+          status: 'complete',
+          tool: 'Ahrefs MCP via Hermes',
+          result: `Keyword checked: ${keyword}`,
+          explanation: String(content || '').slice(0, 2000),
+          output: keyword,
+          completedAt: new Date().toISOString(),
+        })
+      } catch (ahrefsError) {
+        run.stages.push({
+          cycle: 0,
+          stage: 'opportunity_research',
+          status: 'skipped',
+          tool: 'Ahrefs MCP via Hermes',
+          result: 'The Ahrefs check could not be completed.',
+          explanation: String(ahrefsError?.message || ahrefsError).slice(0, 500),
+          output: keyword,
+          completedAt: new Date().toISOString(),
+        })
+      }
+      await run.save()
+
       await prepareSurferForRun(run)
       await optimizeArticleWithSurfer(run, { editorialGuidance: guidance })
       run.status = 'completed'
