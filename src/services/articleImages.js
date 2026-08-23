@@ -90,6 +90,37 @@ async function generateFromReference(prompt, signal) {
   return Buffer.from(base64, 'base64')
 }
 
+// Plan, generate and upload artwork for an article with no pipeline run behind
+// it — the chat surface passes the draft it is currently holding. Returns the
+// same image shape the run-based path stores, so both the WordPress post and the
+// draft pane place them identically.
+export async function generateArticleImagesForDraft(
+  { article, title = '', primaryKeyword = '', instructions = '' },
+  { signal } = {},
+) {
+  const draft = {
+    article: String(article || ''),
+    brief: { proposedTitle: title, primaryKeyword, imageRecommendations: [] },
+    userInstructions: instructions,
+  }
+  const plan = buildArticleImagePlan(draft)
+  return Promise.all(plan.map(async (item, index) => {
+    const bytes = await generateFromReference(item.prompt, signal)
+    const media = await uploadWordPressMedia({
+      bytes,
+      fileName: `${slugify(title || 'trusted-tech-article')}-${item.role}-${index + 1}.jpg`,
+      contentType: 'image/jpeg',
+      altText: item.altText,
+    })
+    return {
+      ...item,
+      mediaId: Number(media.id),
+      url: media.source_url || media.guid?.rendered || '',
+      generatedAt: new Date().toISOString(),
+    }
+  }))
+}
+
 export async function generateAndUploadArticleImages(run, { signal } = {}) {
   const existingImages = Array.isArray(run.generatedImages) ? [...run.generatedImages] : []
   const plan = buildArticleImagePlan(run)

@@ -19,11 +19,33 @@ import {
   trashWordPressDraftForRun,
   publishToTestBlog,
 } from '../services/contentOperations.js'
+import { generateArticleImagesForDraft } from '../services/articleImages.js'
 import { createPdfDownloadToken } from '../services/articlePdf.js'
 import { getGa4ConnectionStatus, getGa4Snapshot } from '../services/ga4Analytics.js'
 import { verifyWordPressAuthentication } from '../services/wordpress.js'
 
 const router = Router()
+
+// Artwork for a chat-authored draft, which has no run to hang stages off. The
+// article text is supplied by the caller and nothing is persisted here; the
+// images are uploaded to WordPress media and handed straight back.
+router.post('/draft-images', async (req, res, next) => {
+  try {
+    const article = String(req.body?.article || '').trim()
+    if (article.length < 200) {
+      return res.status(400).json({ message: 'Send the article draft to illustrate.' })
+    }
+    const images = await generateArticleImagesForDraft({
+      article,
+      title: String(req.body?.title || '').trim(),
+      primaryKeyword: String(req.body?.primaryKeyword || '').trim(),
+      instructions: String(req.body?.instructions || '').trim(),
+    })
+    return res.json({ images })
+  } catch (error) {
+    return next(error)
+  }
+})
 
 router.get('/integrations', async (_req, res, next) => {
   try {
