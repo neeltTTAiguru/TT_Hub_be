@@ -148,6 +148,35 @@ function escapeHtml(value) {
   return clean(value, 2000).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+// Sections that are not part of the article's argument and must never take an image:
+// the table of contents, the wrap-up and the FAQ. Mirrored in MarkdownArticle.tsx on
+// the frontend, which places the same images the same way in the draft pane.
+const NON_CONTENT_HEADING = /^(?:in this article|on this page|contents|summary|frequently asked questions|faqs?|next steps?)\b/i
+
+function articleFigure(image) {
+  return `<figure class="wp-block-image size-large trusted-tech-article-image"><img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.altText)}" loading="lazy"/>${image.caption ? `<figcaption class="wp-element-caption">${escapeHtml(image.caption)}</figcaption>` : ''}</figure>`
+}
+
+// Which sections get a photo. Every article gets the same shape — one after the intro,
+// one in the middle, one at the end — so the slots are spread evenly across the real
+// sections rather than read from each image's stored anchor. Anchors were planned once
+// from the headings of the day and quietly went stale every time a rewrite renamed a
+// heading, which dropped the image at the very bottom of the post instead.
+function imageSlots(count, sectionCount) {
+  const slots = []
+  if (!sectionCount) return slots
+  for (let index = 0; index < count; index += 1) {
+    const ratio = count === 1 ? 0 : index / (count - 1)
+    let slot = Math.round(ratio * (sectionCount - 1))
+    while (slots.includes(slot) && slot < sectionCount - 1) slot += 1
+    while (slots.includes(slot) && slot > 0) slot -= 1
+    // More images than sections — the rest are appended by the caller.
+    if (slots.includes(slot)) break
+    slots.push(slot)
+  }
+  return slots
+}
+
 export function insertGeneratedImages(html, images = []) {
   // Safety net: drop any paragraph that is an internal image/production note the
   // article writer leaked into prose (the primary strip happens on the Markdown,
@@ -156,12 +185,34 @@ export function insertGeneratedImages(html, images = []) {
   // removed too.
   let output = String(html || '')
     .replace(/<p[^>]*>(?:(?!<\/p>)[\s\S])*?(?:assets\/article-images\/|(?:featured|inline|hero|supporting)\s+image\s+(?:placement|note)|\bimage\s+(?:placement|note)\s*[:,-]|\bsource:\s*(?:approved_t500_reference|approved_media|generated_conceptual)|\brole:\s*(?:featured|inline)\b)(?:(?!<\/p>)[\s\S])*?<\/p>/gi, '')
-  for (const image of images.filter((item) => item.role !== 'featured' && item.url)) {
-    const figure = `<figure class="wp-block-image size-large trusted-tech-article-image"><img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.altText)}" loading="lazy"/>${image.caption ? `<figcaption class="wp-element-caption">${escapeHtml(image.caption)}</figcaption>` : ''}</figure>`
-    const headingSlug = slugify(image.placementAfterHeading)
-    const idPattern = new RegExp(`(<h[23][^>]*id=["']${headingSlug}["'][^>]*>[\\s\\S]*?<\\/h[23]>)`, 'i')
-    if (headingSlug && idPattern.test(output)) output = output.replace(idPattern, `$1${figure}`)
-    else output += figure
+
+  const usable = (Array.isArray(images) ? images : []).filter((image) => image?.url)
+  if (!usable.length) return output
+
+  // The hero leads, then the supporting images in order. The hero is also the post's
+  // featured image, but the theme does not render that on the article itself, so
+  // without this the top of every article has no photo at all.
+  const ordered = [
+    ...usable.filter((image) => image.role === 'featured'),
+    ...usable.filter((image) => image.role !== 'featured'),
+  ]
+
+  const sections = [...output.matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/gi)]
+    .map((match) => ({
+      end: match.index + match[0].length,
+      text: match[1].replace(/<[^>]+>/g, '').trim(),
+    }))
+    .filter((section) => section.text && !NON_CONTENT_HEADING.test(section.text))
+
+  const slots = imageSlots(ordered.length, sections.length)
+
+  // Anything with no section to sit in still gets shown, at the end, as before.
+  for (const image of ordered.slice(slots.length)) output += articleFigure(image)
+
+  // Back to front, so an insertion never invalidates the offsets still to be used.
+  for (let index = slots.length - 1; index >= 0; index -= 1) {
+    const at = sections[slots[index]].end
+    output = `${output.slice(0, at)}${articleFigure(ordered[index])}${output.slice(at)}`
   }
   return output
 }
