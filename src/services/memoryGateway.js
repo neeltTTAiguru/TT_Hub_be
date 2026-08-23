@@ -668,11 +668,24 @@ export async function retrieveMemoryContext({ agentId, messages, user, competito
     String(memory.frontmatter?.competitor || '') === comp.slug ||
     String(memory.slug || '').startsWith(`competitor-analyst/${comp.slug}/`)
 
+  // Per user direction (2026-08-23): an agent's chat reads only its own brain
+  // section. A memory with no allowed_agents is company-wide and readable by
+  // everyone, which is what memoryAllowed permits; here the agent must be named
+  // explicitly, so shared knowledge no longer reaches agent chats.
+  //
+  // The cost is real. The T500 specification, RF-silent, Vault and positioning
+  // memories are all company-wide today, so an agent sees none of them until
+  // they are saved into that agent's own section. Listing endpoints and the
+  // Brain UI are untouched — this narrows retrieval only.
+  const ownSectionOnly = (memory) =>
+    listField(memory.frontmatter?.allowed_agents).includes(agentId)
+
   try {
     const rows = await search(agentId, query, limit)
     const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
     const memories = pages
       .filter((memory) => memoryAllowed(memory, scope))
+      .filter(ownSectionOnly)
       .filter(inSection)
       .slice(0, limit)
     return {
