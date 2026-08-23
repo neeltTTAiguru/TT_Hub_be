@@ -386,13 +386,41 @@ Confirm that the WordPress operation produced the intended review-only draft.
 
 ## Required Output Shape
 
-- Markdown article with an H1 title, an answer-first opening, and an H2/H3 hierarchy
-- Meta title and meta description
-- Recommended slug
-- Lists, tables, and a FAQ where they genuinely help the reader
-- A restrained Trusted Technology call to action
-- Sources used, as markdown links
-- Claims still requiring verification, marked `[SOURCE NEEDED]` or `[INTERNAL CONFIRMATION NEEDED]`
+Every article uses exactly this skeleton, in this order, with these labels:
+
+```markdown
+# <Article title>
+
+<Answer-first opening: what the reader gets, in one short paragraph.>
+
+Meta title: <=60 characters>
+
+Meta description: <=155 characters>
+
+Recommended slug: <kebab-case-slug>
+
+## <First section heading>
+
+<Body. Lists, tables and an FAQ where they genuinely help the reader.>
+
+## <Further sections>
+
+<Body, ending in a restrained Trusted Technology call to action.>
+
+Sources: <markdown links, or "None retrieved">
+```
+
+Rules that hold for every article:
+
+- One H1 only; sections are H2 with H3 beneath where a section needs subdivision.
+- The three meta lines sit directly under the opening paragraph, each on its own
+  line, spelled exactly `Meta title:`, `Meta description:`, `Recommended slug:`.
+- Cite in place as `[SOURCE: <name>]`; mark anything unverified `[SOURCE NEEDED]`
+  or `[INTERNAL CONFIRMATION NEEDED]`.
+- Never describe a source that was not actually retrieved. If a link could not be
+  fetched, say so plainly and omit findings rather than inferring them.
+- No image placement notes, role labels or production asides in the prose — the
+  artwork is attached separately.
 
 ## Article Response Rule
 
