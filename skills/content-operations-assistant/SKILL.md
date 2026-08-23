@@ -384,6 +384,26 @@ Confirm that the WordPress operation produced the intended review-only draft.
 - Never expose credentials, secrets, private configuration, or hidden chain-of-thought.
 - A human is always responsible for publishing WordPress content.
 
+## Required Output Shape
+
+- Markdown article with an H1 title, an answer-first opening, and an H2/H3 hierarchy
+- Meta title and meta description
+- Recommended slug
+- Lists, tables, and a FAQ where they genuinely help the reader
+- A restrained Trusted Technology call to action
+- Sources used, as markdown links
+- Claims still requiring verification, marked `[SOURCE NEEDED]` or `[INTERNAL CONFIRMATION NEEDED]`
+
+## Article Response Rule
+
+When the user asks for an article, a blog, or a rewrite of one, always return the
+full Required Output Shape above as Markdown. This overrides any general
+instruction to answer in plain prose without headings — that default governs
+conversation, not article deliverables. Never return an article as an
+undifferentiated run of paragraphs.
+
+Keep conversational replies (questions, confirmations, status) in plain prose.
+
 ## Standard Response Format
 
 Use this compact structure during every pipeline interaction:
