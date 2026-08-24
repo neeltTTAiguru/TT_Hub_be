@@ -13,6 +13,8 @@ import {
   applyRejectedRevision,
   revertQuickFix,
   reviseArticleForRun,
+  proposeKeywordFixes,
+  proposeSurferFixes,
   revertArticleRevision,
   startContentOperationsRun,
   stopContentOperationsRun,
@@ -82,6 +84,35 @@ router.post('/publish/wordpress-draft', async (req, res, next) => {
       images: Array.isArray(req.body?.images) ? req.body.images : [],
       runId: String(req.body?.runId || ''),
       title: String(req.body?.title || ''),
+    }))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Ahrefs placement fixes for the article the editor is looking at. Stateless on
+// purpose: the draft lives in the browser and no run is minted, because nothing
+// is being changed — the edits come back as proposals and only the editor's
+// accept, in the panel, ever applies one.
+router.post('/article/keyword-fixes', async (req, res, next) => {
+  try {
+    return res.json(await proposeKeywordFixes({
+      article: String(req.body?.article || ''),
+      keywords: Array.isArray(req.body?.keywords) ? req.body.keywords : [],
+    }))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Surfer's coverage fixes for the article on screen. Same contract as the Ahrefs
+// route: proposals out, nothing applied.
+router.post('/article/surfer-fixes', async (req, res, next) => {
+  try {
+    return res.json(await proposeSurferFixes({
+      article: String(req.body?.article || ''),
+      guidelines: req.body?.guidelines && typeof req.body.guidelines === 'object' ? req.body.guidelines : {},
+      gaps: Array.isArray(req.body?.gaps) ? req.body.gaps : [],
     }))
   } catch (error) {
     return next(error)
