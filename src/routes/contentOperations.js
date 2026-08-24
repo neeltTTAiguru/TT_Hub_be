@@ -21,6 +21,7 @@ import {
 } from '../services/contentOperations.js'
 import { generateArticleImagesForDraft } from '../services/articleImages.js'
 import { startSeoPassForDraft } from '../services/contentSeoPass.js'
+import { createDraftFromChatArticle, publishStateForRunId } from '../services/contentPublish.js'
 import { createPdfDownloadToken } from '../services/articlePdf.js'
 import { getGa4ConnectionStatus, getGa4Snapshot } from '../services/ga4Analytics.js'
 import { verifyWordPressAuthentication } from '../services/wordpress.js'
@@ -65,6 +66,35 @@ router.post('/seo-pass', async (req, res, next) => {
       guidance: String(req.body?.guidance || '').trim(),
     })
     return res.status(202).json({ runId: run.runId, status: run.status })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Phase 3 — handing a chat-authored article to WordPress. The draft lives in the
+// browser, so it is sent up here: a run is minted to carry it, the WordPress draft
+// is built from it, and the caller gets back the link the person needs — the post
+// in the WordPress editor, which is where they publish it themselves.
+router.post('/publish/wordpress-draft', async (req, res, next) => {
+  try {
+    return res.json(await createDraftFromChatArticle({
+      article: String(req.body?.article || ''),
+      images: Array.isArray(req.body?.images) ? req.body.images : [],
+      runId: String(req.body?.runId || ''),
+      title: String(req.body?.title || ''),
+    }))
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Lets the publish page come back after a reload knowing it already has a draft
+// in WordPress, so it links to that one rather than creating a second post.
+router.get('/publish/state/:runId', async (req, res, next) => {
+  try {
+    const state = await publishStateForRunId(req.params.runId)
+    if (!state) return res.status(404).json({ message: 'Content pipeline run not found.' })
+    return res.json(state)
   } catch (error) {
     return next(error)
   }
