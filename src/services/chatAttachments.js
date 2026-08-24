@@ -78,6 +78,14 @@ function isDocx(name, mime) {
   return /\.docx$/i.test(String(name || '')) || /wordprocessing/i.test(String(mime || ''))
 }
 
+// Word's pre-2007 binary format. mammoth reads the OOXML .docx zip only, so a
+// .doc gets picked up by the file dialog and then fails with a zip error the
+// user has no way to interpret. Named explicitly so the answer is "save it as
+// .docx" rather than a stack trace about central directories.
+function isLegacyDoc(name, mime) {
+  return /\.doc$/i.test(String(name || '')) || /^application\/msword$/i.test(String(mime || ''))
+}
+
 function isPlainText(name, mime) {
   return /\.(txt|md|markdown|csv|tsv|json|log|ya?ml)$/i.test(String(name || '')) || /^text\//i.test(String(mime || ''))
 }
@@ -107,7 +115,12 @@ export async function extractAttachmentText(attachment) {
     if (isDocx(name, mimeType)) return await extractDocx(buffer)
     if (isPlainText(name, mimeType)) return buffer.toString('utf8').trim()
   } catch (error) {
-    return `(could not read ${name || 'file'}: ${error?.message || 'unreadable'})`
+    // Thrown back rather than returned as text. A returned string is truthy, so
+    // the failure notice was being filed as though it were the document's
+    // contents — the model saw "(could not read ...)" sitting under an "Attached
+    // file" heading and had to infer the difference, instead of getting the
+    // explicit SYSTEM NOTE the unreadable path produces.
+    throw Object.assign(new Error(String(error?.message || 'unreadable')), { attachmentName: name })
   }
   return ''
 }
@@ -133,15 +146,25 @@ export async function buildUserContentWithAttachments(userText, attachments = []
   const blocks = []
   const unreadable = []
   for (const doc of docs) {
-    const text = await extractAttachmentText(doc)
+    let text = ''
+    let failure = ''
+    try {
+      text = await extractAttachmentText(doc)
+    } catch (error) {
+      failure = String(error?.message || 'unreadable')
+    }
     if (text) blocks.push(`--- Attached file: ${doc.name || 'file'} ---\n${text}`)
     else {
       unreadable.push({
         name: doc.name || 'file',
         // HEIC is the common case: an iPhone photo no vision model accepts.
-        reason: isImageMime(doc.mimeType)
-          ? `image format ${doc.mimeType} is not supported (convert to JPEG or PNG)`
-          : 'unsupported file type',
+        reason: (isLegacyDoc(doc.name, doc.mimeType)
+          ? 'the old .doc format cannot be read — open it in Word and Save As .docx'
+          : '')
+          || failure
+          || (isImageMime(doc.mimeType)
+            ? `image format ${doc.mimeType} is not supported (convert to JPEG or PNG)`
+            : 'unsupported file type'),
       })
     }
   }
