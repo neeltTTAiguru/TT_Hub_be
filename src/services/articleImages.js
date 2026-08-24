@@ -1,10 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { uploadWordPressMedia } from './wordpress.js'
 
-const moduleDir = path.dirname(fileURLToPath(import.meta.url))
-const DEFAULT_REFERENCE = path.resolve(moduleDir, '../../assets/article-images/t500-camera-reference.png')
+import { mimeForImage, resolveReference } from './productImages.js'
+
 
 function clean(value, max = 2000) {
   return String(value ?? '').replace(/\0/g, '').trim().slice(0, max)
@@ -67,8 +66,14 @@ export function buildArticleImagePlan(run) {
 async function generateFromReference(prompt, signal) {
   const apiKey = clean(process.env.OPENAI_API_KEY, 500)
   if (!apiKey) throw new Error('OpenAI image generation is not configured. Add OPENAI_API_KEY to the backend environment.')
-  const referencePath = process.env.T500_IMAGE_REFERENCE_PATH || DEFAULT_REFERENCE
-  const bytes = await fs.readFile(referencePath)
+  // Whatever the image library currently points at, so approving a new photo in
+  // the UI changes what every later article is generated from. The env override
+  // still names a file, for pinning a reference outside the library.
+  const override = process.env.T500_IMAGE_REFERENCE_PATH
+  const reference = override
+    ? { bytes: await fs.readFile(override), mimeType: mimeForImage(override), name: path.basename(override) }
+    : await resolveReference()
+  const { bytes } = reference
   const form = new FormData()
   form.append('model', process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1.5')
   form.append('prompt', prompt)
@@ -76,7 +81,10 @@ async function generateFromReference(prompt, signal) {
   form.append('quality', process.env.OPENAI_IMAGE_QUALITY || 'medium')
   form.append('output_format', 'jpeg')
   form.append('output_compression', '86')
-  form.append('image', new Blob([bytes], { type: 'image/png' }), path.basename(referencePath))
+  // The reference is whatever product photography is currently approved, and a
+  // real camera produces JPEG. Hardcoding image/png mislabelled those bytes to
+  // the image API, so the type is taken from the file itself.
+  form.append('image', new Blob([bytes], { type: reference.mimeType }), reference.name)
   const response = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
