@@ -4,7 +4,7 @@ const defaults = {
   target_audience: [],
   article_goal: 'Educate readers',
   desired_word_count: 1800,
-  tone: 'authoritative, useful, clear, and non-promotional',
+  tone: 'authoritative, useful, clear, and written by the company that builds the product — declarative, never hedged',
   call_to_action: '',
 }
 

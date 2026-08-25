@@ -497,7 +497,7 @@ ${JSON.stringify(run.brief)}
 
 Length: ${length}
 ${surferGuidance}
-Use Trusted Technology's clear, authoritative, useful, non-promotional voice.
+Keep Trusted Technology's voice: clear, authoritative and useful. Trusted Technology BUILDS the T500 — write as its maker, not as an analyst weighing it up. State what the product does as fact. Never hedge with "appears", "seems", "may be", "could be", "is likely to" or "is well suited to"; if a claim is true, state it plainly, and if you cannot support it, cut it rather than softening it.
 Write for the canonical Trusted Technology Field Guide format established by WordPress article 1113: an answer-first deck, article overview, clear table of contents, narrow readable body column, practical H2/H3 progression, concise paragraphs, restrained lists, summary, FAQ, and a closing brand statement. Use the format only—never copy article 1113's subject matter, claims, comparisons, or wording. The WordPress renderer owns all CSS; do not add inline styles or invent a separate visual theme.
 Ground product facts in the Trusted Tech knowledge records supplied in your system context.
 Use records marked APPROVED directly. For records marked VERIFY/CITE BEFORE ASSERTING, cite the handbook clearly or omit the claim.
@@ -574,7 +574,7 @@ ${targetWordCount ? `LENGTH — SurferSEO's target for this keyword is ${targetW
 ${guidelineTerms ? `SurferSEO recommends naturally including these terms (target frequency in parentheses; [heading] = works well as/inside a heading): ${guidelineTerms}.` : ''}
 
 WRITING RULES (never violate, even to raise the score):
-- Keep Trusted Technology's clear, authoritative, useful, non-promotional voice and the Field Guide structure (answer-first intro, H2/H3 progression, summary, FAQ).
+- Keep Trusted Technology's voice: clear, authoritative and useful. Trusted Technology BUILDS the T500 — write as its maker, not as an analyst weighing it up. State what the product does as fact. Never hedge with "appears", "seems", "may be", "could be", "is likely to" or "is well suited to"; if a claim is true, state it plainly, and if you cannot support it, cut it rather than softening it. Keep the Field Guide structure (answer-first intro, H2/H3 progression, summary, FAQ).
 - Add the recommended terms at roughly their suggested frequency ONLY where they read naturally. Never keyword-stuff, repeat awkwardly, or trade readability for term density.
 - Never invent facts, statistics, laws, customers, certifications, prices, or product capabilities to satisfy a term or length. Skip a term rather than fabricate.
 - Keep any T500 reference factual and canonical. Keep one H1, the summary, and the FAQ.
@@ -1144,7 +1144,7 @@ ${JSON.stringify({ outline: run.brief.outline, searchIntent: run.brief.searchInt
 
 REWRITE RULES (never violate, even to satisfy the direction):
 - Make a real editorial change, not a cosmetic one. If the direction is about angle, framing, or emphasis, reshape the argument, examples, and section focus — do not just swap a few words.
-- Keep Trusted Technology's clear, authoritative, useful, non-promotional voice and the Field Guide structure: answer-first intro, one H1, six to eight substantive H2 sections, at most three H3s per H2, short paragraphs, restrained lists, one mid-article CTA, a summary, and a Frequently Asked Questions section.
+- Keep Trusted Technology's voice: clear, authoritative and useful. Trusted Technology BUILDS the T500 — write as its maker, not as an analyst weighing it up. State what the product does as fact. Never hedge with "appears", "seems", "may be", "could be", "is likely to" or "is well suited to"; if a claim is true, state it plainly, and if you cannot support it, cut it rather than softening it. Keep the Field Guide structure: answer-first intro, one H1, six to eight substantive H2 sections, at most three H3s per H2, short paragraphs, restrained lists, one mid-article CTA, a summary, and a Frequently Asked Questions section.
 - Never invent statistics, laws, customers, certifications, prices, or product capabilities to serve the new angle. Cut a claim rather than fabricate one. Preserve existing [SOURCE NEEDED] markers and add them to any new externally verifiable claim you cannot ground.
 - Ground product facts in the Trusted Tech knowledge records in your system context. Any T500 reference stays factual and canonical; never redesign the device or invent product interfaces.
 - Do not write a table of contents; the WordPress renderer builds one. Do not repeat the title.
@@ -1794,7 +1794,7 @@ EDIT RULES (a broken rule means the edit is dropped and the editor sees nothing 
 - Keep each edit small — a phrase, a sentence, a heading, at most a paragraph. Use several small edits rather than one huge one. Never put the whole article in "find".
 - To delete text, set "replace" to an empty string. To add text, "find" an existing nearby sentence and put it back in "replace" followed by the new sentence.
 - Never invent statistics, laws, customers, certifications, prices or product capabilities. Cut a claim rather than fabricate one, and leave any [SOURCE NEEDED] marker in place.
-- Keep the Trusted Technology voice: clear, authoritative, useful, not promotional. Keep the Field Guide structure intact — do not remove headings, the CTA, the summary or the FAQ section.
+- Keep Trusted Technology's voice: clear, authoritative and useful. Trusted Technology BUILDS the T500 — write as its maker, not as an analyst weighing it up. State what the product does as fact. Never hedge with "appears", "seems", "may be", "could be", "is likely to" or "is well suited to"; if a claim is true, state it plainly, and if you cannot support it, cut it rather than softening it. Keep the Field Guide structure intact — do not remove headings, the CTA, the summary or the FAQ section.
 - Write only reader-facing prose. No image notes, alt text, captions, asset paths or production direction.
 - If the editor asked a question rather than for a change, answer it in "reply" and return an empty "edits" array.
 
@@ -2050,7 +2050,7 @@ EDIT RULES (a broken rule means the edit is dropped and the editor never sees it
 - One edit per keyword at most, and at most six edits in total. Prefer the highest-value placements over covering every keyword.
 - Do not propose an edit for a keyword the article already places well. Returning fewer edits is correct.
 - Never invent statistics, laws, customers, certifications, prices or product capabilities, and never change a factual claim to fit a keyword. Leave any [SOURCE NEEDED] marker in place.
-- Keep the Trusted Technology voice: clear, authoritative, useful, not promotional. Do not remove headings, the CTA, the summary or the FAQ.
+- Keep Trusted Technology's voice: clear, authoritative and useful. Trusted Technology BUILDS the T500 — write as its maker, not as an analyst weighing it up. State what the product does as fact. Never hedge with "appears", "seems", "may be", "could be", "is likely to" or "is well suited to"; if a claim is true, state it plainly, and if you cannot support it, cut it rather than softening it. Do not remove headings, the CTA, the summary or the FAQ.
 
 THE ARTICLE (markdown):
 ${text}
@@ -2122,7 +2122,7 @@ EDIT RULES (a broken rule means the edit is dropped and the editor never sees it
 - At most eight edits. Prefer a few substantial ones over many trivial ones.
 - Never invent statistics, laws, customers, certifications, prices or product capabilities to hit a target. If answering a question honestly needs a fact you do not have, skip that question. Leave any [SOURCE NEEDED] marker in place.
 - Never keyword-stuff. A heading that reads like a keyword string is worse than missing the term.
-- Keep the Trusted Technology voice: clear, authoritative, useful, not promotional. Keep the Field Guide structure — do not remove headings, the CTA, the summary or the FAQ.
+- Keep Trusted Technology's voice: clear, authoritative and useful. Trusted Technology BUILDS the T500 — write as its maker, not as an analyst weighing it up. State what the product does as fact. Never hedge with "appears", "seems", "may be", "could be", "is likely to" or "is well suited to"; if a claim is true, state it plainly, and if you cannot support it, cut it rather than softening it. Keep the Field Guide structure — do not remove headings, the CTA, the summary or the FAQ.
 
 THE ARTICLE (markdown):
 ${text}

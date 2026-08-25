@@ -1,9 +1,18 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { uploadWordPressMedia } from './wordpress.js'
 
-import { chatWithHermes } from './hermesChat.js'
-import { listPlaceableImages, mimeForImage, readProductImage, resolveReference } from './productImages.js'
+const moduleDir = path.dirname(fileURLToPath(import.meta.url))
+const DEFAULT_REFERENCE = path.resolve(moduleDir, '../../assets/article-images/t500-camera-reference.png')
+
+const REFERENCE_MIME_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
+
+// A real photograph is usually a JPEG, and the type was hardcoded to image/png.
+function referenceMimeType(filePath) {
+  return REFERENCE_MIME_TYPES[path.extname(filePath).toLowerCase()] || 'image/png'
+}
+
 
 
 function clean(value, max = 2000) {
@@ -70,11 +79,8 @@ async function generateFromReference(prompt, signal) {
   // Whatever the image library currently points at, so approving a new photo in
   // the UI changes what every later article is generated from. The env override
   // still names a file, for pinning a reference outside the library.
-  const override = process.env.T500_IMAGE_REFERENCE_PATH
-  const reference = override
-    ? { bytes: await fs.readFile(override), mimeType: mimeForImage(override), name: path.basename(override) }
-    : await resolveReference()
-  const { bytes } = reference
+  const referencePath = process.env.T500_IMAGE_REFERENCE_PATH || DEFAULT_REFERENCE
+  const bytes = await fs.readFile(referencePath)
   const form = new FormData()
   form.append('model', process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1.5')
   form.append('prompt', prompt)
@@ -85,7 +91,7 @@ async function generateFromReference(prompt, signal) {
   // The reference is whatever product photography is currently approved, and a
   // real camera produces JPEG. Hardcoding image/png mislabelled those bytes to
   // the image API, so the type is taken from the file itself.
-  form.append('image', new Blob([bytes], { type: reference.mimeType }), reference.name)
+  form.append('image', new Blob([bytes], { type: referenceMimeType(referencePath) }), path.basename(referencePath))
   const response = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -103,62 +109,6 @@ async function generateFromReference(prompt, signal) {
 // it — the chat surface passes the draft it is currently holding. Returns the
 // same image shape the run-based path stores, so both the WordPress post and the
 // draft pane place them identically.
-// Asks the writer which approved photographs belong in this article and where.
-//
-// This is the difference between artwork ABOUT the product and a photograph OF
-// it. A generated image is fine for an atmospheric hero; it is not fine under a
-// caption that states the device weighs 3.4 oz, because the picture above that
-// sentence would be invented. Anything making a factual claim has to be a real
-// photo, so the writer picks from the approved shelf and the original file is
-// placed untouched.
-async function chooseLibraryImages(article, title, signal) {
-  const shelf = await listPlaceableImages()
-  if (!shelf.length) return []
-  const headings = [...String(article || '').matchAll(/^##\s+(.+)$/gm)]
-    .map((m) => clean(m[1].replace(/[*_`]/g, ''), 300))
-    .filter(Boolean)
-  if (!headings.length) return []
-
-  const reply = await chatWithHermes('content-operations-assistant', [{ role: 'user', content: `
-Choose which approved photographs belong in this Trusted Technology article, and where.
-
-APPROVED PHOTOGRAPHS — use the name EXACTLY as written:
-${shelf.map((i) => `- ${i.name} — ${i.description}`).join('\n')}
-
-THE ARTICLE'S SECTION HEADINGS — placement must be one of these, copied exactly:
-${headings.map((h) => `- ${h}`).join('\n')}
-
-RULES:
-- Choose only photographs that genuinely illustrate what that section discusses. Returning fewer is correct; returning none is correct if none fit.
-- At most one photograph per section, and at most four in total.
-- Write a caption that describes what is actually visible in the photograph, using the description above. Never state a measurement, weight, price, certification or specification that the description does not give you — the caption sits under a real photo and will be read as fact.
-- Do not invent a name that is not on the list.
-
-Return ONLY valid JSON: {"images":[{"name":"","placementAfterHeading":"","caption":"","altText":""}]}
-` }], { instructions: 'Do not call any tools. Return only the JSON asked for.', memoryContext: '', timeoutMs: 90000, rateLimitRetries: 1 }).catch(() => null)
-  const raw = String(reply?.message?.content || '')
-
-  let parsed = []
-  try {
-    parsed = JSON.parse(String(raw).slice(String(raw).indexOf('{'), String(raw).lastIndexOf('}') + 1))?.images || []
-  } catch { return [] }
-
-  const byName = new Map(shelf.map((i) => [i.name, i]))
-  const used = new Set()
-  return (Array.isArray(parsed) ? parsed : [])
-    .map((item) => ({
-      name: String(item?.name || ''),
-      placementAfterHeading: clean(item?.placementAfterHeading, 300),
-      caption: clean(item?.caption, 400),
-      altText: clean(item?.altText, 300),
-    }))
-    // A name off the shelf, or a heading not in the article, would place nothing
-    // and leave a caption stranded. Dropped here rather than downstream.
-    .filter((item) => byName.has(item.name) && headings.some((h) => h.toLowerCase() === item.placementAfterHeading.toLowerCase()))
-    .filter((item) => !used.has(item.name) && used.add(item.name))
-    .slice(0, 4)
-}
-
 export async function generateArticleImagesForDraft(
   { article, title = '', primaryKeyword = '', instructions = '' },
   { signal } = {},
@@ -168,31 +118,7 @@ export async function generateArticleImagesForDraft(
     brief: { proposedTitle: title, primaryKeyword, imageRecommendations: [] },
     userInstructions: instructions,
   }
-  // Real photographs first. Whatever the library covers is placed as-is; only
-  // the slots it does not cover fall through to generation.
-  const chosen = await chooseLibraryImages(draft.article, title, signal)
-  const placed = await Promise.all(chosen.map(async (pick, index) => {
-    const { bytes, mimeType } = await readProductImage(pick.name)
-    const media = await uploadWordPressMedia({
-      bytes,
-      fileName: `${slugify(title || 'trusted-tech-article')}-photo-${index + 1}${path.extname(pick.name) || '.jpg'}`,
-      contentType: mimeType,
-      altText: pick.altText || pick.caption,
-    })
-    return {
-      role: `inline-${index + 1}`,
-      mediaId: Number(media.id),
-      url: media.source_url || media.guid?.rendered || '',
-      altText: pick.altText || pick.caption,
-      caption: pick.caption,
-      placementAfterHeading: pick.placementAfterHeading,
-      // Marked so nothing downstream mistakes a real photograph for artwork.
-      source: 'approved_photo',
-    }
-  })).catch(() => [])
-
-  const takenHeadings = new Set(placed.map((p) => p.placementAfterHeading.toLowerCase()))
-  const plan = buildArticleImagePlan(draft).filter((item) => !takenHeadings.has(String(item.placementAfterHeading || '').toLowerCase()))
+  const plan = buildArticleImagePlan(draft)
   const generated = await Promise.all(plan.map(async (item, index) => {
     const bytes = await generateFromReference(item.prompt, signal)
     const media = await uploadWordPressMedia({
@@ -206,12 +132,9 @@ export async function generateArticleImagesForDraft(
       mediaId: Number(media.id),
       url: media.source_url || media.guid?.rendered || '',
       generatedAt: new Date().toISOString(),
-      source: 'generated',
     }
   }))
-  // Photographs first so they read as the article's evidence, with generated
-  // artwork filling only what the library could not cover.
-  return [...placed, ...generated]
+  return generated
 }
 
 export async function generateAndUploadArticleImages(run, { signal } = {}) {
