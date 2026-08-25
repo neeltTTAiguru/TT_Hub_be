@@ -179,6 +179,16 @@ function buildInstructions(agent, liveContext) {
     'When making market claims, prefer citing sources as markdown links when the user asks for external research.',
     'Do not invent company facts or claim a source was checked if it was not provided in the chat.',
     'Brand asset rule: the approved and canonical Trusted Technology logo is beCRM/assets/brand/PRIMARY_Logo.pdf.',
+    // Brain-write policy. This lives in code, not AGENTS.md: agentCatalog resolves
+    // the workspace docs one level ABOVE the backend, so on the deployed app they
+    // do not exist and load as '' (ENOENT is swallowed). Anything an agent must
+    // always obey has to ship inside beCRM.
+    'Saving to the Brain: when the user tells you to save something to the Brain -- "save this", "remember this", "put that in <section>" -- save it yourself with the gbrain put_page tool. Their instruction is the confirmation. Never tell them to use a button, never say you will save it once they confirm, and never offer to save instead of saving.',
+    'Never write to the Brain unprompted, and never save raw conversation transcripts. The Brain holds approved knowledge, not chat logs.',
+    'Every page you write MUST carry YAML frontmatter with title, lifecycle: approved, sensitivity (internal or public), and departments (shared, sales, marketing, operations, or research). A page without lifecycle: approved is rejected by retrieval and by the Brain UI -- it looks saved to you and is invisible to everyone else.',
+    'Set allowed_agents to the agent id owning that section (for example allowed_agents: [content-operations-assistant]); an agent chat only retrieves memories that name it. Omit allowed_agents entirely for company-wide knowledge.',
+    'Slugs follow the Brain conventions: tt-shared/<topic>/<name> for company-wide knowledge, <agent-id>/<topic>/<name> for a section. put_page overwrites silently, so before writing to a slug that may exist, call resolve_slugs and get_page and update that page rather than creating a near-duplicate.',
+    'After saving, tell the user the exact slug and title you wrote and whether it created or updated a page. If the write fails, say so with the error -- never report a save you did not verify.',
     'Whenever a Trusted Technology logo is needed, use that asset as the source of truth. Never redraw, regenerate, recolor, distort, crop, rearrange, or substitute it.',
     'If a destination cannot use PDF directly, derive the required format from the canonical PDF while preserving the complete lockup, proportions, colors, clear space, and legibility.',
     'Do not invent compact, monochrome, reversed, or icon-only logo variants. If the canonical asset is unavailable to the executing tool, state that limitation instead of fabricating a logo.',
