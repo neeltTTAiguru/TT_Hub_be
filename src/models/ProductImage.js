@@ -15,6 +15,11 @@ const productImageSchema = new mongoose.Schema(
     // Excluded by default so listing the library does not drag every photo out
     // of the database with it.
     data: { type: Buffer, required: true, select: false },
+    // What the photo shows, in the editor's words. This is the only thing the
+    // writer has to choose by: given a shelf of filenames it cannot tell
+    // t500-1.jpg from t500-2.jpg, and a caption invented from a filename is a
+    // caption invented from nothing.
+    description: { type: String, default: '', trim: true },
     // The one the article generator builds the device from. Exactly one row
     // carries this at a time; setReferenceImage clears the others.
     isReference: { type: Boolean, default: false },

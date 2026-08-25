@@ -2,6 +2,7 @@ import express, { Router } from 'express'
 import { getAuthenticatedUser } from '../middleware/auth.js'
 import {
   deleteProductImage,
+  describeProductImage,
   listProductImages,
   readProductImage,
   saveProductImage,
@@ -39,6 +40,14 @@ router.post('/', uploadParser, async (req, res, next) => {
     const fileName = String(req.header('x-file-name') || '').trim().slice(0, 200)
     const saved = await saveProductImage({ buffer: req.body, fileName, user: getAuthenticatedUser(req)?.email || '' })
     return res.status(saved.replaced ? 200 : 201).json(saved)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/:name/description', express.json(), async (req, res, next) => {
+  try {
+    return res.json(await describeProductImage(req.params.name, req.body?.description))
   } catch (error) {
     return next(error)
   }

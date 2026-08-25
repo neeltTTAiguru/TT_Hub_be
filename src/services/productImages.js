@@ -76,13 +76,14 @@ async function seedFromDisk() {
 
 export async function listProductImages() {
   await seedFromDisk()
-  const rows = await ProductImage.find({}, 'name mimeType sizeBytes isReference updatedAt').sort({ name: 1 }).lean()
+  const rows = await ProductImage.find({}, 'name mimeType sizeBytes isReference description updatedAt').sort({ name: 1 }).lean()
   return {
     images: rows.map((row) => ({
       name: row.name,
       sizeBytes: row.sizeBytes,
       updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : '',
       isReference: Boolean(row.isReference),
+      description: row.description || '',
     })),
     reference: rows.find((row) => row.isReference)?.name || '',
   }
@@ -139,6 +140,26 @@ export async function saveProductImage({ buffer, fileName, user = '' }) {
     { upsert: true },
   )
   return { name: safe, replaced: Boolean(existing), sizeBytes: buffer.length }
+}
+
+export async function describeProductImage(name, description) {
+  const safe = safeName(name)
+  if (!safe) throw Object.assign(new Error('That is not an approved image name.'), { statusCode: 400 })
+  const updated = await ProductImage.updateOne(
+    { name: safe },
+    { $set: { description: String(description || '').trim().slice(0, 400) } },
+  )
+  if (!updated.matchedCount) throw Object.assign(new Error('That image does not exist.'), { statusCode: 404 })
+  return { name: safe, description: String(description || '').trim().slice(0, 400) }
+}
+
+// The shelf the writer chooses from. Only described images are offered: an image
+// nobody has explained cannot be placed responsibly, and offering it invites a
+// caption made up to match the filename.
+export async function listPlaceableImages() {
+  await seedFromDisk().catch(() => {})
+  const rows = await ProductImage.find({ description: { $nin: ['', null] } }, 'name description').sort({ name: 1 }).lean().catch(() => [])
+  return rows.map((row) => ({ name: row.name, description: row.description }))
 }
 
 export async function setReferenceImage(name) {
