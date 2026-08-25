@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { getHubSpotHealth, refreshHubSpotHealth } from '../services/hubspotHealth.js'
+import { probeMemoryGateway } from '../services/memoryGateway.js'
 
 const router = Router()
 
@@ -17,6 +18,25 @@ router.get('/hubspot', async (req, res, next) => {
     // liveness only — no hub id or other portal identifiers.
     const { status, checkedAt, error } = health
     return res.status(status === 'down' ? 503 : 200).json({ status, checkedAt, error })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Liveness of the GBrain MCP memory backend. Memory retrieval fails soft — an
+// unreachable server or an expired token yields an empty context and the agent
+// answers anyway — so this is the only way to tell a connected hub from one
+// that is quietly answering with no memory at all.
+// status: 'ok' | 'unauthorized' | 'down' | 'disabled'.
+router.get('/gbrain', async (_req, res, next) => {
+  try {
+    const health = await probeMemoryGateway()
+    // Mounted ahead of requireAuth, so the payload stays liveness-only: no MCP
+    // URL, token, or stdio command.
+    return res.status(health.status === 'ok' || health.status === 'disabled' ? 200 : 503).json({
+      ...health,
+      checkedAt: new Date().toISOString(),
+    })
   } catch (error) {
     return next(error)
   }

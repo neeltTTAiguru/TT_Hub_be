@@ -709,6 +709,44 @@ export async function retrieveMemoryContext({ agentId, messages, user, competito
   }
 }
 
+// Liveness probe for the GBrain MCP connection.
+//
+// Why this exists: every retrieval path fails SOFT. retrieveMemoryContext
+// catches a dead server or a rejected token, logs `gbrain_memory_unavailable`,
+// and returns an empty context — so the agent still answers fluently, just with
+// no memory behind it, and the UI's "Hermes + GBrain" label keeps claiming a
+// connection that isn't there. On 2026-08-25 the local GBrain had been down for
+// a week before anyone noticed. This makes the connection checkable.
+//
+// Uses list_pages rather than search so the probe costs no embedding call.
+export async function probeMemoryGateway({ agentId = 'trusted-tech-assistant' } = {}) {
+  if (!enabled()) {
+    return { status: 'disabled', transport: 'none', error: 'GBRAIN_ENABLED is not true.' }
+  }
+  const transport = String(process.env.GBRAIN_MCP_URL || '').trim() ? 'http' : 'stdio'
+  try {
+    // callTool closes and evicts the pooled client on failure, so a probe never
+    // leaves a poisoned connection behind for the next real request.
+    const result = await callTool(agentId, 'list_pages', { limit: 1 })
+    return { status: 'ok', transport, pages: structuredRows(result).length, error: '' }
+  } catch (error) {
+    const message = String(error?.message || error)
+    // An expired scoped token is the failure mode that looks identical to a
+    // healthy hub from the UI, so it gets its own status rather than 'down'.
+    const rejected = /invalid_token|unauthorized|\b40[13]\b/i.test(message)
+    return {
+      status: rejected ? 'unauthorized' : 'down',
+      transport,
+      pages: 0,
+      // Deliberately coarse: this endpoint is unauthenticated, so it must not
+      // echo the MCP URL, token, or stdio command back to the caller.
+      error: rejected
+        ? 'GBrain rejected GBRAIN_MCP_TOKEN (invalid or expired).'
+        : 'Could not reach the GBrain MCP server.',
+    }
+  }
+}
+
 export async function closeMemoryGateway() {
   const active = Array.from(clients.values())
   clients.clear()
