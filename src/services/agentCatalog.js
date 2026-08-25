@@ -7,12 +7,13 @@ const __dirname = path.dirname(__filename)
 const backendRoot = path.resolve(__dirname, '..', '..')
 const workspaceRoot = path.resolve(__dirname, '..', '..', '..')
 
+// The OpenClaw workspace scaffold (AGENTS.md, IDENTITY.md, SOUL.md, USER.md,
+// HEARTBEAT.md) was removed on 2026-08-25. It resolved one level ABOVE the
+// backend, so on the deployed app the files never existed and loaded as '' with
+// ENOENT swallowed -- production ran without them for the life of the app. Their
+// only operative content was already duplicated in buildInstructions(), which is
+// where agent-wide rules now live.
 const files = {
-  workspaceInstructions: path.join(workspaceRoot, 'AGENTS.md'),
-  identity: path.join(workspaceRoot, 'IDENTITY.md'),
-  soul: path.join(workspaceRoot, 'SOUL.md'),
-  user: path.join(workspaceRoot, 'USER.md'),
-  heartbeat: path.join(workspaceRoot, 'HEARTBEAT.md'),
 }
 
 const agentDefinitions = [
@@ -223,26 +224,7 @@ async function loadCatalogFiles() {
     ),
   )
 
-  const [
-    workspaceInstructions,
-    identity,
-    soul,
-    user,
-    heartbeat,
-  ] = await Promise.all([
-    readText(files.workspaceInstructions),
-    readText(files.identity),
-    readText(files.soul),
-    readText(files.user),
-    readText(files.heartbeat),
-  ])
-
   return {
-    workspaceInstructions,
-    identity,
-    soul,
-    user,
-    heartbeat,
     skills,
     pluginManifest: {
       id: 'trusted-tech-hub',
@@ -260,8 +242,6 @@ async function loadCatalogFiles() {
 
 export async function listAgents() {
   const catalog = await loadCatalogFiles()
-  const productAreas = getBulletItems(getSection(catalog.workspaceInstructions, 'Initial Product Areas'))
-  const activeProducts = productAreas
   const pluginTools = getToolNames(catalog.pluginEntry)
   const pluginConfigFields = Object.keys(catalog.pluginManifest.configSchema?.properties ?? {})
 
@@ -278,11 +258,6 @@ export async function listAgents() {
       workflow: getBulletItems(getSection(skill, 'Workflow')),
       outputShape: getBulletItems(getSection(skill, 'Required Output Shape')),
       behaviorRules: getBulletItems(getSection(skill, 'Behavior Rules')),
-      workspace: {
-        purpose: getFirstParagraph(getSection(catalog.workspaceInstructions, 'Workspace Purpose')),
-        activeProducts,
-        trustedTechRules: getBulletItems(getSection(catalog.workspaceInstructions, 'Trusted Tech Rules')),
-      },
       plugin: {
         id: catalog.pluginManifest.id,
         name: catalog.pluginManifest.name,
@@ -293,8 +268,6 @@ export async function listAgents() {
       },
       files: {
         skill: agent.skillPath,
-        workspaceInstructions: files.workspaceInstructions,
-        identity: files.identity,
       },
     }
   })
@@ -314,26 +287,6 @@ export async function getAgentById(agentId) {
   return {
     ...agent,
     documents: {
-      workspaceInstructions: {
-        path: files.workspaceInstructions,
-        content: catalog.workspaceInstructions,
-      },
-      identity: {
-        path: files.identity,
-        content: catalog.identity,
-      },
-      soul: {
-        path: files.soul,
-        content: catalog.soul,
-      },
-      user: {
-        path: files.user,
-        content: catalog.user,
-      },
-      heartbeat: {
-        path: files.heartbeat,
-        content: catalog.heartbeat,
-      },
       skill: {
         path: agentDefinition.skillPath,
         content: catalog.skills[agentId],
