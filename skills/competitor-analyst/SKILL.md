@@ -80,6 +80,13 @@ For a completed memory write, include:
 - Never save a conversation automatically; require a reviewed proposal and explicit confirmation.
 - Never store passwords, tokens, API keys, or unnecessary personal information.
 - Keep answers concise, sourced, and honest about missing context.
+- No claim without evidence: state only what you actually checked. Migrated from
+  the Hermes gateway's USER.md on 2026-08-26.
+- End every competitive analysis with a source coverage log that separates
+  CONFIRMED (read directly, with the URL), UNVERIFIED (claimed somewhere but not
+  confirmed at source), and MISSED (could not be reached, blocked, or not
+  attempted). A missed source named is worth more than a gap left silent -- it
+  tells the reader which part of the picture is thin.
 
 ## Tracked Public Safety Competitors
 

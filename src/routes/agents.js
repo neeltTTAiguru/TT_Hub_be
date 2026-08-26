@@ -4,7 +4,7 @@ import { chatWithHermes, streamHermesChat } from '../services/hermesChat.js'
 import { chatWithAgent } from '../services/openaiChat.js'
 import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
-import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listBrainSectionMemories } from '../services/memoryGateway.js'
+import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listBrainSectionMemories, listAllBrainMemories, deleteBrainMemory } from '../services/memoryGateway.js'
 import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
 import { buildUserContentWithAttachments } from '../services/chatAttachments.js'
@@ -15,6 +15,7 @@ import {
   createSentinelGate,
 } from '../services/hubspotHealth.js'
 import { chatWithYouTrack } from '../services/youtrack.js'
+import { applySaveRequests, createSaveGate } from '../services/brainSave.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
 
 const router = Router()
@@ -198,6 +199,15 @@ router.post('/:id/chat', async (req, res, next) => {
             : memoryOptions,
         )
         : await chatWithAgent(req.params.id, chatMessages, memoryOptions)
+    if (SAVE_CAPABLE_AGENTS.has(req.params.id) && result?.message?.content) {
+      const applied = await applySaveRequests({
+        agentId: req.params.id,
+        user,
+        content: result.message.content,
+      })
+      result.message.content = applied.content
+      result.meta = { ...(result.meta || {}), saved: applied.saved, saveFailed: applied.failed }
+    }
     result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
     return res.json(result)
   } catch (error) {
@@ -209,6 +219,11 @@ router.post('/:id/chat', async (req, res, next) => {
 // and a final `data: {"done":true,"message":...}`. Heartbeat comments keep the
 // connection warm during the (silent) tool-call phase so long HubSpot analyses
 // don't hit a fixed request cap or a proxy idle-timeout.
+// Agents whose replies are scanned for save blocks. Matches MEMORY_WRITERS in
+// memoryGateway -- no other agent can write, so no other agent's output needs
+// parsing.
+const SAVE_CAPABLE_AGENTS = new Set(['trusted-tech-assistant', 'competitor-analyst'])
+
 const STREAMING_AGENTS = new Set([
   'trusted-tech-hubspot-assistant',
   'trusted-tech-assistant',
@@ -275,7 +290,11 @@ router.post('/:id/chat/stream', async (req, res, next) => {
     // Only the HubSpot agent can emit the unavailable sentinel, so only it needs
     // its opening tokens held back until they are proven to be a real answer.
     const gate = agentId === 'trusted-tech-hubspot-assistant' ? createSentinelGate(writeDelta) : null
-    const emit = gate ? gate.emit : writeDelta
+    // Brain and Competitor Analyst may emit a save block. Hold it back so the
+    // user never sees the raw markup; the real outcome is appended after the
+    // backend has actually written the page.
+    const saveGate = SAVE_CAPABLE_AGENTS.has(agentId) ? createSaveGate(writeDelta) : null
+    const emit = gate ? gate.emit : saveGate ? saveGate.emit : writeDelta
 
     try {
       const { content } = await streamHermesChat(
@@ -291,10 +310,31 @@ router.post('/:id/chat/stream', async (req, res, next) => {
       )
       if (gate) assertResponseIsLive(content)
       gate?.flush()
+      saveGate?.flush()
+
+      let finalContent = content
+      let saved = []
+      let saveFailed = []
+      if (saveGate) {
+        const applied = await applySaveRequests({ agentId, user, content })
+        finalContent = applied.content
+        saved = applied.saved
+        saveFailed = applied.failed
+        // Stream the outcome the backend produced, so the user sees the result
+        // rather than waiting for the final message to swap it in.
+        const report = finalContent.slice(content.replace(/<save-to-brain>[\s\S]*$/, '').trimEnd().length)
+        if (report.trim()) writeDelta(report)
+      }
+
       res.write(`data: ${JSON.stringify({
         done: true,
-        message: { role: 'assistant', content },
-        meta: { provider: 'hermes', memory: { status: memory.status, retrieved: memory.memories.length } },
+        message: { role: 'assistant', content: finalContent },
+        meta: {
+          provider: 'hermes',
+          memory: { status: memory.status, retrieved: memory.memories.length },
+          saved,
+          saveFailed,
+        },
       })}\n\n`)
     } catch (error) {
       if (error?.code !== 'RUN_STOPPED') {
@@ -393,6 +433,29 @@ router.get('/:id/brain-sections/:section/memories', async (req, res, next) => {
     }
     const result = await listBrainSectionMemories({ agentId: req.params.id, section, user })
     return res.json({ section, ...result })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// One brain: every page the caller may see, no section filter.
+router.get('/:id/brain/pages', async (req, res, next) => {
+  try {
+    const user = getAuthenticatedUser(req)
+    const result = await listAllBrainMemories({ agentId: req.params.id, user })
+    return res.json(result)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Slug travels in the body, not the path: GBrain slugs contain '/', which no
+// amount of encoding survives cleanly through Express path params.
+router.delete('/:id/brain/pages', async (req, res, next) => {
+  try {
+    const user = getAuthenticatedUser(req)
+    const result = await deleteBrainMemory({ agentId: req.params.id, user, slug: req.body?.slug })
+    return res.json(result)
   } catch (error) {
     return next(error)
   }

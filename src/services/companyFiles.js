@@ -128,6 +128,8 @@ export async function listCompanyFiles() {
     sourceType: document.sourceType,
     approvalStatus: document.approvalStatus,
     recordCount: byDocument.get(String(document._id)) || 0,
+    brainPageCount: document.brainPageCount || 0,
+    brainIngestedAt: document.brainIngestedAt || null,
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
   }))

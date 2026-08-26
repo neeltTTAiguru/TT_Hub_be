@@ -14,6 +14,11 @@ const knowledgeDocumentSchema = new mongoose.Schema(
     extractedText: { type: String, required: true },
     fileData: { type: Buffer, required: true, select: false },
     pageCount: { type: Number, default: 0 },
+    // How many brain pages this document was split into, and when. Lets the
+    // library show that a file is already in the Brain instead of offering an
+    // "Add" that has already happened.
+    brainPageCount: { type: Number, default: 0 },
+    brainIngestedAt: { type: Date, default: null },
     approvedAt: { type: Date, default: null },
     approvedBy: { type: String, default: '' },
   },

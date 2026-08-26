@@ -25,6 +25,7 @@ import {
 import { markdownToWordPressHtml, stripProductionNotes } from './markdown.js'
 import { generateAndUploadArticleImages, insertGeneratedImages } from './articleImages.js'
 import { getAhrefsMcpStatus } from './ahrefsMcp.js'
+import { retrieveMemoryContext } from './memoryGateway.js'
 
 const DEFAULT_DOMAIN = 'trustedtechnology.ai'
 // The curated Ahrefs "Trusted list" the research stage pulls from by default. Overridable
@@ -81,15 +82,46 @@ function logRun(run, message) {
   console.log(`[content-ops] ${run.runId} c${Number(run.currentCycle || 0)} ${message}`)
 }
 
-async function askHermes(prompt, signal) {
+// The pipeline used to send NO memory at all -- every stage ran on the skill
+// file and live Mongo context alone, so nothing saved to the brain could ever
+// reach article writing. Retrieval is per-prompt, same as the chat routes.
+// `withMemory: false` for mechanical calls (the JSON repair below), which want
+// no company context and should not pay for an embedding search.
+// Short, topical search string for brain retrieval: what the article is about,
+// stripped of stage machinery.
+function memoryQueryFor(run, extra = '') {
+  return [
+    extra,
+    run?.brief?.primaryKeyword || run?.brief?.keyword || '',
+    run?.brief?.title || '',
+    run?.userInstructions || '',
+  ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 400)
+}
+
+async function askHermes(prompt, signal, { withMemory = true, memoryQuery = '' } = {}) {
+  let memoryContext = ''
+  if (withMemory) {
+    const memory = await retrieveMemoryContext({
+      agentId: 'content-operations-assistant',
+      // Search the brain with the ARTICLE TOPIC, not the stage prompt. A stage
+      // prompt is mostly machinery -- tool names, parameter shapes, JSON schemas
+      // -- so using it as the query returns whatever is least-bad rather than
+      // what the article is about. Callers pass the keyword/title instead.
+      messages: [{ role: 'user', content: memoryQuery || prompt }],
+      // No authenticated user on a background run, so the scope resolves to
+      // public + internal only. Confidential pages stay out of articles.
+      user: {},
+    })
+    memoryContext = memory.context
+  }
   const response = await chatWithHermes('content-operations-assistant', [
     { role: 'user', content: prompt },
-  ], { signal })
+  ], { signal, memoryContext })
   return response.message.content
 }
 
-async function askHermesForJson(prompt, schemaReminder, signal) {
-  const content = await askHermes(prompt, signal)
+async function askHermesForJson(prompt, schemaReminder, signal, memoryQuery = '') {
+  const content = await askHermes(prompt, signal, { memoryQuery })
 
   try {
     return extractJson(content)
@@ -104,7 +136,7 @@ ${schemaReminder}
 
 Research response:
 ${cleanText(content, 30000)}
-`, signal)
+`, signal, { withMemory: false })
     return extractJson(repaired)
   }
 }
@@ -292,7 +324,7 @@ Return up to five opportunities. Score business fit, buyer intent, conversion po
     "score": 0,
     "rationale": ""
   }]
-}`, options.signal)
+}`, options.signal, memoryQueryFor(run, run.userInstructions))
     const toolCallsUsed = assertUsableAhrefsResearch(parsed)
     const opportunities = Array.isArray(parsed.opportunities)
       ? parsed.opportunities.slice(0, 5).map(normalizeOpportunity)
@@ -454,7 +486,7 @@ Image recommendation requirements:
 - Each inline image must name an exact proposed H2 in placementAfterHeading.
 - Space inline images across the middle of the article: one near the first third and one near the second third.
 - Each image must explain or visualize the specific section beside it; do not return decorative filler.
-`, options.signal)
+`, options.signal, { memoryQuery: memoryQueryFor(run, `${selected?.primaryKeyword || ''} ${selected?.title || ''}`) })
     run.brief = extractJson(content)
     pushStage(run, stageRecord(
       'seo_brief',
@@ -511,7 +543,7 @@ When the brief concerns repossession or vehicle recovery, preserve the approved 
 Never invent statistics, laws, customers, certifications, prices, or product capabilities.
 Mark externally verifiable unsupported claims with [SOURCE NEEDED].
 Return only the Markdown article.
-`, options.signal)
+`, options.signal, { memoryQuery: memoryQueryFor(run) })
     run.article = stripProductionNotes(content)
     pushStage(run, stageRecord(
       'article_writing',
@@ -826,6 +858,7 @@ export async function optimizeArticleWithSurfer(run, options = {}) {
       const revised = stripProductionNotes(await askHermes(
         buildReviseArticlePrompt(keyword, bestArticle, guidelineTerms, bestSeo, targetScore, targetWordCount, editorialGuidance, scoreFloor),
         signal,
+        { memoryQuery: memoryQueryFor(run, keyword) },
       ))
       passes += 1
       if (!revised || revised.length < originalArticle.length * 0.6) break
@@ -1435,6 +1468,7 @@ ${shape}
     const rewritten = stripProductionNotes(await askHermes(
       buildEditorRewritePrompt(run, instruction, guidanceHistory, research),
       signal,
+      { memoryQuery: memoryQueryFor(run) },
     ))
     if (!rewritten || rewritten.length < previousArticle.length * 0.4) {
       throw new Error('The rewrite came back empty or drastically truncated, so the current article was kept.')
@@ -1872,7 +1906,7 @@ export async function applyQuickFixToRun(run, options = {}) {
   const previousArticle = run.article
   let parsed
   try {
-    parsed = await askHermesForJson(buildQuickFixPrompt(run, instruction, conversation), QUICK_FIX_JSON_SHAPE)
+    parsed = await askHermesForJson(buildQuickFixPrompt(run, instruction, conversation), QUICK_FIX_JSON_SHAPE, undefined, memoryQueryFor(run, instruction))
   } catch (error) {
     run.quickFixChat.push({
       id: crypto.randomUUID(),

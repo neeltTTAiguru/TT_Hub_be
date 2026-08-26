@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { getHubSpotHealth, refreshHubSpotHealth } from '../services/hubspotHealth.js'
-import { probeMemoryGateway } from '../services/memoryGateway.js'
+import { probeMemoryGateway, countBrainPages } from '../services/memoryGateway.js'
 
 const router = Router()
 
@@ -31,10 +31,14 @@ router.get('/hubspot', async (req, res, next) => {
 router.get('/gbrain', async (_req, res, next) => {
   try {
     const health = await probeMemoryGateway()
+    // `pages` from the probe is only the 1-row liveness read; the header wants
+    // the real total, which get_stats returns without enumerating pages.
+    const pageCount = health.status === 'ok' ? await countBrainPages() : null
     // Mounted ahead of requireAuth, so the payload stays liveness-only: no MCP
     // URL, token, or stdio command.
     return res.status(health.status === 'ok' || health.status === 'disabled' ? 200 : 503).json({
       ...health,
+      pageCount,
       checkedAt: new Date().toISOString(),
     })
   } catch (error) {

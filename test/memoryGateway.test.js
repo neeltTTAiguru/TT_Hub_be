@@ -7,6 +7,7 @@ import {
   parseMemoryPage,
   retrieveMemoryContext,
   saveApprovedMemory,
+  deleteBrainMemory,
 } from '../src/services/memoryGateway.js'
 
 function page(frontmatter = {}, body = 'Approved company knowledge.') {
@@ -185,6 +186,139 @@ test('rejects credential-like memory content before writing', async () => {
       }),
       /credential or secret/,
     )
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('one brain: company-wide pages reach every agent, agent-scoped pages do not', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  const memories = {
+    'tt-shared/t500-spec': page({}, 'The T500 records for 12 hours.'),
+    'content-ops/house-style': page(
+      { allowed_agents: '[content-operations-assistant]' },
+      'House style for articles.',
+    ),
+    'competitor/axon-only': page(
+      { allowed_agents: '[competitor-analyst]' },
+      'Axon pricing intelligence.',
+    ),
+  }
+  try {
+    const result = await retrieveMemoryContext({
+      agentId: 'content-operations-assistant',
+      user: { id: 'user-1', payload: {} },
+      messages: [{ role: 'user', content: 'what do we say about the T500?' }],
+      search: async () => Object.keys(memories).map((slug) => ({ slug })),
+      read: async (_agentId, slug) => ({ ...memories[slug], slug }),
+    })
+    const slugs = result.memories.map((memory) => memory.slug)
+    // Unrestricted page is readable by all -- this is what the section rule broke.
+    assert.ok(slugs.includes('tt-shared/t500-spec'))
+    // A page that names this agent still reaches it.
+    assert.ok(slugs.includes('content-ops/house-style'))
+    // A page scoped to a DIFFERENT agent is still withheld.
+    assert.ok(!slugs.includes('competitor/axon-only'))
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('deleting a brain page is restricted to memory writers', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  try {
+    await assert.rejects(
+      deleteBrainMemory({
+        agentId: 'content-operations-assistant',
+        user: { id: 'user-1', payload: {} },
+        slug: 'tt-shared/fact',
+        read: async () => page(),
+        remove: async () => { throw new Error('must not be called') },
+      }),
+      /Only Brain or Competitor Analyst can delete/,
+    )
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('refuses to delete a page the caller is not allowed to read', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  let removed = false
+  try {
+    await assert.rejects(
+      deleteBrainMemory({
+        agentId: 'trusted-tech-assistant',
+        // No memory:confidential permission on this user.
+        user: { id: 'user-1', payload: {} },
+        slug: 'tt-confidential/pricing',
+        read: async () => page({ sensitivity: 'confidential' }),
+        remove: async () => { removed = true },
+      }),
+      /not readable with your permissions/,
+    )
+    assert.equal(removed, false)
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('deletes a readable page and reports the recovery window', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  const removed = []
+  try {
+    const result = await deleteBrainMemory({
+      agentId: 'trusted-tech-assistant',
+      user: { id: 'user-1', payload: {} },
+      slug: 'tt-shared/fact',
+      read: async () => page(),
+      remove: async (_agentId, slug) => { removed.push(slug) },
+    })
+    assert.deepEqual(removed, ['tt-shared/fact'])
+    assert.equal(result.slug, 'tt-shared/fact')
+    assert.equal(result.recoverableHours, 72)
+  } finally {
+    if (original === undefined) delete process.env.GBRAIN_ENABLED
+    else process.env.GBRAIN_ENABLED = original
+  }
+})
+
+test('editing a brain page overwrites the same slug rather than creating a new one', async () => {
+  const original = process.env.GBRAIN_ENABLED
+  process.env.GBRAIN_ENABLED = 'true'
+  const slug = 'tt-shared/docs/t500-overview/the-t500-camera-is-lightweight'
+  const writes = []
+  try {
+    const saved = await saveApprovedMemory({
+      agentId: 'trusted-tech-assistant',
+      user: { id: 'user-1', payload: {} },
+      proposal: {
+        title: 'The T500 camera is lightweight, full HD',
+        content: 'Corrected: the T500 records for 14 hours on a single charge.',
+        department: 'shared',
+        sensitivity: 'internal',
+        allowedAgents: [],
+        targetSlug: slug,
+      },
+      confirmed: true,
+      // An ingested, company-wide page: approved, no allowed_agents.
+      read: async (_agentId, target) => (target === slug
+        ? { slug, title: 'The T500 camera is lightweight, full HD', body: 'old body', frontmatter: { lifecycle: 'approved', sensitivity: 'internal', departments: 'shared' } }
+        : null),
+      write: async (_agentId, writtenSlug, content) => { writes.push({ writtenSlug, content }) },
+    })
+    assert.equal(saved.slug, slug)
+    assert.equal(writes.length, 1)
+    assert.equal(writes[0].writtenSlug, slug)
+    assert.match(writes[0].content, /14 hours on a single charge/)
   } finally {
     if (original === undefined) delete process.env.GBRAIN_ENABLED
     else process.env.GBRAIN_ENABLED = original

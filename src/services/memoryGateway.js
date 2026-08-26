@@ -525,6 +525,72 @@ export async function saveCompetitorModelMemory({
   return { slug, title, competitor: comp.slug, model: modelName, verified: true }
 }
 
+// Writes one section of an uploaded company document as a brain page.
+//
+// A system writer, like saveCompetitorModelMemory: no human confirm step (the
+// human already chose to ingest the document), but every other guard stays --
+// secret screen, lifecycle stamp, sensitivity allowlist. The slug is STABLE and
+// derived from the document + section, so re-ingesting the same file updates its
+// pages in place instead of piling up near-duplicates that eat retrieval slots.
+//
+// No allowed_agents: an ingested company document is company knowledge, readable
+// by every agent. That is the whole point of uploading it.
+export async function saveDocumentSectionMemory({
+  documentId,
+  documentTitle,
+  section,
+  content,
+  sensitivity = 'internal',
+  agentId = 'trusted-tech-assistant',
+  write = (slug, markdown) => callTool(agentId, 'put_page', { slug, content: markdown }),
+}) {
+  if (!enabled()) throw Object.assign(new Error('GBrain is not enabled.'), { statusCode: 503 })
+
+  const title = cleanSingleLine(section, 160)
+  const body = String(content || '').trim()
+  const level = cleanSingleLine(sensitivity, 40).toLowerCase()
+
+  if (title.length < 3) throw Object.assign(new Error('Section title is too short.'), { statusCode: 400 })
+  if (body.length < 10) throw Object.assign(new Error('Section content is too short.'), { statusCode: 400 })
+  if (!ALLOWED_SENSITIVITY.has(level)) {
+    throw Object.assign(new Error('Ingested pages must be public or internal.'), { statusCode: 400 })
+  }
+
+  const unsafe = SECRET_PATTERNS.find((pattern) => pattern.test(`${title}\n${body}`))
+  if (unsafe) throw Object.assign(new Error('Section looked like a credential; skipped.'), { statusCode: 400 })
+
+  const slugPart = (value, max) => String(value || '')
+    .toLowerCase().normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, max)
+
+  const docSlug = slugPart(documentTitle, 48) || 'document'
+  const sectionSlug = slugPart(title, 60) || 'section'
+  const slug = `tt-shared/docs/${docSlug}/${sectionSlug}`
+  const now = new Date().toISOString()
+
+  const markdown = [
+    '---',
+    `title: ${title}`,
+    'lifecycle: approved',
+    `sensitivity: ${level}`,
+    'departments: [shared]',
+    `source: document://${documentId}`,
+    `source_document: ${documentTitle}`,
+    `ingested_at: ${now}`,
+    `last_verified_at: ${now}`,
+    'approval_method: company-document-ingest',
+    '---',
+    `# ${title}`,
+    '',
+    body.slice(0, MAX_MEMORY_CHARS),
+    '',
+    `_From the company document "${documentTitle}", ingested ${now.slice(0, 10)}._`,
+  ].join('\n')
+
+  await write(slug, markdown)
+  return { slug, title }
+}
+
 function formatMemory(memory, index) {
   const metadata = memory.frontmatter
   const source = metadata.source_url || metadata.source_uri || 'Source not recorded'
@@ -650,6 +716,95 @@ export async function listBrainSectionMemories({
   }
 }
 
+// Flat list of every page the asking agent and user are allowed to see. This is
+// what the Brain page renders now that there are no sections: one list, one brain.
+export async function listAllBrainMemories({
+  agentId,
+  user,
+  list = (id, args) => callTool(id, 'list_pages', args),
+  read = readPage,
+  limit = 500,
+} = {}) {
+  if (!enabled()) return { status: 'disabled', memories: [] }
+  const scope = getMemoryScope(agentId, user)
+  try {
+    const rows = structuredRows(await list(agentId, { limit }))
+      .map((row) => ({ slug: String(row?.slug || row?.page_slug || '') }))
+      .filter((row) => row.slug)
+    const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
+    const memories = pages
+      .filter((memory) => memoryAllowed(memory, scope))
+      .map((memory) => ({
+        slug: memory.slug,
+        title: memory.title,
+        sensitivity: String(memory.frontmatter?.sensitivity || 'internal'),
+        updatedAt: String(memory.frontmatter?.updated_at || memory.frontmatter?.last_verified_at || ''),
+        summary: String(memory.body || '').replace(/\s+/g, ' ').trim().slice(0, 400),
+        content: String(memory.body || ''),
+      }))
+      .sort((a, b) => a.slug.localeCompare(b.slug))
+    return { status: 'ok', memories }
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: 'gbrain_brain_list_unavailable',
+      agentId,
+      message: error?.message || String(error),
+    }))
+    return { status: 'unavailable', memories: [] }
+  }
+}
+
+// Soft-deletes one page. GBrain keeps it recoverable for 72 hours.
+//
+// Two guards, both deliberate. Only a MEMORY_WRITER may delete, matching the
+// write rule -- and the page must first be READABLE under the caller's scope,
+// so a user without `memory:confidential` cannot delete a confidential page
+// they are not allowed to see in the first place.
+export async function deleteBrainMemory({
+  agentId,
+  user,
+  slug,
+  read = readPage,
+  remove = (id, target) => callTool(id, 'delete_page', { slug: target }),
+}) {
+  if (!enabled()) throw Object.assign(new Error('GBrain is not enabled.'), { statusCode: 503 })
+  if (!MEMORY_WRITERS.has(agentId)) {
+    throw Object.assign(new Error('Only Brain or Competitor Analyst can delete memories.'), { statusCode: 403 })
+  }
+  const target = String(slug || '').trim()
+  if (!target) throw Object.assign(new Error('A page slug is required.'), { statusCode: 400 })
+
+  const existing = await read(agentId, target).catch(() => null)
+  if (!existing) throw Object.assign(new Error('That page was not found.'), { statusCode: 404 })
+  if (!memoryAllowed(existing, getMemoryScope(agentId, user))) {
+    throw Object.assign(new Error('That page is not readable with your permissions.'), { statusCode: 403 })
+  }
+
+  await remove(agentId, target)
+  console.log(JSON.stringify({
+    event: 'gbrain_page_deleted',
+    slug: target,
+    title: existing.title,
+    userId: String(user?.id || ''),
+  }))
+  return { slug: target, title: existing.title, recoverableHours: 72 }
+}
+
+// Page total for the Brain header. Uses get_stats, which reads a counter rather
+// than enumerating pages, so it stays cheap as the brain grows.
+export async function countBrainPages({ agentId = 'trusted-tech-assistant' } = {}) {
+  if (!enabled()) return null
+  try {
+    const result = await callTool(agentId, 'get_stats', {})
+    const text = textBlocks(result)
+    const stats = JSON.parse(text)
+    const count = Number(stats?.page_count)
+    return Number.isFinite(count) ? count : null
+  } catch {
+    return null
+  }
+}
+
 export async function retrieveMemoryContext({ agentId, messages, user, competitor = '', search = searchPages, read = readPage }) {
   if (!enabled()) return { status: 'disabled', context: '', memories: [] }
   const query = latestUserQuery(messages)
@@ -668,17 +823,17 @@ export async function retrieveMemoryContext({ agentId, messages, user, competito
     String(memory.frontmatter?.competitor || '') === comp.slug ||
     String(memory.slug || '').startsWith(`competitor-analyst/${comp.slug}/`)
 
-  // Per user direction (2026-08-23): an agent's chat reads only its own brain
-  // section. A memory with no allowed_agents is company-wide and readable by
-  // everyone, which is what memoryAllowed permits; here the agent must be named
-  // explicitly, so shared knowledge no longer reaches agent chats.
-  //
-  // The cost is real. The T500 specification, RF-silent, Vault and positioning
-  // memories are all company-wide today, so an agent sees none of them until
-  // they are saved into that agent's own section. Listing endpoints and the
-  // Brain UI are untouched — this narrows retrieval only.
-  const ownSectionOnly = (memory) =>
-    listField(memory.frontmatter?.allowed_agents).includes(agentId)
+  // One brain (2026-08-26). The previous rule required the asking agent to be
+  // named in allowed_agents, which dropped every company-wide page from chat
+  // retrieval -- 20 of the 25 pages then stored, including the whole T500
+  // specification, the Vault architecture, positioning and the RFP baseline.
+  // memoryAllowed() still enforces lifecycle, sensitivity and department, and
+  // a page that DOES name agents is still restricted to them; what changed is
+  // that an unrestricted page now means readable by all, as it reads.
+  const agentAllowed = (memory) => {
+    const named = listField(memory.frontmatter?.allowed_agents)
+    return named.length === 0 || named.includes(agentId)
+  }
 
   try {
     // Over-fetch before filtering. The search ranks across the whole brain, so
@@ -690,7 +845,7 @@ export async function retrieveMemoryContext({ agentId, messages, user, competito
     const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
     const memories = pages
       .filter((memory) => memoryAllowed(memory, scope))
-      .filter(ownSectionOnly)
+      .filter(agentAllowed)
       .filter(inSection)
       .slice(0, limit)
     return {

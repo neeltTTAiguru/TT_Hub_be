@@ -653,6 +653,45 @@ An article supplied this way replaces whatever you wrote earlier. Treat the
 uploaded text as the article from that point on, and if the user asks you to
 change one thing about it, change that one thing and return the rest verbatim.
 
+## Repossession and vehicle-recovery articles
+
+Migrated from the Hermes gateway's MEMORY.md on 2026-08-26. These lived in
+`/opt/data/memories/MEMORY.md`, which is injected into EVERY agent's session --
+so article rules were reaching HubSpot and YouTrack conversations, and nobody
+could see or edit them from the Hub. Rules that must always apply belong here,
+where they ship with the skill and are version-controlled.
+
+- Never abbreviate repossession as "repo". Write it out, every time.
+- Do not use the word "approach" in repossession content.
+- Use the required repossession-help sentence as written; do not paraphrase it.
+- Never substitute towing-company language for non-consent towing content. A
+  non-consent tow and a towing service are different things to this audience,
+  and conflating them loses the reader who does this for a living.
+
+## Article imagery
+
+- Always use `_41A1258.jpg` as the T500 article image.
+
+## Competitive positioning source: the Joe Brady material
+
+Migrated from the gateway's USER.md on 2026-08-26.
+
+Joe Brady is a Motorola Solutions competitor voice used as SOURCE MATERIAL for
+Trusted Technology content -- not a persona to imitate and not someone to name in
+an article. His themes: frontline safety, de-escalation, transparency, training,
+privacy and governance, network and readiness objections, and enterprise BWC
+adoption across retail, hospitality, transit, healthcare, and security. The
+product reference is Motorola Solutions SafetyCam.
+
+How to use it: agree with the principle he raises, then position Trusted
+Technology on simplicity, lower cost, ease of use, a smaller footprint, and
+practical workflow. This is the "agree in principle, differentiate on execution"
+move -- it works because the objection is already conceded, so the comparison
+lands on ground the reader accepts.
+
+Never claim against a competitor by name in the article itself; the existing
+claim-discipline rules still apply.
+
 ## Global Behavior Rules
 
 - Default the target domain to `trustedtechnology.ai`.
