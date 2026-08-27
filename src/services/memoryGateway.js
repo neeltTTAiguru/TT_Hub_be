@@ -836,12 +836,16 @@ export async function retrieveMemoryContext({ agentId, messages, user, competito
   }
 
   try {
-    // Over-fetch before filtering. The search ranks across the whole brain, so
-    // asking for `limit` and then discarding everything outside this agent's
-    // section leaves far fewer than `limit` — the section's own memories lose
-    // slots to company-wide pages that are then thrown away. Fetching a wider
-    // candidate set lets the section fill its slots properly.
-    const rows = await search(agentId, query, Math.max(limit * 6, 40))
+    // Over-fetch a little before filtering, because lifecycle, sensitivity and
+    // department checks still drop candidates after ranking.
+    //
+    // The multiplier used to be 6x, sized for the section rule that discarded
+    // every page not naming this agent -- most of the candidate set. That rule
+    // is gone (one brain, 2026-08-26), so most candidates now survive, and 6x
+    // just means reading pages nobody will use: every candidate costs its own
+    // get_page round trip, so at limit 12 the old multiplier was 72 reads per
+    // retrieval, on every pipeline stage.
+    const rows = await search(agentId, query, Math.max(limit * 2, 20))
     const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
     const memories = pages
       .filter((memory) => memoryAllowed(memory, scope))
