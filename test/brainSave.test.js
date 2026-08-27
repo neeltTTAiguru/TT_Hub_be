@@ -76,5 +76,45 @@ test('a plain save carries no replaces', () => {
 
 test('the policy tells the agent how to correct a page instead of duplicating it', () => {
   assert.match(SAVE_TO_BRAIN_POLICY, /replaces/)
-  assert.match(SAVE_TO_BRAIN_POLICY, /two contradicting pages/)
+  assert.match(SAVE_TO_BRAIN_POLICY, /which is current/)
+})
+
+test('a free-form body with newlines, quotes and bullets survives intact', () => {
+  const body = [
+    'The tone is highly promotional, confident, and sales-forward.',
+    '',
+    'It reads as:',
+    '- authoritative and executive-level',
+    "- persuasive and competitive, using phrases like \u201ccomplete, turnkey package\u201d",
+    '',
+    'It is not neutral or understated.',
+  ].join('\n')
+  const { requests } = extractSaveRequests(
+    `<save-to-brain>\ntitle: RFP response tone for article writing\nsensitivity: internal\n---\n${body}\n</save-to-brain>`,
+  )
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].title, 'RFP response tone for article writing')
+  // The whole analysis, not a one-line summary of it.
+  assert.equal(requests[0].content, body)
+  assert.match(requests[0].content, /authoritative and executive-level/)
+  assert.match(requests[0].content, /turnkey package/)
+})
+
+test('a header-form correction carries the slug it replaces', () => {
+  const { requests } = extractSaveRequests(
+    '<save-to-brain>\ntitle: RFP response tone\nreplaces: tt-shared/user-approved/rfp-response-tone-7aff0ce0\n---\nUpdated analysis.\n</save-to-brain>',
+  )
+  assert.equal(requests[0].replaces, 'tt-shared/user-approved/rfp-response-tone-7aff0ce0')
+  assert.equal(requests[0].content, 'Updated analysis.')
+})
+
+test('the legacy JSON shape still parses', () => {
+  const { requests } = extractSaveRequests('<save-to-brain>{"title":"A","content":"b"}</save-to-brain>')
+  assert.equal(requests[0].title, 'A')
+  assert.equal(requests[0].content, 'b')
+})
+
+test('the policy tells the agent to keep the detail, not summarise it away', () => {
+  assert.match(SAVE_TO_BRAIN_POLICY, /PRESERVE THE SUBSTANCE/)
+  assert.match(SAVE_TO_BRAIN_POLICY, /not a one-line summary/)
 })
