@@ -18,6 +18,8 @@ import researchRunsRouter from './routes/researchRuns.js'
 import chatThreadsRouter from './routes/chatThreads.js'
 import rfpOpportunitiesRouter from './routes/rfpOpportunities.js'
 import policeGrantLeadsRouter from './routes/policeGrantLeads.js'
+import leAgenciesRouter from './routes/leAgencies.js'
+import crmDealsRouter from './routes/crmDeals.js'
 import grantSourcesRouter from './routes/grantSources.js'
 import grantOpportunitiesRouter from './routes/grantOpportunities.js'
 import linkedinSurferRouter from './routes/linkedinSurfer.js'
@@ -74,6 +76,8 @@ app.use('/public-pages', publicPagesRouter)
 app.use('/research-runs', researchRunsRouter)
 app.use('/chat-threads', chatThreadsRouter)
 app.use('/police-grant-leads', policeGrantLeadsRouter)
+app.use('/le-agencies', leAgenciesRouter)
+app.use('/crm-deals', crmDealsRouter)
 app.use('/grant-sources', grantSourcesRouter)
 app.use('/grant-opportunities', grantOpportunitiesRouter)
 app.use('/linkedin-surfer', linkedinSurferRouter)

@@ -1,0 +1,8 @@
+{
+  "_comment": "Manual pin locations for HubSpot deals that match no FBI agency. Keyed by exact deal name. Edit freely - the importer always prefers these over any automatic guess. Set lat/lon to null to leave a deal unplotted.",
+  "Village of Dry Prong PD": {
+    "latitude": 31.5766,
+    "longitude": -92.5265,
+    "note": "Dry Prong, Grant Parish, LA"
+  }
+}
