@@ -61,15 +61,25 @@ const LEADERSHIP_SCHEMA = {
     email: {
       type: 'string',
       description:
-        "The agency's published general contact email, e.g. info@ or records@. Never an individual " +
-        "officer's personal address. Empty string if the page publishes none.",
+        "The agency's published general contact email, e.g. info@ or records@, copied EXACTLY as " +
+        "written on the page. Never an individual officer's personal address. Never construct or " +
+        "guess an address from the agency's domain. Empty string if the page publishes none.",
+    },
+    emailSourceUrl: {
+      type: 'string',
+      description:
+        'Exact URL the email address was read on. Empty string if none - in which case email must ' +
+        'also be empty.',
     },
     asOf: {
       type: 'string',
       description: 'Date the source page states this leadership is current, YYYY-MM or YYYY-MM-DD. Empty if the page gives none.',
     },
   },
-  required: ['chiefName', 'chiefTitle', 'chiefSourceUrl', 'commandStaff', 'website', 'phone', 'email', 'asOf'],
+  required: [
+    'chiefName', 'chiefTitle', 'chiefSourceUrl', 'commandStaff',
+    'website', 'phone', 'email', 'emailSourceUrl', 'asOf',
+  ],
 }
 
 const ACCURACY_RULES = [
@@ -138,14 +148,23 @@ function normalizePhone(raw) {
   return `(${local.slice(0, 3)}) ${local.slice(3, 6)}-${local.slice(6)}`
 }
 
-// Only an agency-level address. A named individual's mailbox is not ours to
-// collect from a public page and put in a prospecting list.
-const PERSONAL_EMAIL = /^(?!(?:info|contact|police|sheriff|records|admin|general|inquiries|dispatch|pd|so|office|mail)@)[a-z]+[._-][a-z]+@/i
+// A shared mailbox the agency publishes for the public. Requiring one of these
+// words in the local part keeps out individual officers' addresses, which are
+// not ours to lift off a public page into a prospecting list. It also rejects
+// the shape a model invents when it guesses - a person's name at the agency's
+// domain.
+const ROLE_MAILBOX =
+  /(police|pd$|^pd|pd[._-]|sheriff|^so$|so[._-]|info|contact|record|dispatch|admin|office|mail|tips|media|comm|public|intake|general|inquir|support|help|clerk|chief)/i
 
 function cleanEmail(raw) {
   const email = String(raw || '').trim().toLowerCase()
-  if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(email)) return ''
-  if (PERSONAL_EMAIL.test(email)) return ''
+  // Pages are copied with typographic characters - a non-ASCII hyphen inside an
+  // address makes it undeliverable and is a sure sign of transcription, so
+  // reject rather than try to repair it.
+  if (/[^\x20-\x7e]/.test(email)) return ''
+  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(email)) return ''
+  const [local] = email.split('@')
+  if (!ROLE_MAILBOX.test(local)) return ''
   return email
 }
 
@@ -229,7 +248,9 @@ export async function researchLeadership(agency) {
     })),
     website: isUrl(parsed.website) ? parsed.website.trim() : '',
     phone: normalizePhone(parsed.phone),
-    email: cleanEmail(parsed.email),
+    // Same rule as the chief's name: no citation, no write. Without this the
+    // model can return a plausible address it never actually read.
+    email: isUrl(parsed.emailSourceUrl) ? cleanEmail(parsed.email) : '',
     asOf: String(parsed.asOf || '').trim(),
   }
 }
