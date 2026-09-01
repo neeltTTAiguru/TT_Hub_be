@@ -208,6 +208,11 @@ const leAgencySchema = new mongoose.Schema(
       // ok | no-address | no-match | tie | failed
       locationStatus: { type: String, default: '', trim: true, index: true },
       locationAttemptedAt: { type: Date, default: null },
+      // ok | not-found | unparsed | failed. Stamped on every attempt so a
+      // resumed run skips what it has already looked at, and so a re-verify
+      // pass can find the oldest checks first.
+      leadershipStatus: { type: String, default: '', trim: true, index: true },
+      leadershipCheckedAt: { type: Date, default: null, index: true },
     },
     provenance: {
       type: [
