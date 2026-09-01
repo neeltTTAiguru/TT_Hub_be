@@ -19,6 +19,10 @@ const REQUEST_TIMEOUT_MS = Number(process.env.AGENCY_LEADERSHIP_TIMEOUT_MS || 12
 const MAX_TOOL_CALLS = Number(process.env.AGENCY_LEADERSHIP_MAX_TOOL_CALLS || 8)
 // Leadership changes, but not weekly. Re-verify on this cadence.
 const MAX_AGE_MS = Number(process.env.AGENCY_LEADERSHIP_MAX_AGE_MS || 90 * 24 * 60 * 60 * 1000)
+// Off by default. The website is the durable thing worth capturing here; an
+// address is better read off that site directly than inferred from a search
+// result, so leave it to whatever reads the page.
+const COLLECT_EMAIL = String(process.env.AGENCY_LEADERSHIP_COLLECT_EMAIL || '').toLowerCase() === 'true'
 
 const LEADERSHIP_SCHEMA = {
   type: 'object',
@@ -250,7 +254,7 @@ export async function researchLeadership(agency) {
     phone: normalizePhone(parsed.phone),
     // Same rule as the chief's name: no citation, no write. Without this the
     // model can return a plausible address it never actually read.
-    email: isUrl(parsed.emailSourceUrl) ? cleanEmail(parsed.email) : '',
+    email: COLLECT_EMAIL && isUrl(parsed.emailSourceUrl) ? cleanEmail(parsed.email) : '',
     asOf: String(parsed.asOf || '').trim(),
   }
 }
