@@ -78,4 +78,40 @@ router.get('/unplaced', async (req, res, next) => {
   }
 })
 
+/**
+ * Deal counts by stage, for the map's stage filter.
+ *
+ * The le-agencies stats route also reports a byStage rollup, but it counts
+ * *agencies* carrying a deal, and only a third of our deals sit on an
+ * FBI-rostered agency - probation departments, recovery firms and municipal
+ * contracts appear in no federal roster. Counting agencies therefore read
+ * "Closed Won (2)" against 12 real won deals. This counts the deals.
+ *
+ * `unplaced` is reported alongside because a deal with no usable location
+ * never reaches the map, and the gap should be visible rather than puzzling.
+ */
+router.get('/stats', async (req, res, next) => {
+  try {
+    const byStage = await CrmDeal.aggregate([
+      { $match: buildFilter(req.query) },
+      {
+        $group: {
+          _id: '$stage',
+          deals: { $sum: 1 },
+          placed: { $sum: { $cond: [{ $ne: ['$latitude', null] }, 1, 0] } },
+          rank: { $max: '$stageRank' },
+        },
+      },
+      { $sort: { rank: -1 } },
+    ])
+
+    res.json({
+      total: byStage.reduce((sum, row) => sum + row.deals, 0),
+      byStage: byStage.map((row) => ({ ...row, unplaced: row.deals - row.placed })),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 export default router
