@@ -2,3 +2,6 @@
 .env.*
 node_modules
 data/seo-content
+
+# Census Gazetteer cache: 13MB, re-downloaded on demand by resolveAgencyLocations.js
+data/gazetteer/

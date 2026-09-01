@@ -67,6 +67,10 @@ const leAgencySchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    // As published by the FBI. Never overwritten by enrichment, because the
+    // feed silently substitutes the Census county internal point when it has
+    // no real location - just over half our mapped agencies sit on one - and
+    // losing the original would make that undetectable on a re-run.
     latitude: {
       type: Number,
       default: null,
@@ -85,6 +89,36 @@ const leAgencySchema = new mongoose.Schema(
       coordinates: {
         type: [Number],
       },
+    },
+    // True when `latitude`/`longitude` are exactly the county internal point
+    // from the DOJ crosswalk, i.e. the FBI had nothing better. Established by
+    // comparison, not guessed, so it is safe to filter and report on.
+    fbiCoordIsCountyProxy: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    // Resolved location, deliberately kept apart from the FBI pair above so
+    // provenance survives. Readers prefer this when `precision` is set.
+    location: {
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null },
+      geo: {
+        type: {
+          type: String,
+          enum: ['Point'],
+        },
+        coordinates: {
+          type: [Number],
+        },
+      },
+      // rooftop | street | city | unresolved. Anything short of rooftop should
+      // still render as an approximate pin.
+      precision: { type: String, default: '', trim: true, index: true },
+      geocoder: { type: String, default: '', trim: true },
+      // Exactly what the geocoder echoed back, for spot-checking a bad pin.
+      matchedAddress: { type: String, default: '', trim: true },
+      resolvedAt: { type: Date, default: null },
     },
     employment: {
       swornOfficers: {
@@ -108,10 +142,37 @@ const leAgencySchema = new mongoose.Schema(
     // Populated by a later enrichment pass; the FBI feed carries no contacts.
     contacts: {
       chiefName: { type: String, default: '', trim: true },
+      // Chiefs turn over constantly, so a name is only worth as much as its
+      // source and its date. Both are required before any of this is shown.
+      chiefTitle: { type: String, default: '', trim: true },
+      chiefSourceUrl: { type: String, default: '', trim: true },
+      chiefVerifiedAt: { type: Date, default: null },
+      // Assistant/deputy chiefs and majors, same sourcing rule.
+      commandStaff: {
+        type: [
+          {
+            name: { type: String, default: '', trim: true },
+            title: { type: String, default: '', trim: true },
+            sourceUrl: { type: String, default: '', trim: true },
+            verifiedAt: { type: Date, default: null },
+          },
+        ],
+        default: [],
+      },
       phone: { type: String, default: '', trim: true },
       email: { type: String, default: '', trim: true },
       website: { type: String, default: '', trim: true },
       mailingAddress: { type: String, default: '', trim: true },
+      // Structured because a geocoder needs the parts, not one blob.
+      streetAddress: {
+        line1: { type: String, default: '', trim: true },
+        line2: { type: String, default: '', trim: true },
+        city: { type: String, default: '', trim: true },
+        state: { type: String, default: '', trim: true, uppercase: true },
+        zip: { type: String, default: '', trim: true },
+        source: { type: String, default: '', trim: true },
+        sourceYear: { type: Number, default: null },
+      },
     },
     // Populated from a HubSpot deal export. One agency can carry several deals,
     // so `stage` reflects the furthest-along one and `deals` keeps them all.
@@ -142,6 +203,11 @@ const leAgencySchema = new mongoose.Schema(
       grantLeadIds: { type: [String], default: [] },
       knownBwcVendor: { type: String, default: '', trim: true },
       notes: { type: String, default: '', trim: true },
+      // Stamped every attempt, successful or not, so a resumed run can skip
+      // what it has already tried rather than paying for it twice.
+      // ok | no-address | no-match | tie | failed
+      locationStatus: { type: String, default: '', trim: true, index: true },
+      locationAttemptedAt: { type: Date, default: null },
     },
     provenance: {
       type: [
@@ -164,6 +230,7 @@ leAgencySchema.index({ state: 1, 'employment.swornOfficers': 1 })
 leAgencySchema.index({ agencyType: 1, 'employment.swornOfficers': 1 })
 leAgencySchema.index({ 'crm.matched': 1, 'crm.stage': 1 })
 leAgencySchema.index({ geo: '2dsphere' }, { sparse: true })
+leAgencySchema.index({ 'location.geo': '2dsphere' }, { sparse: true })
 
 const LeAgency = mongoose.model('LeAgency', leAgencySchema)
 

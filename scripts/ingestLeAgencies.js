@@ -189,9 +189,14 @@ const ingestStateAgencies = async (state) => {
     return
   }
 
+  // The feed uses -9 as a missing-data sentinel rather than omitting the
+  // field, which plots the agency in the Atlantic if taken at face value.
+  const coordinate = (value, min, max) =>
+    Number.isFinite(value) && value !== -9 && value >= min && value <= max ? value : null
+
   const operations = agencies.map((agency) => {
-    const latitude = Number.isFinite(agency.latitude) ? agency.latitude : null
-    const longitude = Number.isFinite(agency.longitude) ? agency.longitude : null
+    const latitude = coordinate(agency.latitude, -90, 90)
+    const longitude = coordinate(agency.longitude, -180, 180)
 
     const set = {
       agencyName: agency.agency_name || '',

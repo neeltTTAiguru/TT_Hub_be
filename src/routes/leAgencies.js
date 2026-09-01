@@ -109,26 +109,58 @@ router.get('/', async (req, res, next) => {
 router.get('/geojson', async (req, res, next) => {
   try {
     const base = buildFilter(req.query)
-    // A bbox/near query already constrains geo; otherwise just require coordinates.
-    const filter = base.geo ? base : { ...base, geo: { $exists: true } }
+    // A bbox/near query already constrains geo; otherwise accept either point.
+    // Around 2,700 agencies have no FBI coordinate at all and are on the map
+    // only because enrichment resolved one, so requiring `geo` would drop them.
+    const filter = base.geo
+      ? base
+      : { ...base, $or: [{ geo: { $exists: true } }, { 'location.geo': { $exists: true } }] }
 
     const limit = Math.min(parseNumber(req.query.limit) ?? MAX_LIMIT, MAX_LIMIT)
 
     const agencies = await LeAgency.find(filter)
-      .select('ori agencyName agencyType state county latitude longitude employment contacts crm')
+      .select(
+        'ori agencyName agencyType state county latitude longitude location ' +
+          'fbiCoordIsCountyProxy employment contacts crm',
+      )
       .limit(limit)
       .lean()
+
+    // A geocoded address always beats the FBI pair, because just over half of
+    // those are the county internal point rather than the agency's location.
+    const pointFor = (agency) =>
+      Number.isFinite(agency.location?.latitude) && Number.isFinite(agency.location?.longitude)
+        ? {
+            lat: agency.location.latitude,
+            lon: agency.location.longitude,
+            precision: agency.location.precision || 'street',
+            source: agency.location.geocoder || 'census',
+          }
+        : {
+            lat: agency.latitude,
+            lon: agency.longitude,
+            // An unresolved county proxy is an approximation and must say so.
+            precision: agency.fbiCoordIsCountyProxy ? 'county' : 'fbi',
+            source: 'fbi_cde',
+          }
 
     res.json({
       type: 'FeatureCollection',
       features: agencies
-        .filter((a) => Number.isFinite(a.longitude) && Number.isFinite(a.latitude))
-        .map((agency) => ({
+        .map((agency) => ({ agency, point: pointFor(agency) }))
+        .filter(({ point }) => Number.isFinite(point.lon) && Number.isFinite(point.lat))
+        .map(({ agency, point }) => ({
           type: 'Feature',
-          geometry: { type: 'Point', coordinates: [agency.longitude, agency.latitude] },
+          geometry: { type: 'Point', coordinates: [point.lon, point.lat] },
           properties: {
             ori: agency.ori,
             name: agency.agencyName,
+            precision: point.precision,
+            locationSource: point.source,
+            // Anything coarser than a street match should render as a guess.
+            approximate: point.precision === 'county' || point.precision === 'city',
+            streetAddress: agency.contacts?.streetAddress?.line1 || '',
+            addressCity: agency.contacts?.streetAddress?.city || '',
             agencyType: agency.agencyType,
             state: agency.state,
             county: agency.county,
@@ -164,7 +196,29 @@ router.get('/stats', async (req, res, next) => {
             withCounts: {
               $sum: { $cond: [{ $ne: ['$employment.swornOfficers', null] }, 1, 0] },
             },
-            withCoords: { $sum: { $cond: [{ $ne: ['$latitude', null] }, 1, 0] } },
+            // $ifNull first: an absent field is not null to $ne, so without it
+            // every document that predates enrichment counts as resolved.
+            withCoords: {
+              $sum: {
+                $cond: [
+                  {
+                    $or: [
+                      { $ne: ['$latitude', null] },
+                      { $ne: [{ $ifNull: ['$location.latitude', null] }, null] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            // Data-quality tiles: how much of the map is still a county centre.
+            countyProxies: {
+              $sum: { $cond: [{ $eq: [{ $ifNull: ['$fbiCoordIsCountyProxy', false] }, true] }, 1, 0] },
+            },
+            resolved: {
+              $sum: { $cond: [{ $ne: [{ $ifNull: ['$location.latitude', null] }, null] }, 1, 0] },
+            },
             totalOfficers: { $sum: { $ifNull: ['$employment.swornOfficers', 0] } },
             inPipeline: { $sum: { $cond: ['$crm.matched', 1, 0] } },
           },
