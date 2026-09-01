@@ -212,9 +212,23 @@ router.get('/stats', async (req, res, next) => {
                 ],
               },
             },
-            // Data-quality tiles: how much of the map is still a county centre.
+            // How much of the map is STILL a county centre. The flag alone is a
+            // historical record - most flagged agencies have since been given a
+            // real coordinate - so it has to be paired with an unresolved
+            // location or the figure reads an order of magnitude too high.
             countyProxies: {
-              $sum: { $cond: [{ $eq: [{ $ifNull: ['$fbiCoordIsCountyProxy', false] }, true] }, 1, 0] },
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      { $eq: [{ $ifNull: ['$fbiCoordIsCountyProxy', false] }, true] },
+                      { $eq: [{ $ifNull: ['$location.resolvedAt', null] }, null] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
             },
             resolved: {
               $sum: { $cond: [{ $ne: [{ $ifNull: ['$location.latitude', null] }, null] }, 1, 0] },
