@@ -12,6 +12,7 @@
 
 import LeAgency from '../models/LeAgency.js'
 import AgencyBriefing from '../models/AgencyBriefing.js'
+import { chatWithHermes } from './hermesChat.js'
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses'
 // gpt-4.1-mini returns ~2 citations per search; gpt-4.1 returns ~12 for the
@@ -23,6 +24,22 @@ const DEFAULT_MODEL = process.env.AGENCY_BRIEFING_MODEL || 'gpt-4.1'
 const SYNTHESIS_MODEL =
   process.env.AGENCY_BRIEFING_SYNTHESIS_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-mini'
 const REQUEST_TIMEOUT_MS = Number(process.env.AGENCY_BRIEFING_TIMEOUT_MS || 120000)
+// 'hermes' researches through the Hermes gateway, which reaches Firecrawl and
+// so can open the agency's own site rather than reading search snippets.
+// 'openai' is the original Responses-API path, kept as a one-env-var fallback
+// because Hermes is a second moving part that can be down independently.
+const RESEARCH_BACKEND = (process.env.AGENCY_BRIEFING_BACKEND || 'hermes').toLowerCase()
+const HERMES_AGENT_ID = process.env.AGENCY_BRIEFING_HERMES_AGENT || 'trusted-tech-assistant'
+// A tool-calling turn through Hermes runs far longer than a Responses call.
+// Hermes turn latency is highly variable rather than uniformly slow: measured
+// at 23s, 23s, 27s and 104s for four identical concurrent calls. A straggler is
+// bad luck, not a doomed request, so a timed-out topic is retried once - which
+// is far cheaper than raising the ceiling high enough to wait out the worst
+// case on every topic.
+const HERMES_TOPIC_TIMEOUT_MS = Number(process.env.AGENCY_BRIEFING_HERMES_TIMEOUT_MS || 300000)
+const HERMES_TOPIC_RETRIES = Number(process.env.AGENCY_BRIEFING_HERMES_RETRIES || 1)
+// The writeup does no searching, so it needs far less room than a research turn.
+const HERMES_WRITEUP_TIMEOUT_MS = Number(process.env.AGENCY_BRIEFING_HERMES_WRITEUP_TIMEOUT_MS || 90000)
 const MAX_TOOL_CALLS = Number(process.env.AGENCY_BRIEFING_MAX_TOOL_CALLS || 14)
 // Agency circumstances move slowly; a fortnight-old briefing is still useful.
 const CACHE_MAX_AGE_MS = Number(process.env.AGENCY_BRIEFING_MAX_AGE_MS || 14 * 24 * 60 * 60 * 1000)
@@ -36,6 +53,52 @@ const sourcedItem = {
     date: { type: 'string', description: 'YYYY-MM-DD or YYYY-MM if stated, else empty string.' },
   },
   required: ['text', 'url', 'date'],
+}
+
+/**
+ * Hermes returns prose, not a schema-validated object, so the JSON has to be
+ * dug out of whatever the model wrapped it in - a fenced block, or a sentence
+ * either side of it. Returns null rather than throwing: a topic that cannot be
+ * parsed is dropped, exactly like one that came back uncited.
+ */
+function parseLooseJson(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return null
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  const candidates = [fenced?.[1], raw]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    const trimmed = candidate.trim()
+    const start = trimmed.search(/[[{]/)
+    if (start === -1) continue
+    const end = Math.max(trimmed.lastIndexOf('}'), trimmed.lastIndexOf(']'))
+    if (end <= start) continue
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1))
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null
+}
+
+/**
+ * Every URL the model put inside its own answer.
+ *
+ * The OpenAI path gets citations from response annotations; Hermes has no
+ * equivalent, so the answer's own url fields are the only evidence that a page
+ * was actually opened. That makes this the Hermes stand-in for the
+ * "answered without searching" guard - no URLs means the claim is discarded.
+ */
+function harvestUrls(value, found = new Set()) {
+  if (typeof value === 'string') {
+    if (/^https?:\/\//i.test(value.trim())) found.add(value.trim())
+  } else if (Array.isArray(value)) {
+    for (const entry of value) harvestUrls(entry, found)
+  } else if (value && typeof value === 'object') {
+    for (const entry of Object.values(value)) harvestUrls(entry, found)
+  }
+  return [...found]
 }
 
 function getTextFromResponse(payload) {
@@ -109,6 +172,20 @@ export function buildFacts(agency) {
     populationServed,
     trend,
     isNibrs: Boolean(agency.isNibrs),
+    // The researcher was searching blind for pages we already hold. Handing it
+    // the agency's own site turns a guess about which domain is authoritative
+    // into a known starting point.
+    website: agency.contacts?.website || '',
+    // What the Atlas of Surveillance already records. Passed in so the camera
+    // question starts from a cited fact and the research verifies or updates
+    // it, instead of re-deriving from scratch and often finding nothing.
+    knownBwc: agency.surveillance?.bwc?.hasBwc
+      ? {
+          vendor: agency.surveillance.bwc.vendor || '',
+          evidenceUrl: agency.surveillance.bwc.evidenceUrl || '',
+          evidenceDate: agency.surveillance.bwc.evidenceDate || null,
+        }
+      : null,
     crm: agency.crm?.matched
       ? {
           stage: agency.crm.stage,
@@ -167,7 +244,10 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
     }
   }
 
-  if (!process.env.OPENAI_API_KEY) {
+  // Only the OpenAI research path needs the key up front. In Hermes mode the
+  // sole remaining OpenAI call is the writeup, which is already wrapped in a
+  // try/catch - so a missing key costs the summary paragraph, not the briefing.
+  if (RESEARCH_BACKEND !== 'hermes' && !process.env.OPENAI_API_KEY) {
     throw Object.assign(new Error('OPENAI_API_KEY is not configured on the backend.'), {
       statusCode: 503,
     })
@@ -192,6 +272,19 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
     `Location: ${where}`,
     facts.agencyType ? `Type: ${facts.agencyType}` : '',
     facts.swornOfficers !== null ? `Size: ${facts.swornOfficers} sworn officers` : '',
+    // Known starting points, so the researcher does not have to guess which
+    // domain is authoritative or rediscover what we already hold.
+    facts.website ? `Official website (start here): ${facts.website}` : '',
+    facts.county ? `County government site is likely to hold the budget and commissioners' court minutes.` : '',
+    facts.knownBwc
+      ? `ALREADY ON RECORD - the Atlas of Surveillance documented body-worn cameras here${
+          facts.knownBwc.vendor ? `, vendor ${facts.knownBwc.vendor}` : ' (vendor not published)'
+        }${
+          facts.knownBwc.evidenceDate
+            ? ` as of ${new Date(facts.knownBwc.evidenceDate).getFullYear()}`
+            : ''
+        }. Source: ${facts.knownBwc.evidenceUrl}. Confirm whether this is still current and find the vendor if it is not named.`
+      : '',
   ]
     .filter(Boolean)
     .join('\n')
@@ -231,6 +324,83 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
       error: '',
     }
   }
+
+  /**
+   * Same contract as researchTopic, but researched through Hermes so the model
+   * can use Firecrawl to open the agency's own website instead of ranking
+   * search snippets. Hermes speaks plain chat completions - there is no strict
+   * json_schema and no tool_choice:'required' - so the schema is stated in the
+   * prompt and the result is validated on the way out instead of on the way in.
+   */
+  const researchTopicViaHermes = async (topic) => {
+    let lastError
+    for (let attempt = 0; attempt <= HERMES_TOPIC_RETRIES; attempt += 1) {
+      try {
+        return await researchTopicViaHermesOnce(topic)
+      } catch (error) {
+        lastError = error
+        const message = String(error?.message || error)
+        // Only a slow turn is worth repeating; a refusal or a bad request will
+        // fail again identically and would just double the wait.
+        const worthRetrying = /too long|timeout|timed out|abort/i.test(message)
+        if (!worthRetrying || attempt === HERMES_TOPIC_RETRIES) throw error
+        console.warn(`[briefing] ${topic.name} timed out, retrying once`)
+      }
+    }
+    throw lastError
+  }
+
+  const researchTopicViaHermesOnce = async ({ name, schema, instruction }) => {
+    const instructions = [
+      'You research US law enforcement agencies for a body-worn camera vendor.',
+      ACCURACY_RULES,
+      '',
+      'HOW TO RESEARCH:',
+      '- Use firecrawl_search to find pages, then firecrawl_scrape to READ the ones that matter.',
+      "- Prefer the agency's own website over news coverage, and news coverage over aggregators.",
+      '- A search result snippet is NOT a source. Open the page before citing it.',
+      '- Work the sources in this order: the agency or county official site, then',
+      '  commissioners-court or city-council agendas and minutes, then adopted budget',
+      '  PDFs, then local news. Minutes and agendas are where equipment purchases,',
+      '  vendors and dollar amounts actually appear - search them explicitly.',
+      '- Try more than one phrasing before concluding nothing exists. For cameras,',
+      '  search "body-worn camera", "body cam", "axon", "watchguard" and the agency name.',
+      '- Budget: up to 6 searches and 10 page reads. Use them; a thin answer from two',
+      '  searches is worse than a slower, sourced one.',
+      '- Only stop early if you have answered the question with a citation.',
+      '',
+      'HOW TO ANSWER:',
+      `Reply with ONE JSON object matching this schema and NOTHING else - no prose, no code fence:`,
+      JSON.stringify(schema),
+      'Every url field must be a page you actually opened. If you did not open a page for a claim, omit the claim.',
+      'An empty answer is correct when nothing citable exists. Never fill a gap with a guess.',
+    ].join('\n')
+
+    const response = await chatWithHermes(
+      HERMES_AGENT_ID,
+      [{ role: 'user', content: `${agencyLine}\n\n${instruction}` }],
+      {
+        instructions,
+        memoryContext: '',
+        timeoutMs: HERMES_TOPIC_TIMEOUT_MS,
+        rateLimitRetries: 1,
+      },
+    )
+
+    const parsed = parseLooseJson(response?.message?.content)
+    const urls = parsed ? harvestUrls(parsed) : []
+    return {
+      topic: name,
+      parsed,
+      urls,
+      // Stands in for the OpenAI search count: the existing guard below drops
+      // any topic reporting zero, which here means nothing was cited.
+      searches: urls.length,
+      error: parsed ? '' : 'hermes returned no parseable JSON',
+    }
+  }
+
+  const runTopic = RESEARCH_BACKEND === 'hermes' ? researchTopicViaHermes : researchTopic
 
   const TOPICS = [
     {
@@ -298,7 +468,7 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
   // rather than by hoping one prompt triggers enough tool calls.
   const settled = await Promise.all(
     TOPICS.map((topic) =>
-      researchTopic(topic).catch((error) => ({
+      runTopic(topic).catch((error) => ({
         topic: topic.name,
         parsed: null,
         urls: [],
@@ -310,7 +480,10 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
   for (const result of settled) {
     if (!result.error && result.searches === 0) {
       result.parsed = null
-      result.error = 'answered without searching; discarded'
+      result.error =
+        RESEARCH_BACKEND === 'hermes'
+          ? 'answered without citing a page it opened; discarded'
+          : 'answered without searching; discarded'
     }
   }
   const failedTopics = settled.filter((r) => r.error).map((r) => `${r.topic}: ${r.error}`)
@@ -352,64 +525,82 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
   const grants = cleanList(grantRes.parsed?.items)
   const news = cleanList(newsRes.parsed?.items)
 
-  // Writeup only. No tools, so it cannot introduce anything unsourced.
+  // Writeup only. It is handed the findings and given no tools, so it cannot
+  // introduce anything the research did not already source.
   let summary = ''
   let outreachAngle = ''
   let openQuestions = []
   try {
-    const writeup = await callOpenAI({
-      model: SYNTHESIS_MODEL,
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'briefing_writeup',
-          strict: true,
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              summary: { type: 'string' },
-              outreachAngle: { type: 'string' },
-              openQuestions: { type: 'array', items: { type: 'string' } },
-            },
-            required: ['summary', 'outreachAngle', 'openQuestions'],
-          },
-        },
+    const writeupSchema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        summary: { type: 'string' },
+        outreachAngle: { type: 'string' },
+        openQuestions: { type: 'array', items: { type: 'string' } },
       },
-      input: [
+      required: ['summary', 'outreachAngle', 'openQuestions'],
+    }
+    const writeupSystem =
+      'You brief a salesperson before a call. Use ONLY the findings supplied. Never add facts, vendors, figures or events that are not in them. Where the findings are empty, say plainly that it is unknown and put it in openQuestions. Write plainly and briefly.'
+    const writeupUser = [
+      agencyLine,
+      facts.populationServed ? `Population served: about ${facts.populationServed.toLocaleString()}` : '',
+      facts.trend
+        ? `Headcount ${facts.trend.fromYear}-${facts.trend.toYear}: ${facts.trend.fromOfficers} to ${facts.trend.toOfficers} sworn`
+        : '',
+      facts.crm ? `Already in our pipeline at stage: ${facts.crm.stage}` : 'Not yet contacted.',
+      '',
+      'FINDINGS:',
+      JSON.stringify({ bwcStatus, budget, grants, news }, null, 1),
+      '',
+      'Write a 2-3 sentence summary, a grounded outreach angle, and the open questions worth asking directly.',
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+    let parsedWriteup
+    if (RESEARCH_BACKEND === 'hermes') {
+      // No searching here, so the model is told explicitly not to reach for a
+      // tool: the whole point of this step is that it cannot add anything the
+      // research did not already cite.
+      const response = await chatWithHermes(
+        HERMES_AGENT_ID,
+        [{ role: 'user', content: writeupUser }],
         {
-          role: 'system',
-          content:
-            'You brief a salesperson before a call. Use ONLY the findings supplied. Never add facts, vendors, figures or events that are not in them. Where the findings are empty, say plainly that it is unknown and put it in openQuestions. Write plainly and briefly.',
+          instructions: [
+            writeupSystem,
+            'Do NOT call any tool. Do not search. Work only from the findings given to you.',
+            'Reply with ONE JSON object matching this schema and NOTHING else - no prose, no code fence:',
+            JSON.stringify(writeupSchema),
+          ].join('\n'),
+          memoryContext: '',
+          timeoutMs: HERMES_WRITEUP_TIMEOUT_MS,
+          rateLimitRetries: 1,
         },
-        {
-          role: 'user',
-          content: [
-            agencyLine,
-            facts.populationServed ? `Population served: about ${facts.populationServed.toLocaleString()}` : '',
-            facts.trend
-              ? `Headcount ${facts.trend.fromYear}-${facts.trend.toYear}: ${facts.trend.fromOfficers} to ${facts.trend.toOfficers} sworn`
-              : '',
-            facts.crm ? `Already in our pipeline at stage: ${facts.crm.stage}` : 'Not yet contacted.',
-            '',
-            'FINDINGS:',
-            JSON.stringify({ bwcStatus, budget, grants, news }, null, 1),
-            '',
-            'Write a 2-3 sentence summary, a grounded outreach angle, and the open questions worth asking directly.',
-          ]
-            .filter(Boolean)
-            .join('\n'),
-        },
-      ],
-    })
-    const parsedWriteup = JSON.parse(getTextFromResponse(writeup))
+      )
+      parsedWriteup = parseLooseJson(response?.message?.content)
+    } else {
+      const writeup = await callOpenAI({
+        model: SYNTHESIS_MODEL,
+        text: { format: { type: 'json_schema', name: 'briefing_writeup', strict: true, schema: writeupSchema } },
+        input: [
+          { role: 'system', content: writeupSystem },
+          { role: 'user', content: writeupUser },
+        ],
+      })
+      parsedWriteup = JSON.parse(getTextFromResponse(writeup))
+    }
     summary = String(parsedWriteup?.summary || '').trim()
     outreachAngle = String(parsedWriteup?.outreachAngle || '').trim()
     openQuestions = (Array.isArray(parsedWriteup?.openQuestions) ? parsedWriteup.openQuestions : [])
       .map((q) => String(q).trim())
       .filter(Boolean)
       .slice(0, 8)
-  } catch {
+  } catch (error) {
+    // Swallowed on purpose - the briefing is still useful without a writeup -
+    // but never silently: an empty summary with no log is undiagnosable.
+    console.warn('[briefing] writeup failed:', String(error?.message || error).slice(0, 200))
     summary = ''
   }
 
@@ -428,7 +619,9 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
     facts,
     research,
     sources: allSources,
-    model: DEFAULT_MODEL,
+    // What actually produced this briefing, so a stored doc is never mistaken
+    // for one researched by a different backend.
+    model: RESEARCH_BACKEND === 'hermes' ? `hermes:${HERMES_AGENT_ID}` : DEFAULT_MODEL,
     searchCount,
     generatedAt: new Date(),
     durationMs: Date.now() - startedAt,

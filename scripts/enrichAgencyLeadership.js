@@ -54,7 +54,7 @@ const buildSelector = () => {
   return selector
 }
 
-const stats = { ok: 0, notFound: 0, failed: 0, searches: 0, staff: 0 }
+const stats = { ok: 0, notFound: 0, failed: 0, retryable: 0, searches: 0, staff: 0 }
 
 const runPool = async (items, worker) => {
   let cursor = 0
@@ -99,8 +99,19 @@ const main = async () => {
       result = await researchLeadership(agency)
     } catch (error) {
       stats.failed += 1
-      console.warn(`  ! ${agency.agencyName}: ${String(error.message).slice(0, 120)}`)
-      if (!dryRun) {
+      // A rate limit, a 5xx or a timeout says nothing about the agency, so it
+      // must NOT be stamped as checked - the default selector only picks up
+      // records where leadershipCheckedAt is null, so stamping one here would
+      // retire it permanently on the strength of a transient blip. Leave it
+      // untouched and the next resumed run picks it up again.
+      const status = error?.statusCode
+      const transient = status === 429 || status === 408 || status >= 500 || status === undefined
+      if (transient) stats.retryable += 1
+      console.warn(
+        `  ! ${agency.agencyName}: ${String(error.message).slice(0, 100)}` +
+          `${transient ? ' [transient - will retry on next run]' : ''}`,
+      )
+      if (!dryRun && !transient) {
         await LeAgency.updateOne(
           { ori: agency.ori },
           { $set: { 'enrichment.leadershipStatus': 'failed', 'enrichment.leadershipCheckedAt': new Date() } },
@@ -135,6 +146,7 @@ const main = async () => {
   console.log(`  command staff     ${stats.staff}`)
   console.log(`  nothing citable   ${stats.notFound}`)
   console.log(`  failed            ${stats.failed}`)
+  console.log(`  of which retryable ${stats.retryable} (left unstamped, picked up next run)`)
   console.log(`  web searches run  ${stats.searches}`)
   if (dryRun) console.log('  (dry run - nothing written)')
 

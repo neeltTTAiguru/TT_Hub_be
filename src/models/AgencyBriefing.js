@@ -45,6 +45,11 @@ const agencyBriefingSchema = new mongoose.Schema(
       news: { type: [sourcedSchema], default: [] },
       outreachAngle: { type: String, default: '' },
       openQuestions: { type: [String], default: [] },
+      // Topics that errored or timed out. Declared here because the service
+      // sets it and Mongoose drops undeclared paths on save - without this the
+      // field vanished silently, and a briefing where three of four topics
+      // timed out was indistinguishable from a complete one.
+      failedTopics: { type: [String], default: [] },
     },
 
     sources: { type: [String], default: [] },
