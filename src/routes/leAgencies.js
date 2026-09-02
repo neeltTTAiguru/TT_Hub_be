@@ -48,6 +48,29 @@ const buildFilter = (query) => {
   if (query.isNibrs === 'true') filter.isNibrs = true
   if (query.isNibrs === 'false') filter.isNibrs = false
 
+  // Body-worn cameras, per the Atlas of Surveillance. 'none' means nobody has
+  // documented one here, which is not the same as the agency having none.
+  if (query.bwc === 'true') filter['surveillance.bwc.status'] = 'yes'
+  if (query.bwc === 'false') filter['surveillance.bwc.status'] = 'no'
+  if (query.bwc === 'unknown') {
+    filter.$or = [
+      { 'surveillance.bwc.status': { $exists: false } },
+      { 'surveillance.bwc.status': 'unknown' },
+    ]
+  }
+  if (typeof query.bwcEvidence === 'string' && query.bwcEvidence.trim()) {
+    const list = query.bwcEvidence.split(',').map((s) => s.trim()).filter(Boolean)
+    if (list.length) {
+      filter['surveillance.bwc.evidence'] = list.length === 1 ? list[0] : { $in: list }
+    }
+  }
+  if (typeof query.bwcVendor === 'string' && query.bwcVendor.trim()) {
+    const list = query.bwcVendor.split(',').map((s) => s.trim()).filter(Boolean)
+    if (list.length) {
+      filter['surveillance.bwc.vendor'] = list.length === 1 ? list[0] : { $in: list }
+    }
+  }
+
   if (typeof query.search === 'string' && query.search.trim()) {
     // Escaped so a stray regex character in the search box cannot break the query.
     const escaped = query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -121,7 +144,7 @@ router.get('/geojson', async (req, res, next) => {
     const agencies = await LeAgency.find(filter)
       .select(
         'ori agencyName agencyType state county latitude longitude location ' +
-          'fbiCoordIsCountyProxy employment contacts crm',
+          'fbiCoordIsCountyProxy employment contacts crm surveillance',
       )
       .limit(limit)
       .lean()
@@ -176,6 +199,21 @@ router.get('/geojson', async (req, res, next) => {
               name: person.name,
               title: person.title,
             })),
+            // A documented body-worn camera. `bwcVendor` is blank far more
+            // often than not, so the map must not read blank as "no vendor".
+            hasBwc: Boolean(agency.surveillance?.bwc?.hasBwc),
+            // status and evidence travel together on purpose: 'no' from a
+            // survey and 'unknown' are completely different claims, and the
+            // card rendered them identically while only hasBwc was sent.
+            bwcStatus: agency.surveillance?.bwc?.status || 'unknown',
+            bwcEvidence: agency.surveillance?.bwc?.evidence || '',
+            bwcAsOf: agency.surveillance?.bwc?.asOf || null,
+            bwcDeclineReasons: agency.surveillance?.bwc?.declineReasons || [],
+            bwcVendor: agency.surveillance?.bwc?.vendor || '',
+            // The evidence URL is deliberately NOT here. It is ~0.4MB across a
+            // national pull and nothing on the map reads it; fetch the agency
+            // itself when a citation is actually needed.
+            bwcEvidenceDate: agency.surveillance?.bwc?.evidenceDate || null,
             inPipeline: Boolean(agency.crm?.matched),
             stage: agency.crm?.stage || '',
             stageRank: agency.crm?.stageRank ?? null,
@@ -243,6 +281,20 @@ router.get('/stats', async (req, res, next) => {
             },
             totalOfficers: { $sum: { $ifNull: ['$employment.swornOfficers', 0] } },
             inPipeline: { $sum: { $cond: ['$crm.matched', 1, 0] } },
+            // Agencies with a documented body-worn camera, and the subset where
+            // the vendor is actually named - the gap between the two is large.
+            withBwc: {
+              $sum: { $cond: [{ $eq: [{ $ifNull: ['$surveillance.bwc.hasBwc', false] }, true] }, 1, 0] },
+            },
+            withBwcVendor: {
+              $sum: {
+                $cond: [
+                  { $not: [{ $in: [{ $ifNull: ['$surveillance.bwc.vendor', ''] }, ['', null]] }] },
+                  1,
+                  0,
+                ],
+              },
+            },
           },
         },
       ]),

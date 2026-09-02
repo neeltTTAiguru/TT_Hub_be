@@ -199,6 +199,48 @@ const leAgencySchema = new mongoose.Schema(
       matchConfidence: { type: Number, default: null },
       importedAt: { type: Date, default: null },
     },
+    // Surveillance technology documented at this agency, from the EFF Atlas of
+    // Surveillance. This is evidence that someone *recorded* a sighting, not a
+    // live install base: `evidenceDate` is when a reporter or public document
+    // noted the technology, often many years ago, and says nothing about
+    // whether it is still in use or when it comes up for renewal.
+    surveillance: {
+      bwc: {
+        // Derived mirror of `status === 'yes'`, kept because the map and the
+        // geojson route read it. Never set it directly - set status.
+        hasBwc: { type: Boolean, default: false, index: true },
+        // yes | no | unknown. A real 'no' can only come from a source that
+        // asked the agency; the Atlas can only ever produce 'yes'.
+        status: { type: String, default: 'unknown', index: true },
+        // How we know, strongest first:
+        //   observed  someone documented a camera (Atlas)
+        //   surveyed  the agency answered a survey, either way (LEMAS)
+        //   funded    took a camera grant, so is buying or has bought
+        //   mandated  state law requires it - a legal duty, NOT a sighting
+        evidence: { type: String, default: '', index: true },
+        // When the evidence is FROM, not when we imported it. A 2016 survey
+        // answer and a 2024 sighting are not comparable without this, and
+        // roughly a fifth of 2016 'no' answers are already stale.
+        asOf: { type: Date, default: null },
+        // Why an agency said no - the LEMAS non-user block. Worth more to a
+        // camera vendor than the fact of the 'no' itself.
+        declineReasons: { type: [String], default: [] },
+        // Normalised for filtering ('Motorola' and 'Motorola Solutions' are one
+        // vendor, as are 'WatchGuard' and 'Watchguard'). Blank on roughly three
+        // quarters of Atlas rows, so vendor counts are a floor, never a share.
+        vendor: { type: String, default: '', trim: true, index: true },
+        // Exactly as published, so a normalisation mistake stays recoverable.
+        vendorRaw: { type: String, default: '', trim: true },
+        summary: { type: String, default: '', trim: true },
+        // The citation behind the sighting. Nothing here should be shown
+        // without it, on the same rule the leadership fields follow.
+        evidenceUrl: { type: String, default: '', trim: true },
+        evidenceDate: { type: Date, default: null },
+        aosNumber: { type: String, default: '', trim: true },
+        source: { type: String, default: '', trim: true },
+        importedAt: { type: Date, default: null },
+      },
+    },
     enrichment: {
       grantLeadIds: { type: [String], default: [] },
       knownBwcVendor: { type: String, default: '', trim: true },
