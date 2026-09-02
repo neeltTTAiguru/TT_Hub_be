@@ -101,7 +101,11 @@ const urlKey = (url) => {
   }
 }
 
-/** Every URL the model's own citations point at - the check on invented sources. */
+/**
+ * Every URL the model actually consulted - annotations plus the full source
+ * list returned by `include: ['web_search_call.action.sources']`. This is the
+ * allowlist a verdict's citation has to appear in.
+ */
 const getCitedUrls = (payload) => {
   const urls = new Set()
   for (const item of Array.isArray(payload?.output) ? payload.output : []) {
@@ -109,6 +113,10 @@ const getCitedUrls = (payload) => {
       for (const annotation of content?.annotations || []) {
         if (annotation?.url) urls.add(String(annotation.url))
       }
+    }
+    for (const source of item?.action?.sources || []) {
+      const url = typeof source === 'string' ? source : source?.url
+      if (url) urls.add(String(url))
     }
   }
   return urls
@@ -135,19 +143,32 @@ const RESEARCH_RULES = [
   'Social media is weak evidence. Never cite it when an official source says the',
   'same thing. Stop as soon as an authoritative source settles the question.',
   '',
-  'VERDICT:',
-  'yes  - a source states this agency uses, deploys, purchased, or has a policy for',
-  '       body-worn cameras.',
-  'no   - a source explicitly states it does NOT use them.',
-  'unknown - anything else. Finding nothing is a correct answer: absence of evidence',
-  '       is not evidence of absence, and a wrong "no" is worse than an unknown.',
+  'VERDICT - pick exactly one:',
+  'yes                    - a source states the agency uses or deploys them, or has',
+  '                         an active body-worn camera policy.',
+  'purchased_not_deployed - bought, awarded, or contracted for, but not yet in use.',
+  'planned                - budgeted, applied for a grant, or publicly committed,',
+  '                         but not yet purchased.',
+  'no                     - a source explicitly states it does NOT use them.',
+  'unknown                - anything else. Finding nothing is a correct answer:',
+  '                         absence of evidence is not evidence of absence, and a',
+  '                         wrong "no" is worse than an unknown.',
+  '',
+  'Do not collapse planned or purchased_not_deployed into yes. An agency that has',
+  'bought cameras but not rolled them out is a different commercial situation from',
+  'one already running them.',
   '',
   'Beware same-named agencies in other states. Confirm the state matches before',
   'using a source.',
   '',
   'Reply with ONE JSON object and nothing else:',
-  '{"status":"yes|no|unknown","vendor":"","sourceUrl":"","quote":"","confidence":"high|medium|low"}',
-  'sourceUrl must be a page you actually opened. quote is the sentence you relied on.',
+  '{"status":"yes|no|planned|purchased_not_deployed|unknown","vendor":"","cameraCount":null,',
+  ' "sourceUrl":"","quote":"","confidence":"high|medium|low"}',
+  'sourceUrl MUST be a complete URL starting with https:// - copied from a page you',
+  'actually opened. NEVER put a document title, a citation label or a page name',
+  'there ("ApprovedFY26BudgetPolicy" is not a URL). If you cannot produce a real',
+  'URL for a claim, the status is unknown.',
+  'quote is the sentence you relied on, copied verbatim.',
 ].join('\n')
 
 const parseJson = (text) => {
@@ -171,7 +192,12 @@ const parseJson = (text) => {
 const researchAgency = async (agency) => {
   const payload = await callOpenAI({
     model: MODEL,
-    tools: [{ type: 'web_search' }],
+    tools: [{ type: 'web_search', external_web_access: true }],
+    // Annotations only list what the model chose to footnote. The consulted
+    // source list is everything it actually opened, which is what a citation
+    // check needs: matching against annotations alone rejected three real
+    // sources out of three, including a wilcotx.gov budget document.
+    include: ['web_search_call.action.sources'],
     // 'required', not 'auto': auto lets the model answer from memory, which is
     // exactly the unsourced verdict this must never produce.
     tool_choice: 'required',
@@ -215,8 +241,10 @@ const run = async () => {
           { 'surveillance.bwc.status': 'unknown' },
         ],
       },
-      // Never re-pay for an agency already attempted.
+      // Never re-pay for an agency already attempted, or one a concurrent run
+      // is working on right now.
       { $or: [{ 'enrichment.bwcResearchedAt': null }, { 'enrichment.bwcResearchedAt': { $exists: false } }] },
+      { 'enrichment.bwcResearchStatus': { $ne: 'processing' } },
     ],
   }
   if (args.state) selector.state = String(args.state).toUpperCase()
@@ -232,7 +260,17 @@ const run = async () => {
   console.log(`  one OpenAI web_search call each, up to ${MAX_TOOL_CALLS} searches per agency`)
   if (dryRun) console.log('  (dry run - searches still run, nothing is written)\n')
 
-  const stats = { yes: 0, no: 0, unknown: 0, failed: 0, retryable: 0, rejected: 0 }
+  const stats = {
+    yes: 0,
+    no: 0,
+    planned: 0,
+    purchased_not_deployed: 0,
+    unknown: 0,
+    failed: 0,
+    retryable: 0,
+    rejected: 0,
+    claimed: 0,
+  }
   let done = 0
   let cursor = 0
 
@@ -242,6 +280,29 @@ const run = async () => {
       cursor += 1
       if (index >= pending.length) return
       const agency = pending[index]
+
+      // Claim it atomically first. Stamping only on completion - which is what
+      // this did - lets two workers, or a cron run that overlaps the previous
+      // one, research and pay for the same agency twice.
+      if (!dryRun) {
+        const claimed = await LeAgency.findOneAndUpdate(
+          {
+            ori: agency.ori,
+            'enrichment.bwcResearchStatus': { $nin: ['processing', 'ok', 'not-found'] },
+          },
+          {
+            $set: {
+              'enrichment.bwcResearchStatus': 'processing',
+              'enrichment.bwcResearchStartedAt': new Date(),
+            },
+          },
+          { new: true },
+        ).lean()
+        if (!claimed) {
+          stats.claimed += 1
+          continue
+        }
+      }
 
       let verdict
       let citedUrls
@@ -257,16 +318,26 @@ const run = async () => {
           `  ! ${agency.agencyName}: ${String(error.message).slice(0, 90)}` +
             `${transient ? ' [transient - not stamped]' : ''}`,
         )
-        if (!dryRun && !transient) {
+        if (!dryRun) {
+          // A transient failure releases the claim so the next run retries it.
+          // Leaving it on 'processing' would strand the agency forever.
           await LeAgency.updateOne(
             { ori: agency.ori },
-            { $set: { 'enrichment.bwcResearchStatus': 'failed', 'enrichment.bwcResearchedAt': new Date() } },
+            transient
+              ? { $set: { 'enrichment.bwcResearchStatus': '' } }
+              : {
+                  $set: {
+                    'enrichment.bwcResearchStatus': 'failed',
+                    'enrichment.bwcResearchedAt': new Date(),
+                  },
+                },
           )
         }
         continue
       }
 
-      let status = ['yes', 'no'].includes(verdict?.status) ? verdict.status : 'unknown'
+      const KNOWN = ['yes', 'no', 'planned', 'purchased_not_deployed']
+      let status = KNOWN.includes(verdict?.status) ? verdict.status : 'unknown'
       const sourceUrl = String(verdict?.sourceUrl || '').trim()
       // Two guards. A verdict reached without searching is memory, not
       // research. And the cited page must be one the model actually opened -
@@ -300,10 +371,17 @@ const run = async () => {
         }
         if (status !== 'unknown') {
           set['surveillance.bwc.status'] = status
-          set['surveillance.bwc.hasBwc'] = status === 'yes'
+          // The map's boolean mirror. 'purchased_not_deployed' counts as having
+          // them - the hardware is bought - while 'planned' does not, since
+          // nothing has been acquired yet.
+          set['surveillance.bwc.hasBwc'] =
+            status === 'yes' || status === 'purchased_not_deployed'
           set['surveillance.bwc.evidence'] = 'researched'
           set['surveillance.bwc.asOf'] = new Date()
           set['surveillance.bwc.vendor'] = String(verdict?.vendor || '').trim()
+          if (Number.isFinite(Number(verdict?.cameraCount))) {
+            set['surveillance.bwc.cameraCount'] = Number(verdict.cameraCount)
+          }
           set['surveillance.bwc.evidenceUrl'] = sourceUrl
           set['surveillance.bwc.summary'] = String(verdict?.quote || '').slice(0, 600)
           set['surveillance.bwc.source'] = 'openai_websearch_research'
@@ -321,8 +399,11 @@ const run = async () => {
 
   console.log('\nSummary')
   console.log(`  has cameras      ${stats.yes}`)
+  console.log(`  purchased        ${stats.purchased_not_deployed}`)
+  console.log(`  planned          ${stats.planned}`)
   console.log(`  confirmed none   ${stats.no}`)
   console.log(`  still unknown    ${stats.unknown}`)
+  console.log(`  already claimed  ${stats.claimed} (another run had them)`)
   console.log(`  citation rejected ${stats.rejected} (URL was not in the search results)`)
   console.log(`  failed           ${stats.failed} (${stats.retryable} transient, will retry)`)
 

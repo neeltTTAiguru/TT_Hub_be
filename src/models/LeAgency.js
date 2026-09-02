@@ -209,8 +209,13 @@ const leAgencySchema = new mongoose.Schema(
         // Derived mirror of `status === 'yes'`, kept because the map and the
         // geojson route read it. Never set it directly - set status.
         hasBwc: { type: Boolean, default: false, index: true },
-        // yes | no | unknown. A real 'no' can only come from a source that
-        // asked the agency; the Atlas can only ever produce 'yes'.
+        // yes | no | planned | purchased_not_deployed | unknown.
+        // The two middle states matter commercially and would be lost if
+        // flattened into 'yes': an agency that has BOUGHT cameras but not
+        // deployed them, or has budgeted for them, is a live opportunity
+        // rather than an equipped competitor account.
+        // A real 'no' can only come from a source that asked the agency;
+        // the Atlas can only ever produce 'yes'.
         status: { type: String, default: 'unknown', index: true },
         // How we know, strongest first:
         //   observed  someone documented a camera (Atlas)
@@ -231,6 +236,8 @@ const leAgencySchema = new mongoose.Schema(
         vendor: { type: String, default: '', trim: true, index: true },
         // Exactly as published, so a normalisation mistake stays recoverable.
         vendorRaw: { type: String, default: '', trim: true },
+        // How many, where a source states it. Useful for sizing a deal.
+        cameraCount: { type: Number, default: null },
         summary: { type: String, default: '', trim: true },
         // The citation behind the sighting. Nothing here should be shown
         // without it, on the same rule the leadership fields follow.
@@ -257,8 +264,12 @@ const leAgencySchema = new mongoose.Schema(
       // Per-agency camera research. Stamped on every ATTEMPT, not just on a
       // find, so a resumed sweep never pays twice for an agency that genuinely
       // has nothing published. ok | not-found | failed.
+      // ok | not-found | failed | processing. 'processing' is claimed
+      // atomically before the work starts, so two workers - or an overlapping
+      // cron run - cannot research and pay for the same agency twice.
       bwcResearchStatus: { type: String, default: '', trim: true, index: true },
       bwcResearchedAt: { type: Date, default: null, index: true },
+      bwcResearchStartedAt: { type: Date, default: null },
       leadershipCheckedAt: { type: Date, default: null, index: true },
     },
     provenance: {
