@@ -26,6 +26,12 @@
  * Usage:
  *   node scripts/ingestLemasBwc.js --file=/path/37302-0001-Data.tsv --dry-run
  *   node scripts/ingestLemasBwc.js --file=/path/37302-0001-Data.tsv
+ *   node scripts/ingestLemasBwc.js --remove            # take 2016 back out
+ *   node scripts/ingestLemasBwc.js --remove --only=no  # just the negatives
+ *
+ * --remove exists because this data ages badly and the map presented it as
+ * fact. Records superseded by a later source are left alone; only rows still
+ * sourced to LEMAS are reverted to unknown.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -74,10 +80,49 @@ const filled = (value) => {
   return trimmed !== '' && trimmed !== '.' && trimmed !== '-9'
 }
 
+/**
+ * Take LEMAS back out.
+ *
+ * The negatives are the dangerous half: an agency that said "yes" in 2016
+ * almost certainly still has cameras, because adoption does not reverse - but
+ * a 2016 "no" has had nine years, a national funding wave and eight state
+ * mandates to stop being true, and 748 of them are already contradicted by a
+ * photographed camera. Hence --only=no.
+ */
+const removeLemas = async ({ dryRun, only }) => {
+  const filter = { 'surveillance.bwc.source': SOURCE_NAME }
+  if (only === 'no' || only === 'yes') filter['surveillance.bwc.status'] = only
+
+  const byStatus = await LeAgency.aggregate([
+    { $match: { 'surveillance.bwc.source': SOURCE_NAME } },
+    { $group: { _id: '$surveillance.bwc.status', n: { $sum: 1 } } },
+  ])
+  console.log('Records still sourced to LEMAS 2016:')
+  for (const row of byStatus) console.log(`  ${String(row._id).padEnd(8)} ${row.n}`)
+
+  const affected = await LeAgency.countDocuments(filter)
+  console.log(`\nWould revert to unknown: ${affected}${only ? ` (--only=${only})` : ''}`)
+  if (dryRun) {
+    console.log('  (dry run - nothing written)')
+    return
+  }
+  const result = await LeAgency.updateMany(filter, {
+    $unset: { 'surveillance.bwc': '' },
+    $pull: { provenance: { source: SOURCE_NAME } },
+  })
+  console.log(`  reverted: ${result.modifiedCount}`)
+}
+
 const run = async () => {
   const args = parseArgs()
   const uri = process.env.MONGODB_URI || process.env.MONGO_URI
   if (!uri) throw new Error('MONGODB_URI is not set.')
+  if (args.remove) {
+    await mongoose.connect(uri)
+    await removeLemas({ dryRun: args['dry-run'] === true, only: args.only })
+    await mongoose.disconnect()
+    return
+  }
   if (!args.file) throw new Error('Pass --file=/path/to/37302-0001-Data.tsv')
   const file = path.resolve(args.file)
   if (!fs.existsSync(file)) throw new Error(`No such file: ${file}`)
