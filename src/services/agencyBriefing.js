@@ -24,11 +24,10 @@ const DEFAULT_MODEL = process.env.AGENCY_BRIEFING_MODEL || 'gpt-4.1'
 const SYNTHESIS_MODEL =
   process.env.AGENCY_BRIEFING_SYNTHESIS_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-mini'
 const REQUEST_TIMEOUT_MS = Number(process.env.AGENCY_BRIEFING_TIMEOUT_MS || 120000)
-// 'hermes' researches through the Hermes gateway, which reaches Firecrawl and
-// so can open the agency's own site rather than reading search snippets.
-// 'openai' is the original Responses-API path, kept as a one-env-var fallback
-// because Hermes is a second moving part that can be down independently.
-const RESEARCH_BACKEND = (process.env.AGENCY_BRIEFING_BACKEND || 'hermes').toLowerCase()
+// 'openai' researches with the Responses API's own web_search tool, which is
+// the only research path now. 'hermes' only changes where the writeup runs,
+// and is kept as a fallback for when the OpenAI account is unavailable.
+const RESEARCH_BACKEND = (process.env.AGENCY_BRIEFING_BACKEND || 'openai').toLowerCase()
 const HERMES_AGENT_ID = process.env.AGENCY_BRIEFING_HERMES_AGENT || 'trusted-tech-assistant'
 // A tool-calling turn through Hermes runs far longer than a Responses call.
 // Hermes turn latency is highly variable rather than uniformly slow: measured
@@ -326,81 +325,11 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
   }
 
   /**
-   * Same contract as researchTopic, but researched through Hermes so the model
-   * can use Firecrawl to open the agency's own website instead of ranking
-   * search snippets. Hermes speaks plain chat completions - there is no strict
+   * Same contract as researchTopic, but researched through Hermes so the model Hermes speaks plain chat completions - there is no strict
    * json_schema and no tool_choice:'required' - so the schema is stated in the
    * prompt and the result is validated on the way out instead of on the way in.
    */
-  const researchTopicViaHermes = async (topic) => {
-    let lastError
-    for (let attempt = 0; attempt <= HERMES_TOPIC_RETRIES; attempt += 1) {
-      try {
-        return await researchTopicViaHermesOnce(topic)
-      } catch (error) {
-        lastError = error
-        const message = String(error?.message || error)
-        // Only a slow turn is worth repeating; a refusal or a bad request will
-        // fail again identically and would just double the wait.
-        const worthRetrying = /too long|timeout|timed out|abort/i.test(message)
-        if (!worthRetrying || attempt === HERMES_TOPIC_RETRIES) throw error
-        console.warn(`[briefing] ${topic.name} timed out, retrying once`)
-      }
-    }
-    throw lastError
-  }
-
-  const researchTopicViaHermesOnce = async ({ name, schema, instruction }) => {
-    const instructions = [
-      'You research US law enforcement agencies for a body-worn camera vendor.',
-      ACCURACY_RULES,
-      '',
-      'HOW TO RESEARCH:',
-      '- Use firecrawl_search to find pages, then firecrawl_scrape to READ the ones that matter.',
-      "- Prefer the agency's own website over news coverage, and news coverage over aggregators.",
-      '- A search result snippet is NOT a source. Open the page before citing it.',
-      '- Work the sources in this order: the agency or county official site, then',
-      '  commissioners-court or city-council agendas and minutes, then adopted budget',
-      '  PDFs, then local news. Minutes and agendas are where equipment purchases,',
-      '  vendors and dollar amounts actually appear - search them explicitly.',
-      '- Try more than one phrasing before concluding nothing exists. For cameras,',
-      '  search "body-worn camera", "body cam", "axon", "watchguard" and the agency name.',
-      '- Budget: up to 6 searches and 10 page reads. Use them; a thin answer from two',
-      '  searches is worse than a slower, sourced one.',
-      '- Only stop early if you have answered the question with a citation.',
-      '',
-      'HOW TO ANSWER:',
-      `Reply with ONE JSON object matching this schema and NOTHING else - no prose, no code fence:`,
-      JSON.stringify(schema),
-      'Every url field must be a page you actually opened. If you did not open a page for a claim, omit the claim.',
-      'An empty answer is correct when nothing citable exists. Never fill a gap with a guess.',
-    ].join('\n')
-
-    const response = await chatWithHermes(
-      HERMES_AGENT_ID,
-      [{ role: 'user', content: `${agencyLine}\n\n${instruction}` }],
-      {
-        instructions,
-        memoryContext: '',
-        timeoutMs: HERMES_TOPIC_TIMEOUT_MS,
-        rateLimitRetries: 1,
-      },
-    )
-
-    const parsed = parseLooseJson(response?.message?.content)
-    const urls = parsed ? harvestUrls(parsed) : []
-    return {
-      topic: name,
-      parsed,
-      urls,
-      // Stands in for the OpenAI search count: the existing guard below drops
-      // any topic reporting zero, which here means nothing was cited.
-      searches: urls.length,
-      error: parsed ? '' : 'hermes returned no parseable JSON',
-    }
-  }
-
-  const runTopic = RESEARCH_BACKEND === 'hermes' ? researchTopicViaHermes : researchTopic
+  const runTopic = researchTopic
 
   const TOPICS = [
     {

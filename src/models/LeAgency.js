@@ -254,6 +254,11 @@ const leAgencySchema = new mongoose.Schema(
       // resumed run skips what it has already looked at, and so a re-verify
       // pass can find the oldest checks first.
       leadershipStatus: { type: String, default: '', trim: true, index: true },
+      // Per-agency camera research. Stamped on every ATTEMPT, not just on a
+      // find, so a resumed sweep never pays twice for an agency that genuinely
+      // has nothing published. ok | not-found | failed.
+      bwcResearchStatus: { type: String, default: '', trim: true, index: true },
+      bwcResearchedAt: { type: Date, default: null, index: true },
       leadershipCheckedAt: { type: Date, default: null, index: true },
     },
     provenance: {
