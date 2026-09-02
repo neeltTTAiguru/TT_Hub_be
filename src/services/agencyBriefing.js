@@ -135,6 +135,48 @@ function getCitedUrls(payload) {
  * Population is derived from the FBI's own employees-per-1,000 rate rather than
  * looked up separately, so it always agrees with the headcount beside it.
  */
+/**
+ * Write a briefing's camera verdict onto the agency, when it earns it.
+ *
+ * Three gates, because this is the one place research can silently rewrite the
+ * map: the finding must be a plain yes, it must carry a source URL, and it must
+ * be more recent than whatever is already stored. Anything less is left alone.
+ */
+async function applyBwcFinding(ori, agency, bwcStatus) {
+  if (bwcStatus?.hasProgram !== 'yes') return
+  if (bwcStatus.confidence === 'low') return
+  const cited =
+    String(bwcStatus.sourceUrl || '').trim() ||
+    (bwcStatus.details || '').match(/https?:\/\/\S+/)?.[0] ||
+    ''
+  if (!/^https?:\/\//i.test(cited)) return
+
+  const current = agency.surveillance?.bwc
+  const currentAt = current?.asOf ? new Date(current.asOf).getTime() : 0
+  const now = Date.now()
+  // A briefing reflects what is on the web today, so it is dated now - but it
+  // still has to beat what is there, which stops it flip-flopping with a newer
+  // source on every refresh.
+  if (current?.status === 'yes' && currentAt >= now) return
+
+  await LeAgency.updateOne(
+    { ori },
+    {
+      $set: {
+        'surveillance.bwc.status': 'yes',
+        'surveillance.bwc.hasBwc': true,
+        'surveillance.bwc.evidence': 'researched',
+        'surveillance.bwc.asOf': new Date(),
+        'surveillance.bwc.vendor': String(bwcStatus.vendor || '').trim(),
+        'surveillance.bwc.summary': String(bwcStatus.details || '').slice(0, 600),
+        'surveillance.bwc.evidenceUrl': cited,
+        'surveillance.bwc.source': 'agency_briefing',
+        'surveillance.bwc.importedAt': new Date(),
+      },
+    },
+  )
+}
+
 export function buildFacts(agency) {
   const employment = agency.employment || {}
   const history = Array.isArray(agency.employmentHistory) ? agency.employmentHistory : []
@@ -341,15 +383,19 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
           hasProgram: { type: 'string', enum: ['yes', 'no', 'unknown'] },
           vendor: { type: 'string' },
           details: { type: 'string' },
+          // Required so the verdict can be written back onto the agency: an
+          // uncited finding stays in the panel and never touches the map.
+          sourceUrl: { type: 'string' },
           confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
         },
-        required: ['hasProgram', 'vendor', 'details', 'confidence'],
+        required: ['hasProgram', 'vendor', 'details', 'sourceUrl', 'confidence'],
       },
       instruction: [
         'Do they run body-worn cameras, and with which vendor?',
         'Search their official site, local news, and council or commission minutes.',
         'Set hasProgram to "yes" or "no" only if a source states it plainly, otherwise "unknown".',
         'Never name a vendor unless a source names that vendor for THIS agency. A vendor used by a neighbouring department is not evidence.',
+        'sourceUrl must be the exact URL you read this on, or an empty string.',
       ].join(' '),
     },
     {
@@ -442,6 +488,7 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
       : 'unknown',
     vendor: String(bwcRes.parsed?.vendor || '').trim(),
     details: String(bwcRes.parsed?.details || '').trim(),
+    sourceUrl: String(bwcRes.parsed?.sourceUrl || '').trim(),
     confidence: ['high', 'medium', 'low'].includes(bwcRes.parsed?.confidence)
       ? bwcRes.parsed.confidence
       : 'low',
@@ -555,6 +602,18 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
     generatedAt: new Date(),
     durationMs: Date.now() - startedAt,
   }
+
+  // Push a confident camera finding back onto the agency itself.
+  //
+  // Without this the briefing is a dead end: Piscataway's panel found an Axon
+  // contract awarded by council resolution in 2021, while the map beside it
+  // still showed "NO - agency reported none, 2020" from the state survey and
+  // rendered the pin green. The briefing knew better and had no way to say so.
+  //
+  // Same precedence as every other source: only a cited finding counts, and it
+  // only wins when it is NEWER than what is already recorded, so a briefing can
+  // never quietly overwrite a more recent sighting with an older reading.
+  await applyBwcFinding(facts.ori, agency, bwcStatus)
 
   await AgencyBriefing.updateOne({ ori: facts.ori }, { $set: doc }, { upsert: true })
   return { ...doc, cached: false }

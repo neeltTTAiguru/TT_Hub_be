@@ -34,6 +34,9 @@ const agencyBriefingSchema = new mongoose.Schema(
         hasProgram: { type: String, default: 'unknown' },
         vendor: { type: String, default: '' },
         details: { type: String, default: '' },
+        // Declared, or Mongoose drops it on save - the same silent loss that
+        // hid failedTopics. Without it the finding cannot be written back.
+        sourceUrl: { type: String, default: '' },
         confidence: { type: String, default: 'low' },
       },
       budget: {
