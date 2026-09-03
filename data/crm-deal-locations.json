@@ -1,8 +1,48 @@
 {
   "_comment": "Manual pin locations for HubSpot deals that match no FBI agency. Keyed by exact deal name. Edit freely - the importer always prefers these over any automatic guess. Set lat/lon to null to leave a deal unplotted.",
+  "800 J Lofts": {
+    "latitude": 38.580951,
+    "longitude": -121.49608,
+    "note": "800 J St, Sacramento, CA 95814"
+  },
+  "City of Muskegon_Safebuilt": {
+    "latitude": 43.235432,
+    "longitude": -86.245706,
+    "note": "933 Terrace St, Muskegon, MI 49440"
+  },
+  "Fisher Recovery Services - New Deal": {
+    "latitude": 41.443385,
+    "longitude": -84.008835,
+    "note": "Liberty Center, OH 43532 (mailing address only)"
+  },
+  "Oklahoma State Panhandle University PD-OK": {
+    "latitude": 36.595292,
+    "longitude": -101.628802,
+    "note": "323 Eagle Blvd, Goodwell, OK 73939"
+  },
+  "Parkside Restoration - New Deal": {
+    "latitude": 41.554567,
+    "longitude": -87.814034,
+    "note": "8039 185th St, Tinley Park, IL 60487"
+  },
+  "Pelham Police Department - New Deal": {
+    "latitude": 33.286497,
+    "longitude": -86.81169,
+    "note": "32 Philip Davis St, Pelham, AL 35124"
+  },
+  "Valley County Sheriff's Office - MT - New Deal": {
+    "latitude": 48.192458,
+    "longitude": -106.637369,
+    "note": "501 Court Sq Suite 10, Glasgow, MT 59230"
+  },
   "Village of Dry Prong PD": {
-    "latitude": 31.5766,
-    "longitude": -92.5265,
-    "note": "Dry Prong, Grant Parish, LA"
+    "latitude": 31.576666,
+    "longitude": -92.528672,
+    "note": "607 Russell Hataway Dr, Dry Prong, LA 71423"
+  },
+  "Xtreme Auto Recovery Inc - NY - New Deal": {
+    "latitude": 42.0924,
+    "longitude": -79.24547,
+    "note": "67 Steele St, Jamestown, NY 14701"
   }
 }
