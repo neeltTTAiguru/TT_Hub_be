@@ -170,8 +170,18 @@ async function applyBwcFinding(ori, agency, bwcStatus) {
         'surveillance.bwc.vendor': String(bwcStatus.vendor || '').trim(),
         'surveillance.bwc.summary': String(bwcStatus.details || '').slice(0, 600),
         'surveillance.bwc.evidenceUrl': cited,
+        // Our own verdict, same field the research run writes.
+        'surveillance.bwc.trustedResearched': 'has_bwc',
+        'surveillance.bwc.trustedResearchedAt': new Date(),
         'surveillance.bwc.source': 'agency_briefing',
         'surveillance.bwc.importedAt': new Date(),
+        // Stamped so this counts as researched, which does two things: the
+        // batch run will not pay to research it again, and the map's activity
+        // poll - which finds finished agencies by this field - actually sees
+        // the change. Without it the briefing updated the database and the pin
+        // on screen stayed the colour it had been.
+        'enrichment.bwcResearchStatus': 'ok',
+        'enrichment.bwcResearchedAt': new Date(),
       },
     },
   )
@@ -393,6 +403,7 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
       instruction: [
         'Do they run body-worn cameras, and with which vendor?',
         'Search their official site, local news, and council or commission minutes.',
+        'Do not search Facebook: its page text and posts sit behind a login and return nothing.',
         'Set hasProgram to "yes" or "no" only if a source states it plainly, otherwise "unknown".',
         'Never name a vendor unless a source names that vendor for THIS agency. A vendor used by a neighbouring department is not evidence.',
         'sourceUrl must be the exact URL you read this on, or an empty string.',

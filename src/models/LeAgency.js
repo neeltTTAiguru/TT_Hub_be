@@ -209,6 +209,22 @@ const leAgencySchema = new mongoose.Schema(
         // Derived mirror of `status === 'yes'`, kept because the map and the
         // geojson route read it. Never set it directly - set status.
         hasBwc: { type: Boolean, default: false, index: true },
+        // OUR OWN verdict, and only ours: 'has_bwc' | 'no_bwc' | '' (never looked).
+        //
+        // Deliberately separate from `status` below, which pools four outside
+        // sources of wildly different strength - a documented sighting, a
+        // survey answer, a grant award, a state mandate. This field is set only
+        // when Trusted Technology went and looked, so it is the one a rep can
+        // be held to. Binary on purpose: it answers "do they have cameras or
+        // not", which is the question that decides whether to call.
+        trustedResearched: { type: String, default: '', trim: true, index: true },
+        trustedResearchedAt: { type: Date, default: null },
+        // 'research' when we went and looked, 'manual' when a person set it by
+        // hand. Worth keeping apart: research carries a citation, a person's
+        // judgement carries their name, and a later automated run must not
+        // quietly overwrite something someone knew better about.
+        trustedResearchedBy: { type: String, default: '', trim: true },
+        trustedResearchedNote: { type: String, default: '', trim: true },
         // yes | no | planned | purchased_not_deployed | unknown.
         // The two middle states matter commercially and would be lost if
         // flattened into 'yes': an agency that has BOUGHT cameras but not

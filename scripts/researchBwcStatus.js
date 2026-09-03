@@ -23,6 +23,12 @@
  *   node scripts/researchBwcStatus.js --limit=5 --dry-run
  *   node scripts/researchBwcStatus.js --state=TX --limit=200
  *   node scripts/researchBwcStatus.js --all=true --concurrency=5
+ *   node scripts/researchBwcStatus.js --state=TX --from=31.75,-95.36 --concurrency=1
+ *
+ * --from starts the queue at a point and walks it nearest-first, so the run
+ * moves across the map instead of hopping around it. Pass a lat,lon or an ORI
+ * to start from that agency. With --concurrency=1 there is exactly one agency
+ * in flight at a time, which is what makes it followable.
  */
 import mongoose from 'mongoose'
 import dotenv from 'dotenv'
@@ -61,6 +67,59 @@ const parseArgs = () => {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const coordsOf = (agency) => {
+  const lat = agency.location?.latitude ?? agency.latitude
+  const lon = agency.location?.longitude ?? agency.longitude
+  return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null
+}
+
+/** Great-circle miles. Good enough to order a queue by. */
+const milesBetween = (a, b) => {
+  const toRad = (deg) => (deg * Math.PI) / 180
+  const dLat = toRad(b.lat - a.lat)
+  const dLon = toRad(b.lon - a.lon)
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2
+  return 2 * 3958.7613 * Math.asin(Math.sqrt(h))
+}
+
+/**
+ * Order the queue as a journey rather than a list.
+ *
+ * Greedy nearest-neighbour from the starting point: go to the closest agency,
+ * then the closest to that, and so on. It is not an optimal tour and does not
+ * need to be - the point is that consecutive agencies are near each other, so
+ * the run reads as movement across the map instead of hopping from one end of
+ * the state to the other by officer count.
+ *
+ * Agencies with no coordinates cannot be walked to, so they go on the end.
+ */
+const orderAsJourney = (agencies, origin) => {
+  const placed = []
+  const remaining = []
+  for (const agency of agencies) (coordsOf(agency) ? placed : remaining).push(agency)
+
+  const route = []
+  let at = origin
+  const pool = [...placed]
+  while (pool.length) {
+    let bestIndex = 0
+    let bestDistance = Infinity
+    for (let i = 0; i < pool.length; i += 1) {
+      const distance = milesBetween(at, coordsOf(pool[i]))
+      if (distance < bestDistance) {
+        bestDistance = distance
+        bestIndex = i
+      }
+    }
+    const [next] = pool.splice(bestIndex, 1)
+    route.push(next)
+    at = coordsOf(next)
+  }
+  return [...route, ...remaining]
+}
 
 const callOpenAI = async (body) => {
   const key = process.env.OPENAI_API_KEY
@@ -318,6 +377,18 @@ const researchAgency = async (agency) => {
   }
 }
 
+/** --from takes a lat,lon or an ORI to set out from. */
+const resolveOrigin = async (from) => {
+  const pair = from.split(',').map(Number)
+  if (pair.length === 2 && pair.every(Number.isFinite)) return { lat: pair[0], lon: pair[1] }
+  const agency = await LeAgency.findOne({ ori: from.toUpperCase() })
+    .select('latitude longitude location.latitude location.longitude agencyName')
+    .lean()
+  const coords = agency && coordsOf(agency)
+  if (!coords) throw new Error(`--from=${from} is neither a lat,lon nor an ORI we can place.`)
+  return coords
+}
+
 const run = async () => {
   const args = parseArgs()
   const dryRun = args['dry-run'] === 'true'
@@ -346,14 +417,25 @@ const run = async () => {
   if (args.state) selector.state = String(args.state).toUpperCase()
   if (args.ori) selector.ori = String(args.ori).toUpperCase()
 
-  const pending = await LeAgency.find(selector)
+  // Fetched unsorted when travelling: the journey decides the order, and a
+  // limit applied before routing would pick the biggest agencies rather than
+  // the nearest ones.
+  const fetched = await LeAgency.find(selector)
     .select(
       'ori agencyName state stateName county agencyType contacts.website ' +
-        'employment.swornOfficers surveillance.bwc',
+        'employment.swornOfficers surveillance.bwc latitude longitude location.latitude location.longitude',
     )
-    .sort({ 'employment.swornOfficers': -1 })
-    .limit(Number.isFinite(limit) ? limit : 0)
+    .sort(args.from ? {} : { 'employment.swornOfficers': -1 })
+    .limit(args.from ? 0 : Number.isFinite(limit) ? limit : 0)
     .lean()
+
+  let pending = fetched
+  if (args.from) {
+    const origin = await resolveOrigin(String(args.from))
+    pending = orderAsJourney(fetched, origin)
+    if (Number.isFinite(limit)) pending = pending.slice(0, limit)
+    console.log(`Journey starts at ${origin.lat.toFixed(3)}, ${origin.lon.toFixed(3)}`)
+  }
 
   console.log(`Camera research queue: ${pending.length} agencies`)
   console.log(`  one OpenAI web_search call each, up to ${MAX_TOOL_CALLS} searches per agency`)
@@ -372,6 +454,7 @@ const run = async () => {
   }
   let done = 0
   let cursor = 0
+  let lastAt = null
 
   const worker = async () => {
     for (;;) {
@@ -457,10 +540,13 @@ const run = async () => {
 
       stats[status] += 1
       done += 1
+      const here = coordsOf(agency)
+      const hop = lastAt && here ? `${Math.round(milesBetween(lastAt, here))}mi` : ''
+      if (here) lastAt = here
       const mark = status === 'yes' ? '+' : status === 'no' ? '-' : ' '
       console.log(
         `  ${mark} ${agency.agencyName.slice(0, 30).padEnd(32)}` +
-          `${status.padEnd(23)}${String(verdict?.confidence || '').padEnd(7)}` +
+          `${status.padEnd(23)}${String(verdict?.confidence || '').padEnd(7)}${hop.padEnd(7)}` +
           `${String(verdict?.contractEnd || '').padEnd(11)}s=${String(searches).padEnd(3)}` +
           `${String(verdict?.vendor || '').slice(0, 12).padEnd(14)}${sourceUrl.slice(0, 38)}`,
       )
