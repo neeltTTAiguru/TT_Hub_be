@@ -236,6 +236,20 @@ const leAgencySchema = new mongoose.Schema(
         vendor: { type: String, default: '', trim: true, index: true },
         // Exactly as published, so a normalisation mistake stays recoverable.
         vendorRaw: { type: String, default: '', trim: true },
+        // When the contract or grant period ends. The single most actionable
+        // field here: a term expiring in the next year is a dated reason to
+        // call, which no amount of "they have cameras" ever is.
+        contractEnd: { type: Date, default: null, index: true },
+        // high | medium | low. A 2018 job advert and a council contract award
+        // are both 'yes'; they are not equally good.
+        confidence: { type: String, default: '', trim: true },
+        // What would actually settle it, when research could not. Usually a
+        // records request, because purchase orders are disclosable in every
+        // state and do not depend on any policy mandate.
+        nextAction: { type: String, default: '', trim: true },
+        // How many distinct searches were run, so a thin 'unknown' is
+        // distinguishable from a thoroughly searched one.
+        searchesRun: { type: Number, default: null },
         // How many, where a source states it. Useful for sizing a deal.
         cameraCount: { type: Number, default: null },
         summary: { type: String, default: '', trim: true },

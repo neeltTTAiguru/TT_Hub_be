@@ -31,9 +31,25 @@ const OPENAI_URL = 'https://api.openai.com/v1/responses'
 
 dotenv.config()
 
-const MODEL = process.env.BWC_RESEARCH_MODEL || 'gpt-4.1'
-const MAX_TOOL_CALLS = Number(process.env.BWC_RESEARCH_MAX_TOOL_CALLS || 4)
-const REQUEST_TIMEOUT_MS = Number(process.env.BWC_RESEARCH_TIMEOUT_MS || 120000)
+// A reasoning model, and not a preference: gpt-4.1 treats web_search as a
+// single lookup - one call, one query, one source - which makes the whole
+// multi-phase search discipline below unenforceable. On the same prompt gpt-5
+// ran 9 searches over 114 sources, working the agency site, vendor contracts,
+// the adopted budget, released footage and cooperative purchasing in turn.
+// With gpt-4.1 both Tarrant and Harris County came back "planned" off a single
+// budget line; both run deployed programmes.
+const MODEL = process.env.BWC_RESEARCH_MODEL || 'gpt-5'
+// Low is enough: the work is searching and reading, not reasoning, and higher
+// effort mostly buys latency here.
+const REASONING_EFFORT = process.env.BWC_RESEARCH_EFFORT || 'low'
+// Must exceed the search minimums the prompt sets (5 small, 8 larger) or the
+// instruction is unfollowable: capped at 4, it used ONE search and returned
+// "planned" for Tarrant and Harris County sheriffs on the strength of a budget
+// line, when both plainly run deployed programmes.
+const MAX_TOOL_CALLS = Number(process.env.BWC_RESEARCH_MAX_TOOL_CALLS || 12)
+// Nine searches take about a minute, so the ceiling has to clear that with room
+// for a slow one rather than cutting good research off mid-way.
+const REQUEST_TIMEOUT_MS = Number(process.env.BWC_RESEARCH_TIMEOUT_MS || 300000)
 
 const parseArgs = () => {
   const args = {}
@@ -127,48 +143,116 @@ const countSearches = (payload) =>
     (item) => item?.type === 'web_search_call',
   ).length
 
+/**
+ * Phase 0 is already done for us, and that is the point.
+ *
+ * The generic version of this process opens by researching the agency's legal
+ * name, ORI, type, headcount and jurisdiction. We hold all of that, plus the
+ * official website and whatever the Atlas already recorded. Handing it over
+ * instead of re-deriving it saves several searches per agency and, more
+ * importantly, stops the model resolving the agency wrongly and then
+ * confidently researching a different department.
+ */
+const agencyBrief = (agency, regime) =>
+  [
+    `Agency: ${agency.agencyName}`,
+    `ORI: ${agency.ori}`,
+    `State: ${agency.stateName || agency.state}`,
+    agency.county ? `County: ${agency.county}` : '',
+    agency.agencyType ? `Type: ${agency.agencyType}` : '',
+    agency.employment?.swornOfficers != null
+      ? `Sworn officers: ${agency.employment.swornOfficers}`
+      : 'Sworn officers: not reported',
+    agency.contacts?.website ? `Official website: ${agency.contacts.website}` : '',
+    agency.surveillance?.bwc?.hasBwc
+      ? `ALREADY ON RECORD: ${agency.surveillance.bwc.source} reported cameras${
+          agency.surveillance.bwc.vendor ? ` (${agency.surveillance.bwc.vendor})` : ''
+        }${
+          agency.surveillance.bwc.asOf
+            ? ` as of ${new Date(agency.surveillance.bwc.asOf).getFullYear()}`
+            : ''
+        }. Confirm whether it still holds and find the contract term.`
+      : '',
+    regime ? `State BWC legal regime, already established: ${regime}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+
 const RESEARCH_RULES = [
-  'You establish whether ONE US law enforcement agency uses body-worn cameras.',
+  'You determine whether ONE named law enforcement agency operates body-worn',
+  'cameras. You have web search. You output JSON only.',
   '',
-  'SEARCH FIRST. Never answer from memory. Try more than one phrasing before',
-  'concluding nothing exists: "body worn camera", "body cam", "BWC policy", and',
-  'the agency name with Axon, WatchGuard or Motorola.',
+  'CORE RULE: "no evidence found" is NOT "no cameras". The default is unknown.',
+  'Only answer "no" on an explicit agency statement, or a public-records response',
+  'showing no BWC policy or purchase exists. Breaking this rule is the worst error',
+  'you can make - a wrong "no" sends a rep to an agency that already bought, and',
+  'removes a real prospect from the list.',
   '',
-  'SOURCE PREFERENCE, strongest first:',
-  "1. The agency's own site, or its city/county/state government site (.gov, .us).",
-  '2. Council or commissioners-court agendas, minutes and adopted budgets - where',
-  '   equipment purchases, vendors and dollar amounts actually appear.',
-  '3. State or federal government publications.',
-  '4. Established local news.',
-  'Social media is weak evidence. Never cite it when an official source says the',
-  'same thing. Stop as soon as an authoritative source settles the question.',
+  'The agency is already resolved for you: name, ORI, state, type, headcount and',
+  'website are given. Do not re-derive them. Do rule out similarly named agencies',
+  'nearby - a city PD, county sheriff, constable, campus PD and ISD PD in the same',
+  'geography are different agencies and different buyers. Add exclusion terms.',
   '',
-  'VERDICT - pick exactly one:',
-  'yes                    - a source states the agency uses or deploys them, or has',
-  '                         an active body-worn camera policy.',
-  'purchased_not_deployed - bought, awarded, or contracted for, but not yet in use.',
-  'planned                - budgeted, applied for a grant, or publicly committed,',
-  '                         but not yet purchased.',
-  'no                     - a source explicitly states it does NOT use them.',
-  'unknown                - anything else. Finding nothing is a correct answer:',
-  '                         absence of evidence is not evidence of absence, and a',
-  '                         wrong "no" is worse than an unknown.',
+  'SEARCH IN THIS ORDER, stopping when a primary document settles it:',
+  '1. The agency or jurisdiction site: policy, transparency and records pages,',
+  '   hosted policy manuals ("<agency>" powerdms / "<agency>" lexipol).',
+  '2. THE MONEY TRAIL - the most reliable evidence there is, so do not skip it',
+  '   even if step 1 hit. Council or commissioners-court agendas and minutes name',
+  '   the vendor and the amount verbatim. Also adopted budgets and CIP documents,',
+  '   cooperative contracts (BuyBoard, Sourcewell, HGACBuy, NASPO, TIPS), state',
+  '   grant administrator awards, and BJA grant lists.',
+  '3. Released footage. "<agency>" "body camera footage" released is strong proof',
+  '   a programme is running.',
+  '4. Local news and vendor press releases (Axon, Motorola/WatchGuard, Getac,',
+  '   Utility, Digital Ally, Reveal, Visual Labs) - corroborate before trusting.',
   '',
-  'Do not collapse planned or purchased_not_deployed into yes. An agency that has',
-  'bought cameras but not rolled them out is a different commercial situation from',
-  'one already running them.',
+  'SMALL AGENCIES: under 25 sworn officers, online sources routinely fail even',
+  'when cameras exist. Do not read that silence as "no". Return unknown and set',
+  'nextAction to a records request or a phone call.',
   '',
-  'Beware same-named agencies in other states. Confirm the state matches before',
-  'using a source.',
+  'DO NOT BLUR THESE:',
+  '- in-car and dash cameras are NOT body-worn cameras',
+  '- fixed jail and interview-room cameras are NOT body-worn cameras',
+  '- a state mandate is NOT evidence this agency complies with it',
+  '- a pilot is NOT a deployment',
+  '',
+  'VARY YOUR QUERIES. Repeating one returns the same results. Run at least 5',
+  'distinct searches before returning unknown, and at least 8 for an agency over',
+  '25 sworn officers.',
+  '',
+  'STATUS - pick exactly one:',
+  'yes                    - a primary document shows an operating programme.',
+  'purchased_not_deployed - contract, purchase order, budget line or grant award,',
+  '                         with no evidence it is in use yet.',
+  'planned                - budgeted, applied for, or publicly committed only.',
+  'no                     - explicit statement of non-use, or a nil records',
+  '                         response. Nothing else qualifies.',
+  'unknown                - the default, and a correct answer.',
+  '',
+  'confidence: high only for a primary document within the last 24 months.',
+  'medium for older but uncontradicted evidence. low for anything thinner.',
+  '',
+  'contractEnd matters more than almost anything else you can find: a term',
+  'expiring soon is a dated reason to make contact. Populate it whenever a source',
+  'gives a period of performance or contract term. Format YYYY-MM-DD.',
   '',
   'Reply with ONE JSON object and nothing else:',
-  '{"status":"yes|no|planned|purchased_not_deployed|unknown","vendor":"","cameraCount":null,',
-  ' "sourceUrl":"","quote":"","confidence":"high|medium|low"}',
-  'sourceUrl MUST be a complete URL starting with https:// - copied from a page you',
-  'actually opened. NEVER put a document title, a citation label or a page name',
-  'there ("ApprovedFY26BudgetPolicy" is not a URL). If you cannot produce a real',
-  'URL for a claim, the status is unknown.',
-  'quote is the sentence you relied on, copied verbatim.',
+  '{"status":"yes|no|planned|purchased_not_deployed|unknown","vendor":"",',
+  ' "cameraCount":null,"contractEnd":"","confidence":"high|medium|low",',
+  ' "sourceUrl":"","quote":"","collisionsRuledOut":"","nextAction":"",',
+  ' "stateRegime":"A_use_mandate|B_policy_if_operating|C_funding_conditioned|D_no_law|unclear"}',
+  '',
+  'sourceUrl MUST be a complete URL starting with https://, copied from a page you',
+  'actually opened. NEVER a document title or citation label. quote is the exact',
+  'sentence supporting the claim. If you cannot attach a URL, the status is',
+  'unknown.',
+  '',
+  'stateRegime: classify how this state legislates BWCs, from the statute or the',
+  'NCSL database - not from a "body camera laws by state" listicle, which conflate',
+  '"has legislation" with "mandates cameras" and are routinely overinclusive.',
+  'A = officers must wear them. B = an agency that operates them must have a',
+  'written policy, so absence of a policy IS meaningful. C = policy required only',
+  'to receive state grant money. D = no state BWC law.',
 ].join('\n')
 
 const parseJson = (text) => {
@@ -188,10 +272,22 @@ const parseJson = (text) => {
   return null
 }
 
+/**
+ * The state's BWC legal regime, established once per state and then reused.
+ *
+ * It is a property of the state, not the agency, so deriving it inside all
+ * 1,326 Texas lookups would be 1,325 wasted classifications - and worse, they
+ * could disagree with each other. The first agency in a state settles it and
+ * every later one is told the answer.
+ */
+const stateRegimes = new Map()
+
 /** One call: the model searches, reads, and answers with a citation. */
 const researchAgency = async (agency) => {
+  const regime = stateRegimes.get(agency.state) || ''
   const payload = await callOpenAI({
     model: MODEL,
+    reasoning: { effort: REASONING_EFFORT },
     tools: [{ type: 'web_search', external_web_access: true }],
     // Annotations only list what the model chose to footnote. The consulted
     // source list is everything it actually opened, which is what a citation
@@ -206,17 +302,17 @@ const researchAgency = async (agency) => {
       { role: 'system', content: RESEARCH_RULES },
       {
         role: 'user',
-        content:
-          `Agency: ${agency.agencyName}\n` +
-          `State: ${agency.stateName || agency.state}\n` +
-          `County: ${agency.county || 'n/a'}\n` +
-          `${agency.contacts?.website ? `Official website: ${agency.contacts.website}\n` : ''}` +
-          '\nDo they use body-worn cameras?',
+        content: `${agencyBrief(agency, regime)}\n\nDo they operate body-worn cameras?`,
       },
     ],
   })
+  const verdict = parseJson(getText(payload))
+  // Remember the regime for the rest of this state's queue.
+  if (verdict?.stateRegime && verdict.stateRegime !== 'unclear' && !regime) {
+    stateRegimes.set(agency.state, verdict.stateRegime)
+  }
   return {
-    verdict: parseJson(getText(payload)),
+    verdict,
     citedUrls: getCitedUrls(payload),
     searches: countSearches(payload),
   }
@@ -251,7 +347,10 @@ const run = async () => {
   if (args.ori) selector.ori = String(args.ori).toUpperCase()
 
   const pending = await LeAgency.find(selector)
-    .select('ori agencyName state stateName county contacts.website')
+    .select(
+      'ori agencyName state stateName county agencyType contacts.website ' +
+        'employment.swornOfficers surveillance.bwc',
+    )
     .sort({ 'employment.swornOfficers': -1 })
     .limit(Number.isFinite(limit) ? limit : 0)
     .lean()
@@ -360,14 +459,20 @@ const run = async () => {
       done += 1
       const mark = status === 'yes' ? '+' : status === 'no' ? '-' : ' '
       console.log(
-        `  ${mark} ${agency.agencyName.slice(0, 34).padEnd(36)}${status.padEnd(8)}` +
-          `${String(verdict?.vendor || '').slice(0, 14).padEnd(16)}${sourceUrl.slice(0, 46)}`,
+        `  ${mark} ${agency.agencyName.slice(0, 30).padEnd(32)}` +
+          `${status.padEnd(23)}${String(verdict?.confidence || '').padEnd(7)}` +
+          `${String(verdict?.contractEnd || '').padEnd(11)}s=${String(searches).padEnd(3)}` +
+          `${String(verdict?.vendor || '').slice(0, 12).padEnd(14)}${sourceUrl.slice(0, 38)}`,
       )
 
       if (!dryRun) {
         const set = {
           'enrichment.bwcResearchStatus': status === 'unknown' ? 'not-found' : 'ok',
           'enrichment.bwcResearchedAt': new Date(),
+          // Recorded even on an unknown: a thin search and an exhaustive one
+          // both return nothing, and only this tells them apart.
+          'surveillance.bwc.searchesRun': searches,
+          'surveillance.bwc.nextAction': String(verdict?.nextAction || '').slice(0, 300),
         }
         if (status !== 'unknown') {
           set['surveillance.bwc.status'] = status
@@ -379,6 +484,15 @@ const run = async () => {
           set['surveillance.bwc.evidence'] = 'researched'
           set['surveillance.bwc.asOf'] = new Date()
           set['surveillance.bwc.vendor'] = String(verdict?.vendor || '').trim()
+          set['surveillance.bwc.confidence'] = ['high', 'medium', 'low'].includes(
+            verdict?.confidence,
+          )
+            ? verdict.confidence
+            : 'low'
+          // A contract term expiring soon is the most actionable thing research
+          // can return, so it is parsed strictly rather than stored as prose.
+          const end = Date.parse(String(verdict?.contractEnd || ''))
+          if (Number.isFinite(end)) set['surveillance.bwc.contractEnd'] = new Date(end)
           if (Number.isFinite(Number(verdict?.cameraCount))) {
             set['surveillance.bwc.cameraCount'] = Number(verdict.cameraCount)
           }
