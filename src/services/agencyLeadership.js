@@ -176,7 +176,10 @@ function cleanEmail(raw) {
  * Researches one agency. Returns the fields to write, already filtered so an
  * uncited name never reaches the database.
  */
-export async function researchLeadership(agency) {
+export async function researchLeadership(agency, options = {}) {
+  // A research run must return a decision maker's email, so it asks for one
+  // explicitly rather than depending on the deployment-wide default below.
+  const collectEmail = options.collectEmail ?? COLLECT_EMAIL
   const where = [agency.county ? `${agency.county} County` : '', agency.stateName || agency.state]
     .filter(Boolean)
     .join(', ')
@@ -254,7 +257,7 @@ export async function researchLeadership(agency) {
     phone: normalizePhone(parsed.phone),
     // Same rule as the chief's name: no citation, no write. Without this the
     // model can return a plausible address it never actually read.
-    email: COLLECT_EMAIL && isUrl(parsed.emailSourceUrl) ? cleanEmail(parsed.email) : '',
+    email: collectEmail && isUrl(parsed.emailSourceUrl) ? cleanEmail(parsed.email) : '',
     asOf: String(parsed.asOf || '').trim(),
   }
 }

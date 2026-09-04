@@ -253,8 +253,7 @@ const RESEARCH_RULES = [
   '   Utility, Digital Ally, Reveal, Visual Labs) - corroborate before trusting.',
   '',
   'SMALL AGENCIES: under 25 sworn officers, online sources routinely fail even',
-  'when cameras exist. Do not read that silence as "no". Return unknown and set',
-  'nextAction to a records request or a phone call.',
+  'when cameras exist. Do not read that silence as "no". Return unknown.',
   '',
   'DO NOT BLUR THESE:',
   '- in-car and dash cameras are NOT body-worn cameras',
@@ -291,7 +290,7 @@ const RESEARCH_RULES = [
   'Reply with ONE JSON object and nothing else:',
   '{"status":"yes|no|planned|purchased_not_deployed|unknown","vendor":"",',
   ' "cameraCount":null,"contractEnd":"","confidence":"high|medium|low",',
-  ' "sourceUrl":"","quote":"","collisionsRuledOut":"","nextAction":"",',
+  ' "sourceUrl":"","quote":"","collisionsRuledOut":"",',
   ' "stateRegime":"A_use_mandate|B_policy_if_operating|C_funding_conditioned|D_no_law|unclear"}',
   '',
   'sourceUrl MUST be a complete URL starting with https://, copied from a page you',
@@ -417,7 +416,6 @@ export async function researchAndSaveBwc(ori, onQuery) {
     'enrichment.bwcResearchStatus': status === 'unknown' ? 'not-found' : 'ok',
     'enrichment.bwcResearchedAt': new Date(),
     'surveillance.bwc.searchesRun': searches,
-    'surveillance.bwc.nextAction': String(verdict?.nextAction || '').slice(0, 300),
   }
   // Our own binary verdict, written only when we actually looked. 'planned'
   // deliberately sets nothing: budgeted is neither having them nor not.
@@ -464,7 +462,6 @@ export async function researchAndSaveBwc(ori, onQuery) {
     contractEnd: String(verdict?.contractEnd || ''),
     sourceUrl,
     quote: String(verdict?.quote || '').slice(0, 400),
-    nextAction: String(verdict?.nextAction || '').slice(0, 300),
   }
 }
 

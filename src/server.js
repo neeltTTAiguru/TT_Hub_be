@@ -1,5 +1,6 @@
 import express from 'express'
 import { failOrphanedRuns } from './services/contentOperations.js'
+import { resumeRunOnBoot } from './services/researchRunner.js'
 import cors from 'cors'
 import mongoose from 'mongoose'
 import dotenv from 'dotenv'
@@ -134,6 +135,9 @@ async function start() {
     void failOrphanedRuns().catch((error) => console.error('Failed to release orphaned content runs', error))
     startCompetitorCollectorSchedule()
     startHubSpotHealthMonitor()
+    // Same reasoning as above: a research run costs real money per agency, so
+    // only the process that actually owns the port may pick one back up.
+    void resumeRunOnBoot().catch((error) => console.error('Failed to resume research run', error))
   })
 
   server.on('error', (error) => {

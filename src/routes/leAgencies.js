@@ -4,6 +4,9 @@ import { getAgencyBriefing } from '../services/agencyBriefing.js'
 import { chatWithHermes } from '../services/hermesChat.js'
 import TravellerState from '../models/TravellerState.js'
 import { researchAndSaveBwc } from '../services/bwcResearch.js'
+import { buildResearchRunWorkbook } from '../services/researchRunWorkbook.js'
+import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
+import BwcResearchRun from '../models/BwcResearchRun.js'
 
 const router = Router()
 
@@ -14,6 +17,16 @@ const point = (agency) => ({
   lat: agency.location?.latitude ?? agency.latitude,
   lon: agency.location?.longitude ?? agency.longitude,
 })
+
+/**
+ * The single definition of "the map can draw this agency".
+ *
+ * Shared by the geojson feed and the research-run preview on purpose: when the
+ * two had their own tests they reported different totals for the same filters
+ * (897 against 896), which reads as a bug in whichever number you trust less.
+ * A latitude is not enough - the map plots from the GeoJSON point.
+ */
+const PLOTTABLE = { $or: [{ geo: { $exists: true } }, { 'location.geo': { $exists: true } }] }
 
 const parseNumber = (value) => {
   if (value === undefined || value === null || value === '') return null
@@ -59,12 +72,40 @@ const buildFilter = (query) => {
 
   // Body-worn cameras, per the Atlas of Surveillance. 'none' means nobody has
   // documented one here, which is not the same as the agency having none.
-  if (query.bwc === 'true') filter['surveillance.bwc.status'] = 'yes'
-  if (query.bwc === 'false') filter['surveillance.bwc.status'] = 'no'
+  //
+  // A hand-set verdict outranks the imported status, exactly as the map's own
+  // colouring does. Without this the two disagree: an agency you marked as
+  // having cameras still matched `bwc=unknown` here, so it drew red on the map
+  // and a research run would have gone and researched it again anyway.
+  const trustedUnset = {
+    $or: [
+      { 'surveillance.bwc.trustedResearched': { $exists: false } },
+      { 'surveillance.bwc.trustedResearched': '' },
+    ],
+  }
+  const verdict = (trusted, status) => ({
+    $or: [
+      { 'surveillance.bwc.trustedResearched': trusted },
+      { $and: [trustedUnset, status] },
+    ],
+  })
+  // $and rather than a bare $or, so a later `{ ...filter, $or: [...] }` spread
+  // cannot silently overwrite the camera filter.
+  if (query.bwc === 'true') {
+    filter.$and = [verdict('has_bwc', { 'surveillance.bwc.status': 'yes' })]
+  }
+  if (query.bwc === 'false') {
+    filter.$and = [verdict('no_bwc', { 'surveillance.bwc.status': 'no' })]
+  }
   if (query.bwc === 'unknown') {
-    filter.$or = [
-      { 'surveillance.bwc.status': { $exists: false } },
-      { 'surveillance.bwc.status': 'unknown' },
+    filter.$and = [
+      trustedUnset,
+      {
+        $or: [
+          { 'surveillance.bwc.status': { $exists: false } },
+          { 'surveillance.bwc.status': 'unknown' },
+        ],
+      },
     ]
   }
   if (typeof query.bwcEvidence === 'string' && query.bwcEvidence.trim()) {
@@ -116,6 +157,54 @@ const buildFilter = (query) => {
   return filter
 }
 
+/**
+ * A run as the map needs it.
+ *
+ * The trail is capped: a thousand-agency run polled every few seconds would
+ * otherwise move the whole journey across the wire on every tick, and the map
+ * only draws the recent part of the path anyway.
+ */
+const PATH_LIMIT = 400
+const serializeRun = (run) => {
+  const doc = run.toObject ? run.toObject() : run
+  const path = doc.path || []
+  return {
+    id: String(doc._id),
+    status: doc.status,
+    brief: doc.brief || '',
+    filtersLabel: doc.filtersLabel || '',
+    total: doc.total,
+    completed: doc.completed,
+    failed: doc.failed,
+    cursor: doc.cursor,
+    searches: doc.searches,
+    foundCameras: doc.foundCameras,
+    foundEmails: doc.foundEmails,
+    foundPhones: doc.foundPhones,
+    current: doc.current || null,
+    path: path.length > PATH_LIMIT ? path.slice(-PATH_LIMIT) : path,
+    pathTruncated: path.length > PATH_LIMIT,
+    startedAt: doc.startedAt,
+    finishedAt: doc.finishedAt,
+    lastError: doc.lastError || '',
+  }
+}
+
+/** The run's targeting in words, so the spreadsheet can say what it covers. */
+const describeFilters = (filters = {}) => {
+  const parts = []
+  parts.push(filters.state ? `States: ${filters.state}` : 'All states')
+  if (filters.agencyType) parts.push(`Types: ${filters.agencyType}`)
+  if (filters.minOfficers || filters.maxOfficers) {
+    parts.push(`Officers: ${filters.minOfficers ?? 'any'} to ${filters.maxOfficers ?? 'any'}`)
+  }
+  if (filters.bwc === 'unknown') parts.push('Camera status unknown only')
+  if (filters.bwc === 'true') parts.push('Known to have cameras')
+  if (filters.bwc === 'false') parts.push('Known to have none')
+  if (filters.search) parts.push(`Name contains "${filters.search}"`)
+  return parts.join('; ')
+}
+
 router.get('/', async (req, res, next) => {
   try {
     const filter = buildFilter(req.query)
@@ -144,9 +233,9 @@ router.get('/geojson', async (req, res, next) => {
     // A bbox/near query already constrains geo; otherwise accept either point.
     // Around 2,700 agencies have no FBI coordinate at all and are on the map
     // only because enrichment resolved one, so requiring `geo` would drop them.
-    const filter = base.geo
-      ? base
-      : { ...base, $or: [{ geo: { $exists: true } }, { 'location.geo': { $exists: true } }] }
+    // $and, not a spread: `bwc=unknown` also sets `$or`, and spreading a second
+    // one overwrote it - silently dropping the camera filter from the map feed.
+    const filter = base.geo ? base : { $and: [base, PLOTTABLE] }
 
     const limit = Math.min(parseNumber(req.query.limit) ?? MAX_LIMIT, MAX_LIMIT)
 
@@ -550,6 +639,206 @@ router.put('/traveller-position', async (req, res, next) => {
   }
 })
 
+/**
+ * Scope and price a research run before anyone commits money to it.
+ *
+ * Deliberately reuses buildFilter, so a run targets exactly what the filter bar
+ * above the map is already showing. The alternative - a second, separately
+ * specified set of agencies - drifts away from what you are looking at without
+ * ever telling you, and you find out after the bill.
+ *
+ * The numbers are measured, not guessed. A real run on Alpine PD cost $0.1022
+ * at 6 searches, of which the searches were 59% - so search COUNT, not token
+ * volume, is what moves the total. Adding a decision maker and a phone number
+ * costs roughly three more searches per agency.
+ *
+ * Reads only. Nothing here starts a run.
+ */
+router.post('/research-run/preview', async (req, res, next) => {
+  try {
+    // Filters arrive in the body so the client can send exactly the object it
+    // uses for the map, rather than re-encoding it as a query string.
+    const filter = buildFilter({ ...(req.query || {}), ...(req.body?.filters || {}) })
+    const skipResearched = req.body?.skipResearched !== false
+    // Default to exactly what the map is drawing, so the two never disagree.
+    // Agencies with no coordinate are still researchable - they have a website,
+    // a sheriff and a phone - so this is a checkbox, not a permanent exclusion.
+    const includeOffMap = req.body?.includeOffMap === true
+
+    const doneClause = {
+      $or: [
+        { 'enrichment.bwcResearchedAt': { $ne: null } },
+        { 'surveillance.bwc.trustedResearched': { $in: ['has_bwc', 'no_bwc'] } },
+      ],
+    }
+
+    // Everything below is scoped by `scope`, so every number in the preview
+    // describes the same set of agencies the run would actually visit.
+    const scope = includeOffMap ? filter : { $and: [filter, PLOTTABLE] }
+
+    const [matched, alreadyDone, offMap, needEmail, needPhone] = await Promise.all([
+      LeAgency.countDocuments(scope),
+      LeAgency.countDocuments({ $and: [scope, doneClause] }),
+      LeAgency.countDocuments({ $and: [filter, { $nor: [PLOTTABLE] }] }),
+      LeAgency.countDocuments({ $and: [scope, { 'contacts.email': { $in: [null, ''] } }] }),
+      LeAgency.countDocuments({ $and: [scope, { 'contacts.phone': { $in: [null, ''] } }] }),
+    ])
+
+    const queue = skipResearched ? Math.max(matched - alreadyDone, 0) : matched
+
+    // $10 per 1,000 web_search calls, plus measured input+output tokens.
+    const SEARCH = 0.01
+    const TOKENS = 0.042
+    const low = 9 * SEARCH + TOKENS
+    // 16, not 13. A measured end-to-end run on Encinal PD spent 14 searches
+    // (13 on cameras, 1 on the chief), which was above the old ceiling - a
+    // small agency with nothing published is the expensive case, not the cheap
+    // one, because the model keeps looking.
+    const high = 16 * SEARCH + TOKENS
+    const SECONDS_EACH = 60 // measured end-to-end on a real agency: ~55s
+
+    res.json({
+      matched,
+      alreadyDone,
+      queue,
+      offMap,
+      includeOffMap,
+      needEmail,
+      needPhone,
+      perAgency: { low: Number(low.toFixed(3)), high: Number(high.toFixed(3)) },
+      cost: { low: Number((queue * low).toFixed(2)), high: Number((queue * high).toFixed(2)) },
+      hours: {
+        serial: Number(((queue * SECONDS_EACH) / 3600).toFixed(1)),
+        concurrent3: Number(((queue * SECONDS_EACH) / 3 / 3600).toFixed(1)),
+      },
+      searchesPerAgency: { low: 9, high: 16 },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * Resolve the targeting to a concrete list of ORIs.
+ *
+ * Shared by start and export so a run visits exactly the agencies the preview
+ * counted, in the same order, with the same exclusions.
+ */
+const resolveRunScope = async (body = {}, query = {}) => {
+  const filter = buildFilter({ ...query, ...(body.filters || {}) })
+  const skipResearched = body.skipResearched !== false
+  const includeOffMap = body.includeOffMap === true
+
+  const clauses = [filter]
+  if (!includeOffMap) clauses.push(PLOTTABLE)
+  if (skipResearched) {
+    clauses.push({
+      'enrichment.bwcResearchedAt': null,
+      'surveillance.bwc.trustedResearched': { $nin: ['has_bwc', 'no_bwc'] },
+    })
+  }
+  return { where: { $and: clauses }, skipResearched, includeOffMap }
+}
+
+/**
+ * The run's output as a spreadsheet.
+ *
+ * Takes the same body as the preview, so what you download is exactly the set
+ * the preview priced - no second filter to keep in step. Rows exist for every
+ * targeted agency whether or not the run has reached them yet: a blank camera
+ * cell is the run's to-do list, and hiding those rows would make a half-finished
+ * run look complete.
+ */
+router.post('/research-run/export', async (req, res, next) => {
+  try {
+    const { where, skipResearched, includeOffMap } = await resolveRunScope(req.body, req.query)
+
+    const agencies = await LeAgency.find(where)
+      .select(
+        'ori agencyName agencyType state county latitude longitude geo location ' +
+          'employment contacts crm surveillance enrichment',
+      )
+      .sort({ state: 1, agencyName: 1 })
+      .limit(MAX_LIMIT)
+      .lean()
+
+    const workbook = await buildResearchRunWorkbook(agencies, {
+      Targeting: describeFilters(req.body?.filters || {}),
+      Brief: String(req.body?.brief || '').slice(0, 2000),
+      'Already-researched agencies': skipResearched ? 'Skipped' : 'Included',
+      'Agencies with no coordinate': includeOffMap ? 'Included' : 'Excluded',
+    })
+
+    const stamp = new Date().toISOString().slice(0, 10)
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="research-run-${stamp}.xlsx"`,
+      'Content-Length': String(workbook.length),
+      'Cache-Control': 'private, no-store',
+    })
+    res.send(workbook)
+  } catch (error) {
+    next(error)
+  }
+})
+
+/** Start a run. It keeps going after you close the tab - that is the point. */
+router.post('/research-run/start', async (req, res, next) => {
+  try {
+    const { where, skipResearched, includeOffMap } = await resolveRunScope(req.body, req.query)
+    const oris = (await LeAgency.find(where).select('ori').limit(MAX_LIMIT).lean()).map((a) => a.ori)
+
+    // A limit is how you test: same targeting, same prompt, same cost per
+    // agency, one agency of it. Anything else tests a different thing than the
+    // run you are about to pay for.
+    const limit = parseNumber(req.body?.limit)
+
+    const run = await startRun({
+      oris,
+      brief: String(req.body?.brief || '').slice(0, 2000),
+      filters: req.body?.filters || {},
+      filtersLabel: describeFilters(req.body?.filters || {}),
+      skipResearched,
+      includeOffMap,
+      limit,
+      startedBy: req.auth?.payload?.sub || '',
+    })
+    res.status(201).json(serializeRun(run))
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * What the run is doing right now, for anyone who has the hub open.
+ *
+ * Global, not per user: everybody watching sees the same traveller in the same
+ * place, because there is one run and the server owns it.
+ */
+router.get('/research-run/active', async (req, res, next) => {
+  try {
+    const run =
+      (await activeRun()) ||
+      (await BwcResearchRun.findOne({ status: { $in: ['done', 'stopped', 'failed'] } }).sort({
+        createdAt: -1,
+      }))
+    res.json(run ? serializeRun(run) : { run: null })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/** Ask the run to stop. It finishes the agency in flight, then stops. */
+router.post('/research-run/stop', async (req, res, next) => {
+  try {
+    const run = await stopRun()
+    if (!run) return res.status(404).json({ message: 'No run is going.' })
+    return res.json(serializeRun(run))
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get('/:ori/research-stream', async (req, res, next) => {
   try {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -922,7 +1211,7 @@ router.post('/traveller-chat', async (req, res, next) => {
       ? researched.error
         ? `I went looking into ${researched.ori} and could not get anywhere: ${researched.error}`
         : researched.status === 'unknown'
-          ? `I had a proper look at ${researched.name} - ${researched.searches} searches - and nobody has published either way. ${researched.nextAction || 'A records request would settle it.'}`
+          ? `I had a proper look at ${researched.name} - ${researched.searches} searches - and nobody has published either way. A records request would settle it.`
           : `${researched.name}: ${researched.status.replace(/_/g, ' ')}${
               researched.vendor ? `, ${researched.vendor}` : ''
             }${researched.contractEnd ? `, contract to ${researched.contractEnd}` : ''}. ` +
