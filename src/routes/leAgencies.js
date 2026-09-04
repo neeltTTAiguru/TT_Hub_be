@@ -828,6 +828,52 @@ router.get('/research-run/active', async (req, res, next) => {
   }
 })
 
+/**
+ * A finished run's spreadsheet, exported by run id rather than by filters.
+ *
+ * The run stores the exact ORIs it queued, so this returns precisely the
+ * agencies that run covered - no re-deriving from filters, which would drift
+ * as later research changes what matches them.
+ *
+ * "Skip already researched" is deliberately NOT applied. It scopes a run before
+ * it starts; applying it afterwards would exclude every agency the run just
+ * finished and hand back an empty sheet.
+ */
+router.post('/research-run/:id/export', async (req, res, next) => {
+  try {
+    const run = await BwcResearchRun.findById(req.params.id).lean()
+    if (!run) return res.status(404).json({ message: 'That run no longer exists.' })
+
+    const agencies = await LeAgency.find({ ori: { $in: run.queue } })
+      .select(
+        'ori agencyName agencyType state county employment contacts crm surveillance enrichment',
+      )
+      .sort({ state: 1, agencyName: 1 })
+      .lean()
+
+    const workbook = await buildResearchRunWorkbook(agencies, {
+      Targeting: run.filtersLabel || '',
+      Brief: run.brief || '',
+      Status: run.status,
+      Researched: `${run.completed} of ${run.total}`,
+      Failed: String(run.failed || 0),
+      Started: run.startedAt ? new Date(run.startedAt).toISOString() : '',
+      Finished: run.finishedAt ? new Date(run.finishedAt).toISOString() : '',
+    })
+
+    const stamp = new Date(run.startedAt || Date.now()).toISOString().slice(0, 10)
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="research-run-${stamp}.xlsx"`,
+      'Content-Length': String(workbook.length),
+      'Cache-Control': 'private, no-store',
+    })
+    return res.send(workbook)
+  } catch (error) {
+    return next(error)
+  }
+})
+
 /** Ask the run to stop. It finishes the agency in flight, then stops. */
 router.post('/research-run/stop', async (req, res, next) => {
   try {
