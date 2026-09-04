@@ -14,6 +14,11 @@ const corsOptions = {
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-File-Name', 'X-File-Type'],
+  // Without this the browser hides Content-Disposition from JavaScript on any
+  // cross-origin response - which is every prod response, since the hub and the
+  // API are different hosts. File downloads then silently lose the filename the
+  // server chose and fall back to whatever the client guesses.
+  exposedHeaders: ['Content-Disposition'],
   maxAge: 86400,
 }
 
