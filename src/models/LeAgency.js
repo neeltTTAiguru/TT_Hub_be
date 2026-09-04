@@ -139,6 +139,25 @@ const leAgencySchema = new mongoose.Schema(
       type: [employmentYearSchema],
       default: [],
     },
+    // Kyle's TMAN-P qualification, captured on the call.
+    //
+    // Free text, not pickers. An SDR types what the contact actually said, and
+    // forcing "Q3 2026" onto "probably after the bond election, maybe spring"
+    // throws away the part that mattered. Structure lives in which question it
+    // answers, not in the shape of the answer.
+    sdr: {
+      timeline: { type: String, default: '', trim: true },
+      money: { type: String, default: '', trim: true },
+      authority: { type: String, default: '', trim: true },
+      needs: { type: String, default: '', trim: true },
+      pain: { type: String, default: '', trim: true },
+      notes: { type: String, default: '', trim: true },
+      // Who filled it in and when - a six-month-old answer to "when is your
+      // budget cycle" is a different fact from a fresh one.
+      filledBy: { type: String, default: '', trim: true },
+      filledAt: { type: Date, default: null },
+    },
+
     // Populated by a later enrichment pass; the FBI feed carries no contacts.
     contacts: {
       chiefName: { type: String, default: '', trim: true },

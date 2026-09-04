@@ -1357,6 +1357,52 @@ router.patch('/:ori/trusted-bwc', async (req, res, next) => {
   }
 })
 
+/**
+ * Save the TMAN-P qualification for an agency.
+ *
+ * Shared like everything else on this map - one record per agency, not per
+ * user. Two people working the same territory should see the same answers,
+ * and a second SDR ringing an agency needs to know the first one already did.
+ */
+router.patch('/:ori/sdr', async (req, res, next) => {
+  try {
+    const body = req.body || {}
+    const text = (value) => String(value ?? '').slice(0, 2000).trim()
+    const fields = {
+      timeline: text(body.timeline),
+      money: text(body.money),
+      authority: text(body.authority),
+      needs: text(body.needs),
+      pain: text(body.pain),
+      notes: text(body.notes),
+    }
+    const anyAnswered = Object.values(fields).some(Boolean)
+
+    const set = Object.fromEntries(
+      Object.entries(fields).map(([key, value]) => [`sdr.${key}`, value]),
+    )
+    // Only stamp it when there is something to stamp; clearing every field is
+    // how you delete the form, and a deleted form should not look filled in.
+    set['sdr.filledAt'] = anyAnswered ? new Date() : null
+    set['sdr.filledBy'] = anyAnswered
+      ? String(req.auth?.payload?.email || req.auth?.payload?.sub || '').slice(0, 200)
+      : ''
+
+    const result = await LeAgency.updateOne(
+      { ori: String(req.params.ori).toUpperCase() },
+      { $set: set },
+    )
+    if (!result.matchedCount) return res.status(404).json({ message: 'Agency was not found.' })
+
+    const agency = await LeAgency.findOne({ ori: String(req.params.ori).toUpperCase() })
+      .select('ori agencyName sdr')
+      .lean()
+    return res.json({ ori: agency.ori, name: agency.agencyName, sdr: agency.sdr || {} })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 router.get('/:ori/briefing', async (req, res, next) => {
   try {
     const briefing = await getAgencyBriefing(req.params.ori, {
