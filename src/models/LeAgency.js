@@ -212,6 +212,13 @@ const leAgencySchema = new mongoose.Schema(
         ],
         default: [],
       },
+      // Written when the hub pushes an agency up to HubSpot. Holding the ids
+      // is what makes a second save an update rather than a duplicate.
+      hubspotCompanyId: { type: String, default: '', trim: true },
+      hubspotContactId: { type: String, default: '', trim: true },
+      hubspotSyncedAt: { type: Date, default: null },
+      hubspotSyncError: { type: String, default: '', trim: true },
+
       // 'exact' links are name+state identical after normalisation; 'fuzzy' ones
       // cleared the similarity threshold and are worth spot-checking.
       matchMethod: { type: String, default: '', trim: true },

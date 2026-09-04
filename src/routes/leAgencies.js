@@ -9,6 +9,7 @@ import {
   buildRunFindingsWorkbook,
 } from '../services/researchRunWorkbook.js'
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
+import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
 import BwcResearchRun from '../models/BwcResearchRun.js'
 
 const router = Router()
@@ -1397,7 +1398,25 @@ router.patch('/:ori/sdr', async (req, res, next) => {
     const agency = await LeAgency.findOne({ ori: String(req.params.ori).toUpperCase() })
       .select('ori agencyName sdr')
       .lean()
-    return res.json({ ori: agency.ori, name: agency.agencyName, sdr: agency.sdr || {} })
+
+    // Push to HubSpot, but never at the cost of the qualification itself. The
+    // SDR's typing is the valuable artefact; the sync is a convenience, and a
+    // HubSpot outage must not turn a saved form into a lost one.
+    let hubspot = null
+    if (anyAnswered) {
+      try {
+        hubspot = await syncAgencyToHubSpot(agency.ori)
+      } catch (error) {
+        const message = String(error?.message || error).slice(0, 300)
+        hubspot = { error: message }
+        await LeAgency.updateOne(
+          { ori: agency.ori },
+          { $set: { 'crm.hubspotSyncError': message } },
+        )
+      }
+    }
+
+    return res.json({ ori: agency.ori, name: agency.agencyName, sdr: agency.sdr || {}, hubspot })
   } catch (error) {
     return next(error)
   }

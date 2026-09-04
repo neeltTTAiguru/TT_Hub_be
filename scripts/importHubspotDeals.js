@@ -183,31 +183,49 @@ const main = async () => {
       ops.push({
         updateOne: {
           filter: { ori },
+          // Field by field, never `$set: { crm: {...} }`. Replacing the whole
+          // subdocument also deletes the HubSpot company and contact ids the
+          // hub writes when it pushes an agency up - and losing those means the
+          // next push creates a duplicate company instead of updating one.
           update: {
             $set: {
-              crm: {
-                matched: true,
-                stage: top.deal.stage,
-                stageRank: STAGE_RANK[top.deal.stage] ?? null,
-                owner: top.deal.owner,
-                dealCount: group.length,
-                deals: group.map((g) => ({
-                  dealId: g.deal.dealId,
-                  dealName: g.deal.dealName,
-                  stage: g.deal.stage,
-                  owner: g.deal.owner,
-                })),
-                matchMethod: best.method,
-                matchConfidence: best.confidence,
-                importedAt: new Date(),
-              },
+              'crm.matched': true,
+              'crm.stage': top.deal.stage,
+              'crm.stageRank': STAGE_RANK[top.deal.stage] ?? null,
+              'crm.owner': top.deal.owner,
+              'crm.dealCount': group.length,
+              'crm.deals': group.map((g) => ({
+                dealId: g.deal.dealId,
+                dealName: g.deal.dealName,
+                stage: g.deal.stage,
+                owner: g.deal.owner,
+              })),
+              'crm.matchMethod': best.method,
+              'crm.matchConfidence': best.confidence,
+              'crm.importedAt': new Date(),
             },
           },
         },
       })
     }
-    // Clear any prior import so a re-run never leaves stale links behind.
-    await LeAgency.updateMany({ 'crm.matched': true }, { $set: { crm: { matched: false } } })
+    // Clear any prior import so a re-run never leaves stale links behind -
+    // but only the imported fields. The HubSpot ids are ours, not HubSpot's,
+    // and wiping them would orphan every company the hub has created.
+    await LeAgency.updateMany(
+      { 'crm.matched': true },
+      {
+        $set: {
+          'crm.matched': false,
+          'crm.stage': '',
+          'crm.stageRank': null,
+          'crm.owner': '',
+          'crm.dealCount': 0,
+          'crm.deals': [],
+          'crm.matchMethod': '',
+          'crm.matchConfidence': null,
+        },
+      },
+    )
     if (ops.length) await LeAgency.bulkWrite(ops, { ordered: false })
   }
 
