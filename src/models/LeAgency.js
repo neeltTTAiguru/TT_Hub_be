@@ -139,6 +139,12 @@ const leAgencySchema = new mongoose.Schema(
       type: [employmentYearSchema],
       default: [],
     },
+    // A deliberately fake agency, for exercising things that write to other
+    // systems. Flagged rather than named-by-convention so it can be excluded
+    // from research runs and counts by query - a test record that quietly
+    // joins the statistics is worse than no test record.
+    isTestRecord: { type: Boolean, default: false, index: true },
+
     // Kyle's TMAN-P qualification, captured on the call.
     //
     // Free text, not pickers. An SDR types what the contact actually said, and

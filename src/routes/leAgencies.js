@@ -246,7 +246,7 @@ router.get('/geojson', async (req, res, next) => {
     const agencies = await LeAgency.find(filter)
       .select(
         'ori agencyName agencyType state county latitude longitude location ' +
-          'fbiCoordIsCountyProxy employment contacts crm surveillance',
+          'fbiCoordIsCountyProxy employment contacts crm surveillance isTestRecord',
       )
       .limit(limit)
       .lean()
@@ -301,6 +301,9 @@ router.get('/geojson', async (req, res, next) => {
               name: person.name,
               title: person.title,
             })),
+            // Sent so the map can colour it distinctly. A test agency that
+            // looks like a real pin is a trap someone eventually calls.
+            isTest: Boolean(agency.isTestRecord),
             // A documented body-worn camera. `bwcVendor` is blank far more
             // often than not, so the map must not read blank as "no vendor".
             hasBwc: Boolean(agency.surveillance?.bwc?.hasBwc),
@@ -335,7 +338,8 @@ router.get('/geojson', async (req, res, next) => {
 /** Coverage and size-band rollups, for dashboard tiles and data-quality checks. */
 router.get('/stats', async (req, res, next) => {
   try {
-    const filter = buildFilter(req.query)
+    // A test record joining the headline counts is worse than no test record.
+    const filter = { ...buildFilter(req.query), isTestRecord: { $ne: true } }
 
     const [totals, byState, byBand, byStage] = await Promise.all([
       LeAgency.aggregate([
@@ -662,7 +666,13 @@ router.post('/research-run/preview', async (req, res, next) => {
   try {
     // Filters arrive in the body so the client can send exactly the object it
     // uses for the map, rather than re-encoding it as a query string.
-    const filter = buildFilter({ ...(req.query || {}), ...(req.body?.filters || {}) })
+    // Same exclusion as resolveRunScope: the preview has to price the run that
+    // will actually happen, and a fake agency in the count is a fake agency in
+    // the bill.
+    const filter = {
+      ...buildFilter({ ...(req.query || {}), ...(req.body?.filters || {}) }),
+      isTestRecord: { $ne: true },
+    }
     const skipResearched = req.body?.skipResearched !== false
     // Default to exactly what the map is drawing, so the two never disagree.
     // Agencies with no coordinate are still researchable - they have a website,
@@ -753,7 +763,8 @@ const resolveRunScope = async (body = {}, query = {}) => {
   const skipResearched = body.skipResearched !== false
   const includeOffMap = body.includeOffMap === true
 
-  const clauses = [filter]
+  // Never research a fake agency, and never bill for it.
+  const clauses = [filter, { isTestRecord: { $ne: true } }]
   if (!includeOffMap) clauses.push(PLOTTABLE)
   if (skipResearched) {
     clauses.push({

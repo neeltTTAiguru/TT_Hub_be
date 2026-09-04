@@ -130,9 +130,26 @@ const qualificationBlock = (agency, sdr = {}) => {
       bwc.confidence ? ` - ${bwc.confidence} confidence` : ''
     }`,
     bwc.status === 'purchased_not_deployed' ? 'NOTE: bought but not yet deployed.' : '',
+    // The quote is the evidence itself, and the most useful line here: it is
+    // the difference between "our tool says yes" and a sentence a rep can read
+    // out on a call.
+    bwc.summary ? `Evidence: "${bwc.summary}"` : '',
     bwc.evidenceUrl ? `Source: ${bwc.evidenceUrl}` : '',
+    bwc.contractEnd
+      ? `Contract ends: ${new Date(bwc.contractEnd).toISOString().slice(0, 10)}`
+      : '',
     agency.county ? `County: ${agency.county}` : '',
     agency.employment?.swornOfficers ? `Sworn officers: ${agency.employment.swornOfficers}` : '',
+    // The join key back to the hub. Without it, matching a HubSpot company to
+    // an agency relies on name or domain, which is exactly the fuzzy matching
+    // the ORI exists to avoid.
+    agency.ori ? `ORI: ${agency.ori}` : '',
+    // Named officers the leadership research found beyond the chief. They are
+    // more decision makers, and they were otherwise being dropped entirely.
+    ...(agency.contacts?.commandStaff || [])
+      .filter((person) => person?.name)
+      .slice(0, 6)
+      .map((person) => `Also: ${person.name}${person.title ? ` - ${person.title}` : ''}`),
     '',
     sdr.timeline ? `T - Timeline: ${sdr.timeline}` : '',
     sdr.money ? `M - Money: ${sdr.money}` : '',
