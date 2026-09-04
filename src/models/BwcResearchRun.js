@@ -28,6 +28,43 @@ const stopSchema = new mongoose.Schema(
     foundPhone: { type: Boolean, default: false },
     searches: { type: Number, default: 0 },
     error: { type: String, default: '' },
+
+    // What the traveller actually filed, written down here rather than read
+    // back off the agency later.
+    //
+    // The agency record holds the CURRENT truth and is overwritten by whatever
+    // researches it next, so rebuilding an old run's spreadsheet from it makes
+    // that spreadsheet change months after the run finished. A report has to
+    // say what was found at the time.
+    cameras: {
+      verdict: { type: String, default: '' },
+      reasoning: { type: String, default: '' },
+      sourceUrl: { type: String, default: '' },
+      confidence: { type: String, default: '' },
+      vendor: { type: String, default: '' },
+      contractEnd: { type: String, default: '' },
+    },
+    contact: {
+      chiefName: { type: String, default: '' },
+      chiefTitle: { type: String, default: '' },
+      email: { type: String, default: '' },
+      phone: { type: String, default: '' },
+      website: { type: String, default: '' },
+      sourceUrl: { type: String, default: '' },
+    },
+    // Which of those this run actually added, as against confirming something
+    // already on file. Without it a confirmed phone reads as a discovery, and
+    // the run looks like it did work it did not do.
+    added: {
+      cameras: { type: Boolean, default: false },
+      email: { type: Boolean, default: false },
+      phone: { type: Boolean, default: false },
+      chief: { type: Boolean, default: false },
+    },
+    // Denormalised so a row can stand on its own in the sheet.
+    agencyType: { type: String, default: '' },
+    county: { type: String, default: '' },
+    swornOfficers: { type: Number, default: null },
   },
   { _id: false },
 )

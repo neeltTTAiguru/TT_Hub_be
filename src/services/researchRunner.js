@@ -216,12 +216,38 @@ async function researchOne(agency) {
     foundPhone: false,
     error: '',
     fatal: false,
+    cameras: {},
+    contact: {},
+    added: {},
+    agencyType: agency.agencyType || '',
+    county: agency.county || '',
+    swornOfficers: agency.employment?.swornOfficers ?? null,
+  }
+
+  // What was already on file before the traveller arrived, so the run can
+  // distinguish what it found from what it merely confirmed.
+  const before = {
+    email: agency.contacts?.email || '',
+    phone: agency.contacts?.phone || '',
+    chief: agency.contacts?.chiefName || '',
+    cameras: agency.surveillance?.bwc?.trustedResearched || '',
   }
 
   try {
     const bwc = await researchAndSaveBwc(agency.ori)
     result.verdict = bwc.status === 'unknown' ? 'unknown' : bwc.status
     result.searches += bwc.searches || 0
+    result.cameras = {
+      verdict: bwc.status,
+      // Kept even for an unknown: the source and confidence still say how hard
+      // it was looked for, which is the difference between "no answer exists"
+      // and "nobody looked".
+      reasoning: bwc.quote || '',
+      sourceUrl: bwc.sourceUrl || '',
+      confidence: bwc.confidence || '',
+      vendor: bwc.vendor || '',
+      contractEnd: bwc.contractEnd || '',
+    }
   } catch (error) {
     result.error = String(error?.message || error).slice(0, 200)
     result.fatal = isFatal(result.error, error?.statusCode)
@@ -230,13 +256,43 @@ async function researchOne(agency) {
   try {
     const leadership = await researchLeadership(agency, { collectEmail: true })
     await saveLeadership(agency.ori, leadership)
-    result.foundEmail = Boolean(leadership?.email)
-    result.foundPhone = Boolean(leadership?.phone)
     result.searches += leadership?.searches || 0
   } catch (error) {
     const message = String(error?.message || error).slice(0, 200)
     if (!result.error) result.error = message
     if (isFatal(message, error?.statusCode)) result.fatal = true
+  }
+
+  // Count what the agency HAS, not what this one call happened to return.
+  //
+  // Scoring the API response meant an agency whose phone we already knew
+  // scored zero, so the tally read "0 phone numbers" next to a row that
+  // plainly had one. The counters exist to tell you what is in the
+  // spreadsheet, so they have to be read back from the same place the
+  // spreadsheet is.
+  const saved = await LeAgency.findOne({ ori: agency.ori })
+    .select('contacts surveillance.bwc.trustedResearched')
+    .lean()
+  const after = saved?.contacts || {}
+  result.foundEmail = Boolean(after.email)
+  result.foundPhone = Boolean(after.phone)
+  const trusted = saved?.surveillance?.bwc?.trustedResearched || ''
+  if (trusted === 'has_bwc') result.verdict = 'yes'
+  if (trusted === 'no_bwc') result.verdict = 'no'
+
+  result.contact = {
+    chiefName: after.chiefName || '',
+    chiefTitle: after.chiefTitle || '',
+    email: after.email || '',
+    phone: after.phone || '',
+    website: after.website || '',
+    sourceUrl: after.chiefSourceUrl || '',
+  }
+  result.added = {
+    cameras: Boolean(trusted) && trusted !== before.cameras,
+    email: Boolean(after.email) && after.email !== before.email,
+    phone: Boolean(after.phone) && after.phone !== before.phone,
+    chief: Boolean(after.chiefName) && after.chiefName !== before.chief,
   }
 
   return result
@@ -269,7 +325,7 @@ async function loop() {
 
       const ori = run.queue[run.cursor]
       const agency = await LeAgency.findOne({ ori })
-        .select('ori agencyName state stateName county agencyType contacts latitude longitude location')
+        .select('ori agencyName state stateName county agencyType contacts employment surveillance.bwc latitude longitude location')
         .lean()
 
       if (!agency) {

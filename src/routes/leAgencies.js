@@ -4,7 +4,10 @@ import { getAgencyBriefing } from '../services/agencyBriefing.js'
 import { chatWithHermes } from '../services/hermesChat.js'
 import TravellerState from '../models/TravellerState.js'
 import { researchAndSaveBwc } from '../services/bwcResearch.js'
-import { buildResearchRunWorkbook } from '../services/researchRunWorkbook.js'
+import {
+  buildResearchRunWorkbook,
+  buildRunFindingsWorkbook,
+} from '../services/researchRunWorkbook.js'
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import BwcResearchRun from '../models/BwcResearchRun.js'
 
@@ -719,6 +722,26 @@ router.post('/research-run/preview', async (req, res, next) => {
 })
 
 /**
+ * A filename that says what the file is without being opened.
+ *
+ * These land in a downloads folder among a hundred other things and get mailed
+ * around, so "research-run.xlsx" is useless a week later. Scope and date first,
+ * because that is what someone is looking for when they go back for one.
+ */
+const workbookFilename = (filters = {}, count = 0, when = new Date()) => {
+  const states = String(filters.state || '')
+    .split(',')
+    .map((code) => code.trim().toUpperCase())
+    .filter(Boolean)
+  const scope = states.length ? states.slice(0, 4).join('-') : 'all-states'
+  const date = new Date(when).toISOString().slice(0, 10)
+  const size = `${count}-${count === 1 ? 'agency' : 'agencies'}`
+  // Belt and braces: a stray character here becomes a broken Content-Disposition.
+  const safe = `trustedtech_map_research_${scope}_${date}_${size}`.replace(/[^A-Za-z0-9._-]/g, '')
+  return `${safe}.xlsx`
+}
+
+/**
  * Resolve the targeting to a concrete list of ORIs.
  *
  * Shared by start and export so a run visits exactly the agencies the preview
@@ -769,10 +792,10 @@ router.post('/research-run/export', async (req, res, next) => {
       'Agencies with no coordinate': includeOffMap ? 'Included' : 'Excluded',
     })
 
-    const stamp = new Date().toISOString().slice(0, 10)
+    const filename = workbookFilename(req.body?.filters, agencies.length)
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': `attachment; filename="research-run-${stamp}.xlsx"`,
+      'Content-Disposition': `attachment; filename="${filename}"`,
       'Content-Length': String(workbook.length),
       'Cache-Control': 'private, no-store',
     })
@@ -844,14 +867,7 @@ router.post('/research-run/:id/export', async (req, res, next) => {
     const run = await BwcResearchRun.findById(req.params.id).lean()
     if (!run) return res.status(404).json({ message: 'That run no longer exists.' })
 
-    const agencies = await LeAgency.find({ ori: { $in: run.queue } })
-      .select(
-        'ori agencyName agencyType state county employment contacts crm surveillance enrichment',
-      )
-      .sort({ state: 1, agencyName: 1 })
-      .lean()
-
-    const workbook = await buildResearchRunWorkbook(agencies, {
+    const workbook = await buildRunFindingsWorkbook(run, {
       Targeting: run.filtersLabel || '',
       Brief: run.brief || '',
       Status: run.status,
@@ -861,10 +877,10 @@ router.post('/research-run/:id/export', async (req, res, next) => {
       Finished: run.finishedAt ? new Date(run.finishedAt).toISOString() : '',
     })
 
-    const stamp = new Date(run.startedAt || Date.now()).toISOString().slice(0, 10)
+    const filename = workbookFilename(run.filters, (run.path || []).length, run.startedAt)
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'Content-Disposition': `attachment; filename="research-run-${stamp}.xlsx"`,
+      'Content-Disposition': `attachment; filename="${filename}"`,
       'Content-Length': String(workbook.length),
       'Cache-Control': 'private, no-store',
     })

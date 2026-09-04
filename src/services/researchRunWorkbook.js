@@ -80,6 +80,8 @@ const COLUMNS = [
   { header: 'Website', key: 'website', width: 34 },
 
   { header: 'Sworn officers', key: 'officers', width: 13 },
+  // Only meaningful on a run's own sheet, and blank on a targeting export.
+  { header: 'Added by this run', key: 'addedBy', width: 20 },
 ]
 
 const rowFor = (agency) => {
@@ -115,7 +117,82 @@ const rowFor = (agency) => {
   }
 }
 
+/**
+ * One row from what a run recorded, rather than from the agency today.
+ *
+ * This is the difference between a report and a query. An agency record is
+ * overwritten by whatever researches it next, so a sheet rebuilt from agency
+ * records changes after the fact; a run's own findings do not.
+ */
+const rowFromStop = (stop = {}) => {
+  const cameras = stop.cameras || {}
+  const contact = stop.contact || {}
+  const added = stop.added || {}
+  const verdict =
+    stop.verdict === 'yes' || stop.verdict === 'purchased_not_deployed'
+      ? 'Yes'
+      : stop.verdict === 'no'
+        ? 'No'
+        : stop.error
+          ? 'Not researched'
+          : 'Unknown'
+  const addedBits = [
+    added.cameras ? 'cameras' : '',
+    added.chief ? 'decision maker' : '',
+    added.email ? 'email' : '',
+    added.phone ? 'phone' : '',
+  ].filter(Boolean)
+
+  return {
+    ori: stop.ori || '',
+    agency: stop.name || '',
+    type: stop.agencyType || '',
+    county: stop.county || '',
+    state: stop.state || '',
+
+    cameras: verdict,
+    cameraSource: stop.error ? '' : 'Researched by the traveller',
+    // Reasoning is only shown behind an actual verdict. An unknown means
+    // nothing was published, and there is nothing useful to say about it.
+    reasoning: verdict === 'Yes' || verdict === 'No' ? cameras.reasoning || '' : '',
+    caveat:
+      cameras.verdict === 'purchased_not_deployed'
+        ? 'Bought but not yet deployed - live opportunity'
+        : cameras.verdict === 'planned'
+          ? 'Budgeted or announced only - nothing bought yet'
+          : stop.error
+            ? `Research failed: ${String(stop.error).slice(0, 120)}`
+            : '',
+    cameraUrl: verdict === 'Yes' || verdict === 'No' ? cameras.sourceUrl || '' : '',
+    cameraAsOf: stop.at || null,
+    confidence: cameras.confidence || '',
+    vendor: cameras.vendor || '',
+    contractEnd: cameras.contractEnd || '',
+
+    chief: contact.chiefName || '',
+    chiefTitle: contact.chiefTitle || '',
+    email: contact.email || '',
+    contactUrl: contact.sourceUrl || '',
+    contactVerified: stop.at || null,
+
+    phone: contact.phone || '',
+    website: contact.website || '',
+
+    officers: stop.swornOfficers ?? null,
+    addedBy: addedBits.length ? addedBits.join(', ') : 'nothing new',
+  }
+}
+
+/** A finished run's own report: what it found, as it found it. */
+export async function buildRunFindingsWorkbook(run, meta = {}) {
+  return writeWorkbook((run.path || []).map(rowFromStop), meta)
+}
+
 export async function buildResearchRunWorkbook(agencies, meta = {}) {
+  return writeWorkbook(agencies.map(rowFor), meta)
+}
+
+async function writeWorkbook(rows, meta = {}) {
   const book = new ExcelJS.Workbook()
   book.creator = 'Trusted Technology Smart Hub'
   book.created = new Date()
@@ -130,7 +207,7 @@ export async function buildResearchRunWorkbook(agencies, meta = {}) {
   header.alignment = { vertical: 'middle' }
   header.height = 20
 
-  for (const agency of agencies) sheet.addRow(rowFor(agency))
+  for (const row of rows) sheet.addRow(row)
 
   sheet.autoFilter = { from: 'A1', to: { row: 1, column: COLUMNS.length } }
   for (const key of ['cameraAsOf', 'contactVerified']) {
@@ -150,7 +227,7 @@ export async function buildResearchRunWorkbook(agencies, meta = {}) {
   for (const [field, value] of Object.entries(meta)) {
     about.addRow({ field, value: value === '' || value == null ? '-' : String(value) })
   }
-  about.addRow({ field: 'Rows', value: String(agencies.length) })
+  about.addRow({ field: 'Rows', value: String(rows.length) })
   about.addRow({ field: 'Generated', value: new Date().toISOString() })
 
   return Buffer.from(await book.xlsx.writeBuffer())
