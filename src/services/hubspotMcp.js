@@ -219,54 +219,6 @@ async function readDealsWithToken(config, token) {
   }
 }
 
-/**
- * Run a block against a live HubSpot MCP session, refreshing a rejected token
- * once and retrying.
- *
- * Extracted so writes get the same auth handling reads already had, rather
- * than a second, subtly different copy of it.
- */
-export async function withHubSpotSession(work) {
-  const config = getConfig()
-  let token = await getAccessToken(config)
-  const attempt = async () => {
-    const sessionId = await connect(config, token)
-    let nextId = 100
-    return work((name, args) => callTool(config, token, sessionId, (nextId += 1), name, args))
-  }
-  try {
-    return await attempt()
-  } catch (error) {
-    if (error?.upstreamStatus !== 401 || !config.refreshToken) throw error
-    token = await getAccessToken(config, true)
-    return attempt()
-  }
-}
-
-/**
- * What the MCP can actually do, and with what arguments.
- *
- * The write tool's argument schema is not something to guess at: a wrong shape
- * against a CRM either errors or, worse, creates something malformed that
- * somebody has to clean up by hand.
- */
-export async function listHubSpotTools() {
-  const config = getConfig()
-  const token = await getAccessToken(config)
-  const sessionId = await connect(config, token)
-  const { payload } = await postMcp(
-    config,
-    token,
-    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-    sessionId,
-  )
-  return (payload?.result?.tools || []).map((tool) => ({
-    name: tool.name,
-    description: String(tool.description || '').slice(0, 400),
-    inputSchema: tool.inputSchema || null,
-  }))
-}
-
 export async function readHubSpotDeals() {
   const config = getConfig()
   let token = await getAccessToken(config)

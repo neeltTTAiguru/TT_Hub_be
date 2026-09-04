@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { getHubSpotHealth, refreshHubSpotHealth } from '../services/hubspotHealth.js'
-import { listHubSpotTools } from '../services/hubspotMcp.js'
+import { checkToken } from '../services/hubspotRest.js'
 import { probeMemoryGateway, countBrainPages } from '../services/memoryGateway.js'
 
 const router = Router()
@@ -13,24 +13,18 @@ router.get('/', (_req, res) => {
 // fresh check instead of reading the background monitor's last verdict.
 // status: 'ok' | 'down' | 'unknown' — see services/hubspotHealth.js.
 /**
- * What the HubSpot MCP exposes, with argument schemas.
+ * Does the private app token work, and does it carry the CRM scopes.
  *
- * Read-only, and here rather than in a script because the MCP credentials only
- * exist in the deployed environment - this is the only way to see the write
- * tool's real shape without guessing at it.
+ * A read against companies, so it proves the credential without creating
+ * anything. HubSpot names a missing scope in its error, which is almost always
+ * the whole fix.
  */
-router.get('/hubspot/tools', async (req, res, next) => {
+router.get('/hubspot/token', async (req, res) => {
   try {
-    const tools = await listHubSpotTools()
-    return res.json({
-      count: tools.length,
-      writeTools: tools
-        .filter((tool) => /manage|create|update|delete|write|batch/i.test(tool.name))
-        .map((tool) => tool.name),
-      tools,
-    })
+    const result = await checkToken()
+    return res.json({ ok: true, ...result })
   } catch (error) {
-    return next(error)
+    return res.status(200).json({ ok: false, error: String(error?.message || error) })
   }
 })
 
