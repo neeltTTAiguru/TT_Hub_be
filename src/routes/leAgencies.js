@@ -246,7 +246,7 @@ router.get('/geojson', async (req, res, next) => {
     const agencies = await LeAgency.find(filter)
       .select(
         'ori agencyName agencyType state county latitude longitude location ' +
-          'fbiCoordIsCountyProxy employment contacts crm surveillance isTestRecord',
+          'fbiCoordIsCountyProxy employment contacts crm surveillance isTestRecord outreach',
       )
       .limit(limit)
       .lean()
@@ -322,6 +322,13 @@ router.get('/geojson', async (req, res, next) => {
             // national pull and nothing on the map reads it; fetch the agency
             // itself when a citation is actually needed.
             bwcEvidenceDate: agency.surveillance?.bwc?.evidenceDate || null,
+            // Has anyone rung them. The summary is sent, never the log itself:
+            // the notes of every call across a national pull would be
+            // megabytes on the wire to answer a yes/no the map colours by.
+            contacted: Boolean(agency.outreach?.callCount),
+            callCount: agency.outreach?.callCount ?? 0,
+            lastCalledAt: agency.outreach?.lastCalledAt || null,
+            lastCallOutcome: agency.outreach?.lastOutcome || '',
             inPipeline: Boolean(agency.crm?.matched),
             stage: agency.crm?.stage || '',
             stageRank: agency.crm?.stageRank ?? null,
@@ -1428,6 +1435,152 @@ router.patch('/:ori/sdr', async (req, res, next) => {
     }
 
     return res.json({ ori: agency.ori, name: agency.agencyName, sdr: agency.sdr || {}, hubspot })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+/** Newest call first - a log is read from the top. */
+const sortedCalls = (calls = []) =>
+  [...calls].sort(
+    (a, b) => new Date(b.calledAt || b.loggedAt || 0) - new Date(a.calledAt || a.loggedAt || 0),
+  )
+
+/**
+ * Recompute the denormalised summary from the log itself.
+ *
+ * Derived rather than incremented, so a deleted entry cannot leave the map
+ * showing a blue pin for an agency whose only logged call was a mistake.
+ */
+const outreachFrom = (calls = []) => {
+  const ordered = sortedCalls(calls)
+  const latest = ordered[0] || null
+  return {
+    callCount: ordered.length,
+    lastCalledAt: latest ? latest.calledAt || latest.loggedAt || null : null,
+    lastOutcome: latest?.outcome || '',
+    lastLoggedBy: latest?.loggedBy || '',
+  }
+}
+
+/**
+ * The call log for one agency.
+ *
+ * Shared like the qualification: one log per agency, not per user. An SDR
+ * about to ring a department needs to see that somebody rang it on Tuesday and
+ * was told to try back after the budget vote.
+ */
+router.get('/:ori/call-log', async (req, res, next) => {
+  try {
+    const agency = await LeAgency.findOne({ ori: String(req.params.ori).toUpperCase() })
+      .select('ori agencyName callLog outreach')
+      .lean()
+    if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
+    return res.json({
+      ori: agency.ori,
+      name: agency.agencyName,
+      calls: sortedCalls(agency.callLog),
+      outreach: agency.outreach || null,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+/** Add a call to the log. */
+router.post('/:ori/call-log', async (req, res, next) => {
+  try {
+    const body = req.body || {}
+    const text = (value, max = 2000) => String(value ?? '').slice(0, max).trim()
+    const date = (value) => {
+      const parsed = value ? new Date(value) : null
+      return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null
+    }
+
+    const entry = {
+      calledAt: date(body.calledAt) || new Date(),
+      contactName: text(body.contactName, 200),
+      contactTitle: text(body.contactTitle, 200),
+      phone: text(body.phone, 60),
+      outcome: text(body.outcome, 60),
+      followUpAt: date(body.followUpAt),
+      notes: text(body.notes, 5000),
+      loggedBy: String(req.auth?.payload?.email || req.auth?.payload?.sub || '').slice(0, 200),
+      loggedAt: new Date(),
+    }
+    // An entry with neither an outcome nor a word of notes records nothing but
+    // a timestamp, and would still turn the pin blue. Refuse it.
+    if (!entry.outcome && !entry.notes && !entry.contactName) {
+      return res.status(400).json({ message: 'Add an outcome or some notes before saving.' })
+    }
+
+    const agency = await LeAgency.findOne({ ori: String(req.params.ori).toUpperCase() })
+    if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
+
+    agency.callLog.push(entry)
+    agency.outreach = outreachFrom(agency.callLog)
+    await agency.save()
+
+    return res.json({
+      ori: agency.ori,
+      name: agency.agencyName,
+      calls: sortedCalls(agency.toObject().callLog),
+      outreach: agency.outreach,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+/**
+ * Clear the whole log for an agency.
+ *
+ * Separate from removing one call because it answers a different question:
+ * not "that entry was wrong" but "we never actually worked this agency". It
+ * puts the pin back to its camera colour, so it is deliberately a distinct,
+ * confirmed action rather than something reachable by deleting entries one at
+ * a time until the colour happens to change.
+ */
+router.delete('/:ori/call-log', async (req, res, next) => {
+  try {
+    const agency = await LeAgency.findOneAndUpdate(
+      { ori: String(req.params.ori).toUpperCase() },
+      { $set: { callLog: [], outreach: outreachFrom([]) } },
+      { new: true },
+    )
+      .select('ori agencyName outreach')
+      .lean()
+    if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
+
+    return res.json({
+      ori: agency.ori,
+      name: agency.agencyName,
+      calls: [],
+      outreach: agency.outreach,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+/** Remove one call from the log - a mis-logged call otherwise colours the pin for ever. */
+router.delete('/:ori/call-log/:callId', async (req, res, next) => {
+  try {
+    const agency = await LeAgency.findOne({ ori: String(req.params.ori).toUpperCase() })
+    if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
+
+    const entry = agency.callLog.id(req.params.callId)
+    if (!entry) return res.status(404).json({ message: 'That call was not found.' })
+    entry.deleteOne()
+    agency.outreach = outreachFrom(agency.callLog)
+    await agency.save()
+
+    return res.json({
+      ori: agency.ori,
+      name: agency.agencyName,
+      calls: sortedCalls(agency.toObject().callLog),
+      outreach: agency.outreach,
+    })
   } catch (error) {
     return next(error)
   }

@@ -13,6 +13,33 @@ const employmentYearSchema = new mongoose.Schema(
   { _id: false },
 )
 
+/**
+ * One call an SDR made to an agency.
+ *
+ * A log, not a record: agencies get rung more than once, and the second call
+ * only makes sense next to what happened on the first. Overwriting would throw
+ * away the part an SDR picking the account up later actually needs.
+ *
+ * Free text for what was said, a short list for what happened - the outcome is
+ * the one field worth counting, so it is the one field with a shape.
+ */
+const callLogEntrySchema = new mongoose.Schema(
+  {
+    // When the call happened, which is not always when it was typed up.
+    calledAt: { type: Date, default: Date.now },
+    // Who actually picked up. Often not the chief, and that matters.
+    contactName: { type: String, default: '', trim: true },
+    contactTitle: { type: String, default: '', trim: true },
+    phone: { type: String, default: '', trim: true },
+    outcome: { type: String, default: '', trim: true },
+    // A promised call-back is the whole reason a log gets reread.
+    followUpAt: { type: Date, default: null },
+    notes: { type: String, default: '', trim: true },
+    loggedBy: { type: String, default: '', trim: true },
+    loggedAt: { type: Date, default: Date.now },
+  },
+)
+
 const leAgencySchema = new mongoose.Schema(
   {
     // ORI (Originating Agency Identifier) is the only stable key across federal
@@ -162,6 +189,24 @@ const leAgencySchema = new mongoose.Schema(
       // budget cycle" is a different fact from a fresh one.
       filledBy: { type: String, default: '', trim: true },
       filledAt: { type: Date, default: null },
+    },
+
+    // Every call made to this agency, newest first.
+    callLog: {
+      type: [callLogEntrySchema],
+      default: [],
+    },
+    // A summary of the log, kept alongside it deliberately.
+    //
+    // The map feed asks for 20,000 agencies at once and only needs to know
+    // "has anyone rung them" - selecting the notes of every call to answer that
+    // would put megabytes of typing on the wire for a boolean. Written on every
+    // call-log change, never edited by hand.
+    outreach: {
+      callCount: { type: Number, default: 0 },
+      lastCalledAt: { type: Date, default: null, index: true },
+      lastOutcome: { type: String, default: '', trim: true },
+      lastLoggedBy: { type: String, default: '', trim: true },
     },
 
     // Populated by a later enrichment pass; the FBI feed carries no contacts.
