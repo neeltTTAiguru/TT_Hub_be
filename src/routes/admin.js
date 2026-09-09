@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getAuthenticatedUser } from '../middleware/auth.js'
+import { getAuthenticatedUser, resolveEmailFromUserInfo } from '../middleware/auth.js'
 import User from '../models/User.js'
 
 const router = Router()
@@ -20,37 +20,10 @@ function isBootstrapAdmin(authenticatedUser) {
   return (email && adminEmails.includes(email)) || (id && adminAuth0Ids.includes(id))
 }
 
-async function getUserInfoEmail(req) {
-  const auth0Domain = process.env.AUTH0_DOMAIN?.trim()
-  const authorization = req.headers.authorization || ''
-  const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : ''
-
-  if (!auth0Domain || !token) {
-    return ''
-  }
-
-  try {
-    const response = await fetch(`https://${auth0Domain}/userinfo`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    })
-
-    if (!response.ok) {
-      return ''
-    }
-
-    const profile = await response.json()
-    return typeof profile?.email === 'string' ? profile.email.trim().toLowerCase() : ''
-  } catch {
-    return ''
-  }
-}
-
 async function requireAdmin(req, _res, next) {
   try {
     const authenticatedUser = getAuthenticatedUser(req)
-    authenticatedUser.email ||= await getUserInfoEmail(req)
+    authenticatedUser.email ||= await resolveEmailFromUserInfo(req)
 
     if (isBootstrapAdmin(authenticatedUser)) {
       req.adminUser = authenticatedUser

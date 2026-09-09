@@ -11,6 +11,7 @@ import {
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
 import BwcResearchRun from '../models/BwcResearchRun.js'
+import { resolveActor } from '../middleware/auth.js'
 
 const router = Router()
 
@@ -843,7 +844,7 @@ router.post('/research-run/start', async (req, res, next) => {
       skipResearched,
       includeOffMap,
       limit,
-      startedBy: req.auth?.payload?.sub || '',
+      startedBy: await resolveActor(req),
     })
     res.status(201).json(serializeRun(run))
   } catch (error) {
@@ -1403,9 +1404,7 @@ router.patch('/:ori/sdr', async (req, res, next) => {
     // Only stamp it when there is something to stamp; clearing every field is
     // how you delete the form, and a deleted form should not look filled in.
     set['sdr.filledAt'] = anyAnswered ? new Date() : null
-    set['sdr.filledBy'] = anyAnswered
-      ? String(req.auth?.payload?.email || req.auth?.payload?.sub || '').slice(0, 200)
-      : ''
+    set['sdr.filledBy'] = anyAnswered ? String(await resolveActor(req)).slice(0, 200) : ''
 
     const result = await LeAgency.updateOne(
       { ori: String(req.params.ori).toUpperCase() },
@@ -1505,7 +1504,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
       outcome: text(body.outcome, 60),
       followUpAt: date(body.followUpAt),
       notes: text(body.notes, 5000),
-      loggedBy: String(req.auth?.payload?.email || req.auth?.payload?.sub || '').slice(0, 200),
+      loggedBy: String(await resolveActor(req)).slice(0, 200),
       loggedAt: new Date(),
     }
     // An entry with neither an outcome nor a word of notes records nothing but
