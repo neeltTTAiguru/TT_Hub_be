@@ -15,7 +15,8 @@ const token = () => {
   if (!value) {
     const error = new Error(
       'HUBSPOT_API_TOKEN is not set. Create a HubSpot service key (or legacy private app) ' +
-        'with crm.objects.companies.write and crm.objects.contacts.write.',
+        'with crm.objects.companies.write, crm.objects.contacts.write, crm.objects.notes.write ' +
+        'and crm.schemas.companies.write.',
     )
     error.statusCode = 503
     throw error
@@ -126,4 +127,71 @@ export async function associate(fromType, fromId, toType, toId) {
 export async function checkToken() {
   const result = await call('GET', '/crm/v3/objects/companies?limit=1')
   return { ok: true, sampleCount: (result.results || []).length }
+}
+
+/**
+ * Create any of `definitions` that the portal does not already have.
+ *
+ * Custom properties are what make the qualification usable inside HubSpot -
+ * filterable, listable, reportable - rather than prose buried in a description
+ * nobody can build a view on. They have to exist before a record can be written
+ * with them, and creating one that already exists is a 409, so this reads first.
+ *
+ * Returns the names that are safe to write. On a token without schema scope it
+ * returns none rather than throwing: losing the structured copy is a shame, the
+ * qualification itself is not, and the caller still writes the description block.
+ */
+const propertyCache = new Map()
+
+export async function ensureProperties(objectType, group, definitions) {
+  // The portal's schema does not change between saves, and reading every
+  // company property back is a real request. Once per process is enough; a
+  // restart re-checks, which is the only time anyone would have removed one.
+  const cacheKey = `${objectType}:${definitions.map((d) => d.name).join(',')}`
+  if (propertyCache.has(cacheKey)) return propertyCache.get(cacheKey)
+
+  let existing
+  try {
+    const result = await call('GET', `/crm/v3/properties/${objectType}`)
+    existing = new Set((result.results || []).map((property) => property.name))
+  } catch {
+    return []
+  }
+
+  const missing = definitions.filter((definition) => !existing.has(definition.name))
+  if (missing.length) {
+    // The group is what keeps these together in one card on the record rather
+    // than scattered through "Company information". A 409 means it is already
+    // there, which is exactly what we want.
+    try {
+      await call('POST', `/crm/v3/properties/${objectType}/groups`, {
+        name: group.name,
+        label: group.label,
+      })
+    } catch {
+      /* already exists, or no schema scope - the property calls below will say */
+    }
+  }
+
+  const created = []
+  for (const definition of missing) {
+    try {
+      await call('POST', `/crm/v3/properties/${objectType}`, {
+        ...definition,
+        groupName: group.name,
+      })
+      created.push(definition.name)
+    } catch {
+      // One property failing must not cost us the others. A name we could not
+      // create is simply left out of the write.
+    }
+  }
+
+  const usable = definitions
+    .map((definition) => definition.name)
+    .filter((name) => existing.has(name) || created.includes(name))
+  // Only a complete result is worth keeping. A partial one usually means a
+  // scope or a rate limit, both of which are worth retrying on the next save.
+  if (usable.length === definitions.length) propertyCache.set(cacheKey, usable)
+  return usable
 }

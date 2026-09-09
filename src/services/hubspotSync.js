@@ -16,7 +16,7 @@
  *      it did not happen rather than implying it did.
  */
 import LeAgency from '../models/LeAgency.js'
-import { associate, findRecord, readRecord, upsertRecord } from './hubspotRest.js'
+import { associate, ensureProperties, findRecord, readRecord, upsertRecord } from './hubspotRest.js'
 
 // A fenced block we own inside HubSpot's standard `description` field.
 //
@@ -68,6 +68,100 @@ const qualificationBlock = (agency, sdr = {}) => {
   ]
     .filter((line) => line !== '')
     .join('\n')
+}
+
+/**
+ * The qualification as real HubSpot fields, not prose.
+ *
+ * The description block above is for reading; these are for working - filtering
+ * a list on "no timeline yet", building a view of everyone whose budget cycle
+ * opens in October, reporting on how much of a territory has been qualified.
+ * None of that is possible against a paragraph.
+ *
+ * Created on demand the first time an agency is saved, in their own card on the
+ * company record. Textarea rather than text because these answers are sentences
+ * an SDR typed, not values from a picker.
+ */
+const SDR_PROPERTY_GROUP = { name: 'trusted_tech_qualification', label: 'Trusted Tech qualification' }
+
+const SDR_PROPERTIES = [
+  { name: 'tt_sdr_timeline', label: 'T - Timeline', type: 'string', fieldType: 'textarea' },
+  { name: 'tt_sdr_money', label: 'M - Money', type: 'string', fieldType: 'textarea' },
+  { name: 'tt_sdr_authority', label: 'A - Authority', type: 'string', fieldType: 'textarea' },
+  { name: 'tt_sdr_needs', label: 'N - Needs', type: 'string', fieldType: 'textarea' },
+  { name: 'tt_sdr_pain', label: 'P - Pain', type: 'string', fieldType: 'textarea' },
+  { name: 'tt_sdr_notes', label: 'SDR notes', type: 'string', fieldType: 'textarea' },
+  { name: 'tt_sdr_filled_by', label: 'Qualified by', type: 'string', fieldType: 'text' },
+  { name: 'tt_sdr_filled_at', label: 'Qualified on', type: 'date', fieldType: 'date' },
+  { name: 'tt_ori', label: 'ORI', type: 'string', fieldType: 'text' },
+]
+
+/**
+ * Only the fields the portal actually has.
+ *
+ * Writing a property that does not exist fails the whole company update, taking
+ * the description block down with it - so the caller passes in the names it
+ * confirmed, and anything absent is silently left out.
+ */
+const sdrProperties = (agency, sdr, allowed) => {
+  const all = {
+    tt_sdr_timeline: sdr.timeline || '',
+    tt_sdr_money: sdr.money || '',
+    tt_sdr_authority: sdr.authority || '',
+    tt_sdr_needs: sdr.needs || '',
+    tt_sdr_pain: sdr.pain || '',
+    tt_sdr_notes: sdr.notes || '',
+    tt_sdr_filled_by: sdr.filledBy || '',
+    // HubSpot date properties are midnight UTC, and reject a full timestamp.
+    tt_sdr_filled_at: sdr.filledAt ? new Date(sdr.filledAt).toISOString().slice(0, 10) : '',
+    tt_ori: agency.ori || '',
+  }
+  return Object.fromEntries(allowed.filter((name) => name in all).map((name) => [name, all[name]]))
+}
+
+// The questions as the SDR hears them, so the note reads as a call happening
+// rather than a form being filled in. Kept in step with the modal's wording.
+const QUESTIONS = [
+  ['timeline', 'T - Timeline', 'Assuming you find the correct solution, when would you want a new BWC implemented?'],
+  ['money', 'M - Money', 'When does your budget cycle come around, will this project align with your budget?'],
+  ['authority', 'A - Authority', 'Who else needs to be involved in this project?'],
+  ['needs', 'N - Needs', 'How many cameras would be needed?'],
+  ['pain', 'P - Pain', 'What would you say is the reason you are looking at new body cameras?'],
+]
+
+const escapeHtml = (value) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+/**
+ * The whole form as a timeline note.
+ *
+ * Properties are for filtering and the description is for a rep skimming the
+ * record, but neither is where anyone looks for what was said on a call - the
+ * activity timeline is, and a note is the only thing that shows up there and on
+ * the contact as well as the company.
+ *
+ * Every answered question, verbatim, with the question above it: six months on,
+ * "October" is meaningless without knowing it answered the budget one.
+ */
+const qualificationNote = (agency, sdr = {}) => {
+  const lines = [
+    `<b>TMAN-P qualification - ${escapeHtml(agency.agencyName)}</b>`,
+    agency.ori ? `ORI ${escapeHtml(agency.ori)}` : '',
+    '',
+  ]
+  for (const [key, label, question] of QUESTIONS) {
+    if (!sdr[key]) continue
+    lines.push(`<b>${label}</b>`, `<i>${escapeHtml(question)}</i>`, escapeHtml(sdr[key]), '')
+  }
+  if (sdr.notes) lines.push('<b>Anything else</b>', escapeHtml(sdr.notes), '')
+  if (sdr.filledBy || sdr.filledAt) {
+    const on = sdr.filledAt ? new Date(sdr.filledAt).toISOString().slice(0, 10) : ''
+    lines.push(`<i>Qualified${on ? ` ${on}` : ''}${sdr.filledBy ? ` by ${escapeHtml(sdr.filledBy)}` : ''}</i>`)
+  }
+  return lines.join('<br>')
 }
 
 /** HubSpot dedupes companies on domain far more reliably than on name. */
@@ -128,6 +222,11 @@ export async function syncAgencyToHubSpot(ori) {
   // leaves a rep's own notes alone.
   const existing = companyId ? await readRecord('companies', companyId, ['description']) : {}
 
+  // Whichever of our fields the portal has, or that we could just create. On a
+  // token without schema scope this is empty and the write below is the same
+  // one it always was.
+  const allowed = await ensureProperties('companies', SDR_PROPERTY_GROUP, SDR_PROPERTIES)
+
   companyId = await upsertRecord(
     'companies',
     {
@@ -140,6 +239,7 @@ export async function syncAgencyToHubSpot(ori) {
       ...(agency.state ? { state: agency.state } : {}),
       ...(address.zip ? { zip: address.zip } : {}),
       description: mergeDescription(existing.description, qualificationBlock(agency, agency.sdr || {})),
+      ...sdrProperties(agency, agency.sdr || {}, allowed),
     },
     companyId,
   )
@@ -172,12 +272,39 @@ export async function syncAgencyToHubSpot(ori) {
     }
   }
 
+  // The timeline copy. One note per agency, patched on a re-save rather than
+  // added to: an SDR correcting a typo should not leave two versions of the
+  // same call on the record for the next person to reconcile.
+  //
+  // Last, and swallowed, on purpose. The company and contact are already
+  // written by this point, and losing the note is not worth reporting the whole
+  // sync as failed.
+  let noteId = agency.crm?.hubspotSdrNoteId || ''
+  try {
+    noteId = await upsertRecord(
+      'notes',
+      {
+        hs_note_body: qualificationNote(agency, agency.sdr || {}),
+        // HubSpot places the note on the timeline by this, and rejects a create
+        // without it. Kept at the original stamp on a re-save so an edit does
+        // not jump the call to today.
+        hs_timestamp: new Date(agency.sdr?.filledAt || Date.now()).toISOString(),
+      },
+      noteId,
+    )
+    await associate('notes', noteId, 'companies', companyId)
+    if (contactId) await associate('notes', noteId, 'contacts', contactId)
+  } catch {
+    noteId = agency.crm?.hubspotSdrNoteId || ''
+  }
+
   await LeAgency.updateOne(
     { ori: agency.ori },
     {
       $set: {
         'crm.hubspotCompanyId': companyId,
         ...(contactId ? { 'crm.hubspotContactId': contactId } : {}),
+        ...(noteId ? { 'crm.hubspotSdrNoteId': noteId } : {}),
         'crm.hubspotSyncedAt': new Date(),
         'crm.hubspotSyncError': '',
       },
@@ -187,6 +314,10 @@ export async function syncAgencyToHubSpot(ori) {
   return {
     companyId,
     contactId,
+    noteId,
+    // Named so the caller can say what actually happened rather than implying
+    // the structured copy landed when the token could not create the fields.
+    propertiesWritten: allowed.length,
     contactSkipped: hasPerson ? '' : 'No chief name or email on file, so no contact was created.',
   }
 }

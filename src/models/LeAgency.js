@@ -267,6 +267,10 @@ const leAgencySchema = new mongoose.Schema(
       // is what makes a second save an update rather than a duplicate.
       hubspotCompanyId: { type: String, default: '', trim: true },
       hubspotContactId: { type: String, default: '', trim: true },
+      // The one timeline note carrying the qualification. Held for the same
+      // reason as the two above: without it a re-save leaves a second copy of
+      // the same call on the record.
+      hubspotSdrNoteId: { type: String, default: '', trim: true },
       hubspotSyncedAt: { type: Date, default: null },
       hubspotSyncError: { type: String, default: '', trim: true },
 
