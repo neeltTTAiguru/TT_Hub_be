@@ -24,12 +24,27 @@ import { resolveActor } from '../middleware/auth.js'
  */
 
 const COOKIE_NAME = 'hermes_dashboard'
+
+// Stamped on every proxied response so the Orchestrator can identify what
+// answered without reading the body. It replaced a body-string test that matched
+// the Hub's own bundle, since the production index.html inlines the source that
+// contains the test's own search string.
+const PROXY_MARKER_HEADER = 'x-hermes-dashboard'
 const SESSION_TTL_MS = Number(process.env.HERMES_DASHBOARD_SESSION_TTL_MS || 8 * 60 * 60 * 1000)
 
 // Paths the Hermes SPA owns. It has no base-path support -- its bundle asks for
 // /assets and /api absolutely -- so these are matched at the root.
+//
+// /login, /auth and /ds-assets are Hermes' OWN sign-in bootstrap, and they have
+// to be here even though the Hub does its own auth in front of them. Bound to a
+// non-loopback address -- which is how it runs on the droplet -- the dashboard
+// engages its OAuth gate and answers an unauthenticated /chat with 302 -> /login.
+// While those paths were missing from this list that redirect fell out of the
+// proxy, the Hub's static host answered /login with the Hub's own index.html,
+// and the Orchestrator framed the Hub inside itself: an empty white box.
 const HERMES_PREFIXES = [
-  '/assets', '/fonts', '/fonts-terminal', '/api',
+  '/assets', '/ds-assets', '/fonts', '/fonts-terminal', '/api',
+  '/login', '/auth',
   '/analytics', '/channels', '/chat', '/config', '/cron', '/docs', '/env',
   '/files', '/logs', '/mcp', '/models', '/pairing', '/plugins', '/profiles',
   '/sessions', '/skills', '/system', '/webhooks',
@@ -163,6 +178,17 @@ export function createHermesDashboardMiddleware() {
         // The dashboard is a single-page app behind its own router; leave paths
         // untouched so /chat reaches Hermes as /chat.
         pathRewrite: undefined,
+        on: {
+          // Proof of origin for the Orchestrator's pre-flight check. Only a
+          // response that actually came from the dashboard carries this, so the
+          // Hub can tell "Hermes answered" from "something else answered 200" --
+          // which is the failure that matters here, because the something else
+          // is usually the Hub's own index.html served as a static-host
+          // fallback.
+          proxyRes: (proxyRes) => {
+            proxyRes.headers[PROXY_MARKER_HEADER] = '1'
+          },
+        },
       })
     : null
 
@@ -184,6 +210,13 @@ export function createHermesDashboardMiddleware() {
       // login page would just render the login inside the Orchestrator tab.
       return res.status(401).json({ message: 'No Hermes dashboard session.' })
     }
+    // Hermes' own /login and /auth/* are gated here too, deliberately. They do
+    // not need an exemption: the cookie is SameSite=Lax, and Hermes' sign-in is
+    // completed in a TOP-LEVEL tab (the identity provider refuses to be framed,
+    // so it cannot be completed in the Orchestrator anyway). Lax sends the
+    // cookie on a top-level cross-site GET, which is exactly what the OAuth
+    // callback is -- so the round trip carries it and the Hub's allowlist keeps
+    // fronting the dashboard's sign-in rather than exposing it to the origin.
     return proxy(req, res, next)
   }
 
