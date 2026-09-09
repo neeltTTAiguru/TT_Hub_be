@@ -47,6 +47,23 @@ dotenv.config()
 
 const app = express()
 const port = process.env.PORT || 3000
+
+/**
+ * Proxy-only mode.
+ *
+ * The Orchestrator tab needs Hermes served from the HUB's origin, and a
+ * DigitalOcean app can only path-route between components of the same app. So
+ * this service is deployed a SECOND time, as a component of the frontend app,
+ * purely to answer Hermes' paths.
+ *
+ * That second copy must not behave like the real API. Booting it normally would
+ * start a second set of schedulers against the same database: two competitor
+ * collectors, two HubSpot health monitors, and -- worst -- a second
+ * `resumeRunOnBoot`, which picks up in-flight research runs that cost real money
+ * per agency. It skips Mongo entirely too, since nothing it serves reads from
+ * it.
+ */
+const hermesProxyOnly = /^(1|true|yes)$/i.test(String(process.env.HERMES_PROXY_ONLY || ''))
 const mongoUri = process.env.MONGODB_URI || ''
 const requestRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -82,15 +99,23 @@ app.get('/', (_req, res) => {
   })
 })
 
+// A liveness probe is all the DigitalOcean health check needs, and it must not
+// depend on Mongo -- which proxy-only mode never connects to.
+app.get('/hermes-proxy/health', (_req, res) =>
+  res.json({ ok: true, mode: hermesProxyOnly ? 'hermes-proxy-only' : 'full-api' }))
+
+// Mints/clears the cookie the iframe travels on. Explicitly behind requireAuth:
+// this is the one place in the Hermes flow where a bearer token is checked.
+// OUTSIDE the guard below -- proxy-only mode exists to serve Hermes, and without
+// this the frame could never get a session at all.
+app.post('/hermes-session', requireAuth, createHermesSession)
+app.delete('/hermes-session', requireAuth, destroyHermesSession)
+
+if (!hermesProxyOnly) {
 app.use('/health', healthRouter)
 app.use('/rfp-opportunities', rfpOpportunitiesRouter)
 app.use('/content-operations-download', contentOperationsDownloadsRouter)
 app.use('/email-assets', emailAssetsRouter)
-// Mints/clears the cookie the iframe travels on. Explicitly behind requireAuth:
-// this is the one place in the Hermes flow where a bearer token is checked.
-app.post('/hermes-session', requireAuth, createHermesSession)
-app.delete('/hermes-session', requireAuth, destroyHermesSession)
-
 app.use(requireAuth)
 app.use('/agents', agentsRouter)
 app.use('/company-context', companyContextRouter)
@@ -114,6 +139,7 @@ app.use('/company-files', companyFilesRouter)
 app.use('/product-images', productImagesRouter)
 app.use('/content-operations', contentOperationsRouter)
 app.use('/brevo', brevoRouter)
+}
 
 app.use((err, _req, res, _next) => {
   if (typeof err?.statusCode === 'number') {
@@ -145,7 +171,9 @@ app.use((err, _req, res, _next) => {
 })
 
 async function start() {
-  if (!mongoUri) {
+  if (hermesProxyOnly) {
+    console.log('HERMES_PROXY_ONLY: serving the Hermes dashboard proxy only — no Mongo, no schedulers.')
+  } else if (!mongoUri) {
     console.warn('MONGODB_URI is not set. Skipping Mongo connection.')
   } else {
     await mongoose.connect(mongoUri)
@@ -154,6 +182,12 @@ async function start() {
 
   const server = app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`)
+    // None of this may run in proxy-only mode. That process is a second copy of
+    // this service living in the frontend app, and every one of these is a
+    // singleton against shared state: two collectors and two health monitors
+    // would double up, and resumeRunOnBoot would pick up an in-flight research
+    // run the REAL server is already executing — at real cost per agency.
+    if (hermesProxyOnly) return
     // Only after the port is ours. A process that cannot bind is not the live server —
     // it may be a stale watcher about to exit on EADDRINUSE — and must never touch runs
     // the real server is actively executing.
