@@ -7,6 +7,12 @@ import dotenv from 'dotenv'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import { corsOptions } from './config/corsOptions.js'
+import {
+  attachHermesDashboardUpgrade,
+  createHermesDashboardMiddleware,
+  createHermesSession,
+  destroyHermesSession,
+} from './services/hermesDashboard.js'
 import { requireAuth } from './middleware/auth.js'
 import healthRouter from './routes/health.js'
 import agentsRouter from './routes/agents.js'
@@ -51,6 +57,18 @@ const requestRateLimit = rateLimit({
 })
 
 app.disable('x-powered-by')
+
+// Ahead of helmet, the rate limiter and the body parser, all three of which
+// break a proxy:
+//   - helmet's CSP would be left on the piped Hermes HTML (Hermes sends none of
+//     its own) and kill its inline bootstrap;
+//   - the 300-per-15-minutes limiter would throttle a dashboard that polls;
+//   - express.json() drains the request stream, so a proxied POST would arrive
+//     at Hermes with an empty body.
+// It gates itself on a signed cookie and ignores every path it does not own.
+const hermesDashboard = createHermesDashboardMiddleware()
+app.use(hermesDashboard)
+
 app.use(helmet())
 app.use(cors(corsOptions))
 app.use(requestRateLimit)
@@ -68,6 +86,11 @@ app.use('/health', healthRouter)
 app.use('/rfp-opportunities', rfpOpportunitiesRouter)
 app.use('/content-operations-download', contentOperationsDownloadsRouter)
 app.use('/email-assets', emailAssetsRouter)
+// Mints/clears the cookie the iframe travels on. Explicitly behind requireAuth:
+// this is the one place in the Hermes flow where a bearer token is checked.
+app.post('/hermes-session', requireAuth, createHermesSession)
+app.delete('/hermes-session', requireAuth, destroyHermesSession)
+
 app.use(requireAuth)
 app.use('/agents', agentsRouter)
 app.use('/company-context', companyContextRouter)
@@ -141,6 +164,10 @@ async function start() {
     // only the process that actually owns the port may pick one back up.
     void resumeRunOnBoot().catch((error) => console.error('Failed to resume research run', error))
   })
+
+  // The chat terminal is a PTY over a websocket. Upgrades never reach Express,
+  // so the proxy and its cookie gate are attached to the raw server.
+  attachHermesDashboardUpgrade(server, hermesDashboard)
 
   server.on('error', (error) => {
     if (error?.code === 'EADDRINUSE') {
