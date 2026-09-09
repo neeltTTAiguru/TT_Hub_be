@@ -170,9 +170,13 @@ export function createHermesDashboardMiddleware() {
     if (!wantsHermes(req.path)) return next()
 
     const { secret, allowed } = getConfig()
-    if (!proxy || !secret) {
-      return res.status(503).json({ message: 'The Hermes dashboard is not configured on this backend.' })
-    }
+    // Unconfigured means invisible, not 503. These paths belong to Hermes, and
+    // when Hermes is not wired up they are simply not routes on this service --
+    // falling through leaves the 404 they returned before this middleware
+    // existed. Answering 503 also made DigitalOcean's edge rewrite them into a
+    // 504 gateway page, which reads like an outage rather than a feature that
+    // is switched off.
+    if (!proxy || !secret) return next()
 
     const claims = readToken(readCookie(req, COOKIE_NAME), secret)
     if (!claims || !isAllowed(claims.email, allowed)) {
