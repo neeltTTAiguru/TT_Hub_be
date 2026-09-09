@@ -55,18 +55,29 @@ exports.onExecutePostLogin = async (event, api) => {
   const email = String(event.user.email || '').trim().toLowerCase()
   const domain = email.split('@')[1] || ''
 
-  // An unverified address proves nothing about the domain: anyone can type
-  // someone@trustedtechnology.ai into a signup form. This check is the reason
-  // a domain allow-list means anything at all.
-  if (!email || !event.user.email_verified) {
-    api.access.deny('Verify your email address before signing in.')
+  // Domain before verification, deliberately.
+  //
+  // Both refuse, so nothing gets through either way - this is only about which
+  // sentence the person reads. A test account on gmail.com is also unverified,
+  // and checking verification first told them to go and find a verification
+  // email that was never going to let them in. The domain is the real reason
+  // they are being turned away, so it is the reason they are given.
+  //
+  // The cost: an unverified stranger learns whether their domain is on the
+  // list. That is a small thing to give up to stop sending colleagues after a
+  // fix that does not exist.
+  if (!email || !allowed.includes(domain)) {
+    // Named, not vague. Someone signing in with a personal address needs to be
+    // told to use their work one, not left guessing.
+    api.access.deny(`${email || 'This account'} is not on an approved domain. Sign in with your work account.`)
     return
   }
 
-  if (!allowed.includes(domain)) {
-    // Named, not vague. Someone signing in with a personal address needs to be
-    // told to use their work one, not left guessing.
-    api.access.deny(`${email} is not on an approved domain. Sign in with your work account.`)
+  // An unverified address proves nothing about the domain: anyone can type
+  // someone@trustedtechnology.ai into a signup form. This check is the reason
+  // a domain allow-list means anything at all.
+  if (!event.user.email_verified) {
+    api.access.deny('Verify your email address before signing in.')
     return
   }
 
