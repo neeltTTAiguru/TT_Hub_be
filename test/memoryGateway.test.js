@@ -31,11 +31,13 @@ test('parses canonical memory provenance from GBrain markdown', () => {
   assert.match(memory.body, /Approved company knowledge/)
 })
 
-test('enforces lifecycle, department, sensitivity, expiry, and customer boundaries', () => {
+test('enforces lifecycle, sensitivity, expiry, and customer boundaries', () => {
   const scope = getMemoryScope('wordpress-draft-editor', { id: 'user-1', payload: {} })
   assert.equal(memoryAllowed(page(), scope), true)
   assert.equal(memoryAllowed(page({ lifecycle: 'candidate' }), scope), false)
-  assert.equal(memoryAllowed(page({ department: 'sales' }), scope), false)
+  // Department is no longer a boundary -- a page labelled for another team is
+  // still readable. Only lifecycle, sensitivity, expiry and customer are gates.
+  assert.equal(memoryAllowed(page({ department: 'sales' }), scope), true)
   assert.equal(memoryAllowed(page({ sensitivity: 'confidential' }), scope), false)
   assert.equal(memoryAllowed(page({ expires_at: '2020-01-01T00:00:00Z' }), scope), false)
   assert.equal(memoryAllowed(page({ customer_id: 'customer-a' }), scope), false)
@@ -192,7 +194,7 @@ test('rejects credential-like memory content before writing', async () => {
   }
 })
 
-test('one brain: company-wide pages reach every agent, agent-scoped pages do not', async () => {
+test('one brain: every approved page reaches every agent, however it was scoped', async () => {
   const original = process.env.GBRAIN_ENABLED
   process.env.GBRAIN_ENABLED = 'true'
   const memories = {
@@ -215,12 +217,12 @@ test('one brain: company-wide pages reach every agent, agent-scoped pages do not
       read: async (_agentId, slug) => ({ ...memories[slug], slug }),
     })
     const slugs = result.memories.map((memory) => memory.slug)
-    // Unrestricted page is readable by all -- this is what the section rule broke.
     assert.ok(slugs.includes('tt-shared/t500-spec'))
-    // A page that names this agent still reaches it.
     assert.ok(slugs.includes('content-ops/house-style'))
-    // A page scoped to a DIFFERENT agent is still withheld.
-    assert.ok(!slugs.includes('competitor/axon-only'))
+    // The one that used to be withheld. allowed_agents survives on older pages
+    // as a label and is deliberately not read: a memory saved against the wrong
+    // agent used to vanish with no error, which is why the rule went.
+    assert.ok(slugs.includes('competitor/axon-only'))
   } finally {
     if (original === undefined) delete process.env.GBRAIN_ENABLED
     else process.env.GBRAIN_ENABLED = original

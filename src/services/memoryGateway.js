@@ -22,23 +22,6 @@ const SECRET_PATTERNS = [
   /\bgh[pousr]_[a-z0-9]{20,}\b/i,
 ]
 
-const AGENT_DEPARTMENTS = {
-  'trusted-tech-assistant': ['shared', 'sales'],
-  'trusted-tech-hubspot-assistant': ['shared', 'sales'],
-  'trusted-tech-youtrack-assistant': ['shared', 'operations'],
-  'trusted-tech-ahrefs-assistant': ['shared', 'marketing'],
-  'content-operations-assistant': ['shared', 'marketing'],
-  'wordpress-draft-test-agent': ['shared', 'marketing'],
-  'wordpress-draft-editor': ['shared', 'marketing'],
-  'market-researcher': ['shared', 'marketing', 'research'],
-  'competitor-analyst': ['shared', 'marketing', 'research'],
-  'police-grant-intelligence-agent': ['shared', 'sales', 'research'],
-  'grant-application-agent': ['shared', 'sales'],
-  'rfp-response-agent': ['shared', 'sales'],
-  'linkedin-surfer': ['shared', 'marketing', 'research'],
-  'twitter-surfer': ['shared', 'marketing', 'research'],
-}
-
 const clients = new Map()
 
 function enabled() {
@@ -217,7 +200,6 @@ export function getMemoryScope(agentId, user = {}) {
   return {
     agentId,
     userId: String(user?.id || ''),
-    departments: AGENT_DEPARTMENTS[agentId] || ['shared'],
     sensitivities: Array.from(sensitivities),
   }
 }
@@ -236,11 +218,12 @@ export function memoryAllowed(memory, scope) {
   const sensitivity = String(metadata.sensitivity || 'internal').toLowerCase()
   if (!scope.sensitivities.includes(sensitivity)) return false
 
-  const departments = listField(metadata.departments || metadata.department || 'shared')
-  if (departments.length && !departments.some((value) => scope.departments.includes(value))) return false
-
-  const agents = listField(metadata.allowed_agents)
-  if (agents.length && !agents.includes(scope.agentId)) return false
+  // No agent or department filter. One brain: any agent may read any approved
+  // page. Both filters were removed on 2026-09-10 because they failed silently
+  // -- a memory saved against the wrong agent or department did not error, it
+  // simply never appeared, and the person who wrote it had no way to tell.
+  // `department` and `allowed_agents` survive on older pages as labels and are
+  // deliberately not read here.
 
   // Customer memories remain denied until a server-side customer authorization resolver is added.
   if (String(metadata.customer_id || '').trim()) return false
@@ -337,12 +320,6 @@ export async function saveApprovedMemory({
   const department = cleanSingleLine(proposal?.department || 'shared', 40).toLowerCase()
   const sensitivity = cleanSingleLine(proposal?.sensitivity || 'internal', 40).toLowerCase()
   const source = cleanSingleLine(proposal?.source || `user://${user?.id || 'unknown'}`, 500)
-  // Optional agent scoping: when set, GBrain's memoryAllowed restricts retrieval
-  // to exactly these agents (the "brain section"). Empty = readable by every
-  // agent whose department scope matches (company-wide).
-  const allowedAgents = Array.isArray(proposal?.allowedAgents)
-    ? proposal.allowedAgents.map((agentName) => cleanSingleLine(agentName, 80)).filter(Boolean).slice(0, 20)
-    : []
   // When set, overwrite this existing memory in place (a true update to the same
   // GBrain page) instead of minting a new one. Validated below to be an approved
   // memory in the same section, so a save can't clobber another section's page.
@@ -397,13 +374,6 @@ export async function saveApprovedMemory({
     if (String(current.frontmatter?.lifecycle || '').toLowerCase() !== 'approved') {
       throw Object.assign(new Error('Only approved memories can be updated.'), { statusCode: 400 })
     }
-    const currentAgents = new Set(listField(current.frontmatter?.allowed_agents))
-    const wantAgents = new Set(allowedAgents)
-    const sameSection =
-      currentAgents.size === wantAgents.size && [...wantAgents].every((agent) => currentAgents.has(agent))
-    if (!sameSection) {
-      throw Object.assign(new Error('That memory belongs to a different brain section.'), { statusCode: 400 })
-    }
     slug = targetSlug
   } else {
     slug = competitor
@@ -416,7 +386,6 @@ export async function saveApprovedMemory({
     'lifecycle: approved',
     `sensitivity: ${sensitivity}`,
     `department: ${department}`,
-    ...(allowedAgents.length ? [`allowed_agents: ${JSON.stringify(allowedAgents)}`] : []),
     ...(competitor ? [`competitor: ${competitor.slug}`, `competitor_name: ${JSON.stringify(competitor.name)}`] : []),
     ...(model ? [`bwc_model: ${JSON.stringify(model)}`] : []),
     `source_uri: ${JSON.stringify(source)}`,
@@ -442,7 +411,6 @@ export async function saveApprovedMemory({
     slug,
     title: saved.title,
     department,
-    allowedAgents,
     ...(competitor ? { competitor: competitor.slug, competitorName: competitor.name } : {}),
     ...(model ? { model } : {}),
     sensitivity,
@@ -502,7 +470,6 @@ export async function saveCompetitorModelMemory({
     'lifecycle: approved',
     'sensitivity: internal',
     'department: shared',
-    'allowed_agents: ["competitor-analyst"]',
     `competitor: ${comp.slug}`,
     `competitor_name: ${JSON.stringify(comp.name)}`,
     `bwc_model: ${JSON.stringify(modelName)}`,
@@ -533,8 +500,8 @@ export async function saveCompetitorModelMemory({
 // derived from the document + section, so re-ingesting the same file updates its
 // pages in place instead of piling up near-duplicates that eat retrieval slots.
 //
-// No allowed_agents: an ingested company document is company knowledge, readable
-// by every agent. That is the whole point of uploading it.
+// Readable by every agent, like everything else in the brain -- an ingested
+// company document is company knowledge. That is the whole point of uploading it.
 export async function saveDocumentSectionMemory({
   documentId,
   documentTitle,
@@ -663,59 +630,6 @@ export async function listSectionMemories({
   }
 }
 
-// Loads the approved memories that belong to one "brain section" — either the
-// company-wide pool (memories readable by every agent) or a single agent's
-// scoped section — so the Brain UI can show what a section knows and prime a
-// chat scoped to it. Mirrors listSectionMemories, but keys off allowed_agents
-// instead of a competitor slug.
-export async function listBrainSectionMemories({
-  agentId,
-  section,
-  user,
-  list = (id, args) => callTool(id, 'list_pages', args),
-  read = readPage,
-  limit = 100,
-}) {
-  if (!enabled()) return { status: 'disabled', memories: [] }
-  const isCompany = !section || section === 'company' || section === 'shared'
-  // Evaluate memoryAllowed under the TARGET section's scope, not the asking
-  // agent's: a memory scoped to allowed_agents:[content-operations-assistant]
-  // is only "allowed" under that agent's scope, so checking it as the Brain
-  // (trusted-tech-assistant) would wrongly hide the section's own memories.
-  const scope = getMemoryScope(isCompany ? agentId : section, user)
-  try {
-    const rows = structuredRows(await list(agentId, { limit }))
-      .map((row) => ({ slug: String(row?.slug || '') }))
-      .filter((row) => row.slug)
-    const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
-    const memories = pages
-      .filter((memory) => memoryAllowed(memory, scope))
-      .filter((memory) => {
-        const agents = listField(memory.frontmatter?.allowed_agents)
-        // Company section = the shared pool (no agent restriction). An agent
-        // section = memories explicitly scoped to that agent.
-        return isCompany ? agents.length === 0 : agents.includes(section)
-      })
-      .map((memory) => ({
-        slug: memory.slug,
-        title: memory.title,
-        sensitivity: String(memory.frontmatter?.sensitivity || 'internal'),
-        summary: String(memory.body || '').replace(/\s+/g, ' ').trim().slice(0, 600),
-        // Full body so the edit-existing picker can prefill the editor.
-        content: String(memory.body || ''),
-      }))
-    return { status: 'ok', memories }
-  } catch (error) {
-    console.warn(JSON.stringify({
-      event: 'gbrain_brain_section_unavailable',
-      agentId,
-      section,
-      message: error?.message || String(error),
-    }))
-    return { status: 'unavailable', memories: [] }
-  }
-}
-
 // Flat list of every page the asking agent and user are allowed to see. This is
 // what the Brain page renders now that there are no sections: one list, one brain.
 export async function listAllBrainMemories({
@@ -823,33 +737,19 @@ export async function retrieveMemoryContext({ agentId, messages, user, competito
     String(memory.frontmatter?.competitor || '') === comp.slug ||
     String(memory.slug || '').startsWith(`competitor-analyst/${comp.slug}/`)
 
-  // One brain (2026-08-26). The previous rule required the asking agent to be
-  // named in allowed_agents, which dropped every company-wide page from chat
-  // retrieval -- 20 of the 25 pages then stored, including the whole T500
-  // specification, the Vault architecture, positioning and the RFP baseline.
-  // memoryAllowed() still enforces lifecycle, sensitivity and department, and
-  // a page that DOES name agents is still restricted to them; what changed is
-  // that an unrestricted page now means readable by all, as it reads.
-  const agentAllowed = (memory) => {
-    const named = listField(memory.frontmatter?.allowed_agents)
-    return named.length === 0 || named.includes(agentId)
-  }
-
   try {
-    // Over-fetch a little before filtering, because lifecycle, sensitivity and
-    // department checks still drop candidates after ranking.
+    // Over-fetch a little before filtering, because lifecycle and sensitivity
+    // checks still drop candidates after ranking.
     //
-    // The multiplier used to be 6x, sized for the section rule that discarded
-    // every page not naming this agent -- most of the candidate set. That rule
-    // is gone (one brain, 2026-08-26), so most candidates now survive, and 6x
-    // just means reading pages nobody will use: every candidate costs its own
-    // get_page round trip, so at limit 12 the old multiplier was 72 reads per
-    // retrieval, on every pipeline stage.
+    // 2x, not the 6x this once used. The old multiplier was sized for a section
+    // rule that discarded most of the candidate set before it could be read;
+    // with no agent or department filter left, nearly every candidate survives,
+    // and over-fetching just means paying a get_page round trip for pages
+    // nobody will use -- 72 reads per retrieval at limit 12, on every stage.
     const rows = await search(agentId, query, Math.max(limit * 2, 20))
     const pages = await Promise.all(rows.map((row) => read(agentId, row.slug).catch(() => null)))
     const memories = pages
       .filter((memory) => memoryAllowed(memory, scope))
-      .filter(agentAllowed)
       .filter(inSection)
       .slice(0, limit)
     return {

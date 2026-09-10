@@ -4,7 +4,7 @@ import { chatWithHermes, streamHermesChat } from '../services/hermesChat.js'
 import { chatWithAgent } from '../services/openaiChat.js'
 import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
-import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listBrainSectionMemories, listAllBrainMemories, deleteBrainMemory } from '../services/memoryGateway.js'
+import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listAllBrainMemories, deleteBrainMemory } from '../services/memoryGateway.js'
 import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
 import { buildUserContentWithAttachments } from '../services/chatAttachments.js'
@@ -417,27 +417,6 @@ router.get('/:id/sections/:competitor/memories', async (req, res, next) => {
   }
 })
 
-// Loads one Brain "section" — the company-wide pool ('company') or a single
-// agent's scoped memories — so the Brain UI can show what a section knows and
-// talk to it directly (mirrors the competitor sections endpoint above).
-router.get('/:id/brain-sections/:section/memories', async (req, res, next) => {
-  try {
-    const user = getAuthenticatedUser(req)
-    const section = req.params.section
-    if (section !== 'company' && section !== 'shared') {
-      const agents = await listAgents()
-      const validAgentIds = new Set(agents.map((agent) => agent.id))
-      if (!validAgentIds.has(section)) {
-        return res.status(400).json({ message: 'Choose a valid brain section.' })
-      }
-    }
-    const result = await listBrainSectionMemories({ agentId: req.params.id, section, user })
-    return res.json({ section, ...result })
-  } catch (error) {
-    return next(error)
-  }
-})
-
 // One brain: every page the caller may see, no section filter.
 router.get('/:id/brain/pages', async (req, res, next) => {
   try {
@@ -465,29 +444,20 @@ router.post('/:id/memory', async (req, res, next) => {
   try {
     const user = getAuthenticatedUser(req)
     const incoming = req.body?.proposal || {}
-    // The client picks a brain "section": either the whole company (all agents)
-    // or one specific agent. Company-wide memory carries no allowed_agents
-    // restriction; an agent section scopes retrieval to exactly that agent.
-    const section = typeof incoming.section === 'string' ? incoming.section.trim() : 'company'
-    let allowedAgents = []
-    if (section && section !== 'company' && section !== 'shared') {
-      const agents = await listAgents()
-      const validAgentIds = new Set(agents.map((agent) => agent.id))
-      if (!validAgentIds.has(section)) {
-        return res.status(400).json({ message: 'Choose a valid brain section.' })
-      }
-      allowedAgents = [section]
-    }
+    // No brain sections. Everything saved here is company knowledge that every
+    // agent can retrieve; `section` is accepted and ignored so an older client
+    // still saves rather than erroring.
     const memory = await saveApprovedMemory({
       agentId: req.params.id,
       user,
-      // `competitor` (a tracked-competitor slug) turns the save into a
-      // per-competitor brain section; `model` scopes it to a specific BWC model
-      // line item. saveApprovedMemory validates the competitor.
-      proposal: { ...incoming, department: 'shared', allowedAgents, competitor: incoming.competitor, model: incoming.model },
+      // `competitor` (a tracked-competitor slug) namespaces the page to one
+      // competitor and `model` to one BWC model, so the Competitor Analyst's
+      // per-competitor view stays coherent. That is topic scoping, not access
+      // control -- every agent can still read the page.
+      proposal: { ...incoming, department: 'shared', competitor: incoming.competitor, model: incoming.model },
       confirmed: req.body?.confirmed,
     })
-    return res.status(201).json({ ...memory, section })
+    return res.status(201).json(memory)
   } catch (error) {
     return next(error)
   }
