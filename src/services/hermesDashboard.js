@@ -48,6 +48,15 @@ const HERMES_PREFIXES = [
   '/analytics', '/channels', '/chat', '/config', '/cron', '/docs', '/env',
   '/files', '/logs', '/mcp', '/models', '/pairing', '/plugins', '/profiles',
   '/sessions', '/skills', '/system', '/webhooks',
+  // Dashboard plugins add their own tab AND serve their own bundle. The bundle
+  // lives under /dashboard-plugins/<name>/dist/index.js -- a different path from
+  // the /plugins page above, and easy to miss because the tab route alone makes
+  // the tab appear. Left out, the static host answers the script request with
+  // the Hub's index.html, the browser parses HTML as JavaScript, and the page
+  // reports "the plugin's script did not call register()" -- which reads like a
+  // broken plugin and is actually a missing proxy entry.
+  '/dashboard-plugins',
+  '/kanban', '/achievements',
 ]
 
 // The one place Hermes' path set overlaps the Hub API's. Checked before the
