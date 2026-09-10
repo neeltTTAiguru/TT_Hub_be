@@ -14,7 +14,9 @@ import {
   destroyHermesSession,
 } from './services/hermesDashboard.js'
 import { requireAuth } from './middleware/auth.js'
+import { requireFeatureAccess } from './middleware/featureAccess.js'
 import healthRouter from './routes/health.js'
+import accessRouter from './routes/access.js'
 import agentsRouter from './routes/agents.js'
 import companyContextRouter from './routes/companyContext.js'
 import competitorsRouter from './routes/competitors.js'
@@ -113,11 +115,15 @@ app.delete('/hermes-session', requireAuth, destroyHermesSession)
 
 if (!hermesProxyOnly) {
 app.use('/health', healthRouter)
-app.use('/rfp-opportunities', rfpOpportunitiesRouter)
 app.use('/content-operations-download', contentOperationsDownloadsRouter)
 app.use('/email-assets', emailAssetsRouter)
 app.use(requireAuth)
+// Above the feature gate on purpose: this is how a restricted account finds
+// out that it is restricted, so refusing it would leave the sidebar guessing.
+app.use('/access', accessRouter)
+app.use(requireFeatureAccess)
 app.use('/agents', agentsRouter)
+app.use('/rfp-opportunities', rfpOpportunitiesRouter)
 app.use('/company-context', companyContextRouter)
 app.use('/competitors', competitorsRouter)
 app.use('/browser-research', browserResearchRouter)
