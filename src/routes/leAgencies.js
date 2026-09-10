@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import LeAgency from '../models/LeAgency.js'
 import { getAgencyBriefing } from '../services/agencyBriefing.js'
+import { buildCallReportStats, generateCallReportNarrative } from '../services/callReport.js'
+import { createCallReportPdfBuffer } from '../services/callReportPdf.js'
 import { chatWithHermes } from '../services/hermesChat.js'
 import TravellerState from '../models/TravellerState.js'
 import { researchAndSaveBwc } from '../services/bwcResearch.js'
@@ -1582,6 +1584,78 @@ router.delete('/:ori/call-log/:callId', async (req, res, next) => {
     })
   } catch (error) {
     return next(error)
+  }
+})
+
+/**
+ * Call activity for a whole territory, rather than for one agency.
+ *
+ * The call log answers "what happened at this department"; nothing answered
+ * "what happened this week", which is the question a territory gets managed by.
+ * Scoped by the same filters the map is showing, so the report covers what the
+ * person asking is actually looking at.
+ *
+ * The numbers are counted in Mongo and the words are written by Hermes from
+ * those numbers - the same division as the traveller. He is given the call
+ * notes, which is the part no table can show, and explicitly told not to do
+ * arithmetic.
+ */
+const callReportInput = (source = {}) => ({
+  filter: buildFilter(source),
+  from: typeof source.from === 'string' ? source.from : '',
+  to: typeof source.to === 'string' ? source.to : '',
+  timezone: typeof source.timezone === 'string' ? source.timezone : 'UTC',
+})
+
+/** The figures on their own, for the preview in the report dialog. */
+router.get('/call-report', async (req, res, next) => {
+  try {
+    const stats = await buildCallReportStats(callReportInput(req.query))
+    // The notes are for Hermes, not for the browser: sixty call notes is a lot
+    // of somebody else's typing to put on the wire for a dialog showing counts.
+    res.json({ ...stats, notes: undefined, scopeLabel: describeFilters(req.query) })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/** The same period as a PDF, with the written summary. */
+router.post('/call-report/pdf', async (req, res, next) => {
+  try {
+    const body = req.body || {}
+    const source = { ...(body.filters || {}), from: body.from, to: body.to, timezone: body.timezone }
+    const scopeLabel = describeFilters(source)
+    const stats = await buildCallReportStats(callReportInput(source))
+
+    // Never fatal. The counted figures are the part this document is
+    // accountable for, and they are already in hand by the time Hermes is
+    // asked for anything - a report without its summary beats a failed
+    // download.
+    const { narrative, error } = body.narrative === false
+      ? { narrative: '', error: '' }
+      : await generateCallReportNarrative(stats, { scopeLabel })
+
+    const pdf = await createCallReportPdfBuffer(stats, {
+      scopeLabel,
+      narrative,
+      narrativeError: error,
+      generatedBy: await resolveActor(req),
+    })
+
+    // Named for the days the reader asked for, in their zone - a window ending
+    // at midnight in Texas is the small hours of the next day in UTC, and a
+    // file called "to-2026-09-11" for a report about the 10th invites an
+    // argument about whether the numbers are a day out.
+    const day = (value) =>
+      new Intl.DateTimeFormat('en-CA', { timeZone: stats.period.timezone }).format(new Date(value))
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="call-activity-${day(stats.period.from)}-to-${day(stats.period.to)}.pdf"`,
+    )
+    res.send(pdf)
+  } catch (error) {
+    next(error)
   }
 })
 
