@@ -9,11 +9,13 @@ import { researchAndSaveBwc } from '../services/bwcResearch.js'
 import {
   buildResearchRunWorkbook,
   buildRunFindingsWorkbook,
+  runFindingsRows,
 } from '../services/researchRunWorkbook.js'
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
 import BwcResearchRun from '../models/BwcResearchRun.js'
 import { resolveActor } from '../middleware/auth.js'
+import { requireFullAccess } from '../middleware/featureAccess.js'
 
 const router = Router()
 
@@ -672,7 +674,7 @@ router.put('/traveller-position', async (req, res, next) => {
  *
  * Reads only. Nothing here starts a run.
  */
-router.post('/research-run/preview', async (req, res, next) => {
+router.post('/research-run/preview', requireFullAccess, async (req, res, next) => {
   try {
     // Filters arrive in the body so the client can send exactly the object it
     // uses for the map, rather than re-encoding it as a query string.
@@ -794,7 +796,7 @@ const resolveRunScope = async (body = {}, query = {}) => {
  * cell is the run's to-do list, and hiding those rows would make a half-finished
  * run look complete.
  */
-router.post('/research-run/export', async (req, res, next) => {
+router.post('/research-run/export', requireFullAccess, async (req, res, next) => {
   try {
     const { where, skipResearched, includeOffMap } = await resolveRunScope(req.body, req.query)
 
@@ -828,7 +830,7 @@ router.post('/research-run/export', async (req, res, next) => {
 })
 
 /** Start a run. It keeps going after you close the tab - that is the point. */
-router.post('/research-run/start', async (req, res, next) => {
+router.post('/research-run/start', requireFullAccess, async (req, res, next) => {
   try {
     const { where, skipResearched, includeOffMap } = await resolveRunScope(req.body, req.query)
     const oris = (await LeAgency.find(where).select('ori').limit(MAX_LIMIT).lean()).map((a) => a.ori)
@@ -855,6 +857,45 @@ router.post('/research-run/start', async (req, res, next) => {
 })
 
 /**
+ * Every run there has been, newest first, for the menu on the map.
+ *
+ * Summaries only - no path, no queue. A run with two thousand stops is a
+ * megabyte, and the menu wants a line each; the findings endpoint carries the
+ * rows for whichever run someone opens.
+ */
+router.get('/research-run', async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(parseNumber(req.query.limit) || 50, 1), 200)
+    const runs = await BwcResearchRun.find({})
+      .select('-path -queue -current -leaseId -leaseExpiresAt')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean()
+    res.json(
+      runs.map((run) => ({
+        id: String(run._id),
+        status: run.status,
+        brief: run.brief || '',
+        filtersLabel: run.filtersLabel || '',
+        total: run.total,
+        completed: run.completed,
+        failed: run.failed,
+        searches: run.searches,
+        foundCameras: run.foundCameras,
+        foundEmails: run.foundEmails,
+        foundPhones: run.foundPhones,
+        startedBy: run.startedBy || '',
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        lastError: run.lastError || '',
+      })),
+    )
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
  * What the run is doing right now, for anyone who has the hub open.
  *
  * Global, not per user: everybody watching sees the same traveller in the same
@@ -874,6 +915,37 @@ router.get('/research-run/active', async (req, res, next) => {
 })
 
 /**
+ * A run's findings on screen, for anyone who can see the map.
+ *
+ * The rows are the spreadsheet's rows - same builder, same shape - so a person
+ * who is not allowed the download still reads exactly what the download would
+ * say. The full path is returned here, not the PATH_LIMIT tail that
+ * /research-run/active sends for drawing the trail: a table with the last 400
+ * of 2,000 rows is not the run's results.
+ */
+router.get('/research-run/:id/findings', async (req, res, next) => {
+  try {
+    const run = await BwcResearchRun.findById(req.params.id).lean()
+    if (!run) return res.status(404).json({ message: 'That run no longer exists.' })
+
+    return res.json({
+      id: String(run._id),
+      status: run.status,
+      brief: run.brief || '',
+      filtersLabel: run.filtersLabel || '',
+      total: run.total,
+      completed: run.completed,
+      failed: run.failed,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      rows: runFindingsRows(run),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+/**
  * A finished run's spreadsheet, exported by run id rather than by filters.
  *
  * The run stores the exact ORIs it queued, so this returns precisely the
@@ -884,7 +956,7 @@ router.get('/research-run/active', async (req, res, next) => {
  * it starts; applying it afterwards would exclude every agency the run just
  * finished and hand back an empty sheet.
  */
-router.post('/research-run/:id/export', async (req, res, next) => {
+router.post('/research-run/:id/export', requireFullAccess, async (req, res, next) => {
   try {
     const run = await BwcResearchRun.findById(req.params.id).lean()
     if (!run) return res.status(404).json({ message: 'That run no longer exists.' })
@@ -913,7 +985,7 @@ router.post('/research-run/:id/export', async (req, res, next) => {
 })
 
 /** Ask the run to stop. It finishes the agency in flight, then stops. */
-router.post('/research-run/stop', async (req, res, next) => {
+router.post('/research-run/stop', requireFullAccess, async (req, res, next) => {
   try {
     const run = await stopRun()
     if (!run) return res.status(404).json({ message: 'No run is going.' })

@@ -183,9 +183,19 @@ const rowFromStop = (stop = {}) => {
   }
 }
 
+/**
+ * A run's findings as plain rows, one per agency it visited.
+ *
+ * The same rows the spreadsheet is built from, so the on-screen table and the
+ * download never disagree about what a run found.
+ */
+export function runFindingsRows(run) {
+  return (run.path || []).map(rowFromStop)
+}
+
 /** A finished run's own report: what it found, as it found it. */
 export async function buildRunFindingsWorkbook(run, meta = {}) {
-  return writeWorkbook((run.path || []).map(rowFromStop), meta)
+  return writeWorkbook(runFindingsRows(run), meta)
 }
 
 export async function buildResearchRunWorkbook(agencies, meta = {}) {

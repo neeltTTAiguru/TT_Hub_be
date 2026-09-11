@@ -25,6 +25,22 @@ Everything else answers 403. The list is of routers rather than endpoints on
 purpose: a new endpoint added to one of the two features keeps working, and a
 new router is closed until someone adds it here deliberately.
 
+### Inside the map: research runs
+
+The map is open to every signed-in account, but two things on it are not.
+`requireFullAccess` (same file) sits on the research-run endpoints that spend
+money or hand over the whole dataset:
+
+- `POST /le-agencies/research-run/preview`, `/start`, `/stop`
+- `POST /le-agencies/research-run/export` and `/research-run/:id/export` (the
+  spreadsheet)
+
+Everybody else may still watch the run (`GET /research-run/active`) and read
+its findings on screen (`GET /research-run/:id/findings` - the spreadsheet's
+rows as JSON). In the hub that is the difference between a **View results**
+button, which everyone has, and **Download spreadsheet** plus the run form,
+which only `FULL_ACCESS_EMAILS` accounts see.
+
 `GET /access` sits above the gate and reports `{ email, fullAccess }`. The
 sidebar asks it on load and hides what this account cannot use — cosmetic only,
 since the pages behind those links would 403 anyway.

@@ -102,3 +102,31 @@ export async function requireFeatureAccess(req, res, next) {
     message: `${email} has access to the Agency Map and the Brevo email agent only. Ask an administrator to widen it.`,
   })
 }
+
+/**
+ * Third gate, for the handful of things inside a restricted router that a
+ * restricted account still must not do.
+ *
+ * The map is open to everyone who can sign in, but starting a research run
+ * spends real money and the spreadsheet is the whole dataset in one file. Those
+ * stay with the full-access pair; everybody else gets to watch the run and
+ * read its findings on screen. Same fail-closed shape as requireFeatureAccess.
+ */
+export async function requireFullAccess(req, res, next) {
+  if (req.method === 'OPTIONS') return next()
+
+  let email = ''
+  try {
+    email = await resolveActorEmail(req)
+  } catch (error) {
+    return next(error)
+  }
+
+  if (hasFullAccess(email)) return next()
+
+  return res.status(403).json({
+    message: email
+      ? `${email} can view research results but cannot start runs or download the data. Ask an administrator to widen it.`
+      : 'Your account could not be identified, so research runs and downloads are not available. Sign out and back in.',
+  })
+}

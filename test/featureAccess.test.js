@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { hasFullAccess, requireFeatureAccess } from '../src/middleware/featureAccess.js'
+import { hasFullAccess, requireFeatureAccess, requireFullAccess } from '../src/middleware/featureAccess.js'
 
 const CLAIM = 'https://trustedtechnology.ai/email'
 
@@ -108,5 +108,30 @@ test('an unset allowlist falls back to Neel rather than to everyone', async () =
     assert.equal(hasFullAccess('neel@trustedtechnology.ai'), true)
     assert.equal(hasFullAccess('someone@trustedtechnology.ai'), false)
     assert.equal(hasFullAccess(''), false)
+  })
+})
+
+test('starting, stopping and downloading a research run is for the full-access pair only', async () => {
+  await withEnv('neel@trustedtechnology.ai,todd.hodnett@trustedtechnology.ai', async () => {
+    const restricted = harness('/research-run/start', { sub: 'auth0|9', [CLAIM]: 'someone@trustedtechnology.ai' }, 'POST')
+    await requireFullAccess(restricted.req, restricted.res, restricted.next)
+    assert.equal(restricted.out.passed, false)
+    assert.equal(restricted.out.status, 403)
+    assert.match(restricted.out.body.message, /can view research results but cannot start runs or download/)
+
+    for (const email of ['neel@trustedtechnology.ai', 'Todd.Hodnett@trustedtechnology.ai']) {
+      const { req, res, next, out } = harness('/research-run/start', { sub: 'auth0|1', [CLAIM]: email }, 'POST')
+      await requireFullAccess(req, res, next)
+      assert.equal(out.passed, true, `${email} should be let through`)
+    }
+
+    const nobody = harness('/research-run/start', { sub: 'auth0|9' }, 'POST')
+    await requireFullAccess(nobody.req, nobody.res, nobody.next)
+    assert.equal(nobody.out.status, 403)
+    assert.match(nobody.out.body.message, /could not be identified/)
+
+    const preflight = harness('/research-run/start', undefined, 'OPTIONS')
+    await requireFullAccess(preflight.req, preflight.res, preflight.next)
+    assert.equal(preflight.out.passed, true)
   })
 })
