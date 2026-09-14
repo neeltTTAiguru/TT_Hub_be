@@ -13,6 +13,7 @@ import {
 } from '../services/researchRunWorkbook.js'
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
+import { requireLoggedByEmail, syncMapCallToHubSpot } from '../services/hubspotMapCalls.js'
 import BwcResearchRun from '../models/BwcResearchRun.js'
 import { resolveActor } from '../middleware/auth.js'
 import { requireFullAccess } from '../middleware/featureAccess.js'
@@ -1570,7 +1571,13 @@ router.post('/:ori/call-log', async (req, res, next) => {
       return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null
     }
 
+    const clientCallId = text(body.clientCallId, 100)
+    if (!clientCallId) {
+      return res.status(400).json({ message: 'A call ID is required before saving.' })
+    }
+    const loggedBy = requireLoggedByEmail(await resolveActor(req))
     const entry = {
+      clientCallId,
       calledAt: date(body.calledAt) || new Date(),
       contactName: text(body.contactName, 200),
       contactTitle: text(body.contactTitle, 200),
@@ -1578,7 +1585,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
       outcome: text(body.outcome, 60),
       followUpAt: date(body.followUpAt),
       notes: text(body.notes, 5000),
-      loggedBy: String(await resolveActor(req)).slice(0, 200),
+      loggedBy,
       loggedAt: new Date(),
     }
     // An entry with neither an outcome nor a word of notes records nothing but
@@ -1587,18 +1594,47 @@ router.post('/:ori/call-log', async (req, res, next) => {
       return res.status(400).json({ message: 'Add an outcome or some notes before saving.' })
     }
 
-    const agency = await LeAgency.findOne({ ori: String(req.params.ori).toUpperCase() })
+    const ori = String(req.params.ori).toUpperCase()
+    let agency = await LeAgency.findOneAndUpdate(
+      { ori, 'callLog.clientCallId': { $ne: clientCallId } },
+      { $push: { callLog: entry } },
+      { new: true },
+    )
+    if (!agency) agency = await LeAgency.findOne({ ori })
     if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
 
-    agency.callLog.push(entry)
+    const savedEntry = agency.callLog.find((call) => call.clientCallId === clientCallId)
+    if (!savedEntry) throw new Error('The saved Map call could not be reloaded.')
     agency.outreach = outreachFrom(agency.callLog)
     await agency.save()
+
+    // The hub's log is the source of truth and must survive a HubSpot outage.
+    // A failed sync is stamped for retry/backfill instead of turning a locally
+    // saved call into an error in the SAE's browser.
+    let hubspot = null
+    try {
+      hubspot = await syncMapCallToHubSpot(agency, savedEntry)
+      savedEntry.hubspotCallId = hubspot.callId
+      savedEntry.hubspotSyncedAt = new Date()
+      savedEntry.hubspotSyncError = ''
+    } catch (error) {
+      savedEntry.hubspotSyncError = String(error?.message || error).slice(0, 300)
+      hubspot = { error: savedEntry.hubspotSyncError }
+    }
+    try {
+      await agency.save()
+    } catch {
+      // The call itself is already stored. A backfill reconciles the remote Call
+      // by tt_map_call_id; do not make the SAE retry and create another local row
+      // merely because the sync metadata could not be persisted.
+    }
 
     return res.json({
       ori: agency.ori,
       name: agency.agencyName,
       calls: sortedCalls(agency.toObject().callLog),
       outreach: agency.outreach,
+      hubspot,
     })
   } catch (error) {
     return next(error)

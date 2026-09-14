@@ -111,6 +111,16 @@ export async function upsertRecord(objectType, properties, existingId = '') {
   return String(created.id || '')
 }
 
+/** Atomic HubSpot upsert through a custom property declared hasUniqueValue. */
+export async function upsertRecordByUniqueProperty(objectType, propertyName, value, properties) {
+  const result = await call('POST', `/crm/v3/objects/${objectType}/batch/upsert`, {
+    inputs: [{ id: value, idProperty: propertyName, properties }],
+  })
+  const id = String(result.results?.[0]?.id || '')
+  if (!id) throw new Error(`HubSpot did not return an ID for the ${objectType} upsert.`)
+  return id
+}
+
 /**
  * Link a contact to a company.
  *
@@ -129,6 +139,27 @@ export async function checkToken() {
   return { ok: true, sampleCount: (result.results || []).length }
 }
 
+/** Active and archived owners, including email for exact Auth0 attribution. */
+export async function listOwners() {
+  const owners = []
+  for (const archived of ['false', 'true']) {
+    let after = ''
+    do {
+      const query = new URLSearchParams({ limit: '500', archived })
+      if (after) query.set('after', after)
+      const result = await call('GET', `/crm/v3/owners/?${query}`)
+      owners.push(...(result.results || []))
+      after = String(result.paging?.next?.after || '')
+    } while (after)
+  }
+  return owners.map((owner) => ({
+    id: String(owner.id || ''),
+    email: String(owner.email || '').trim().toLowerCase(),
+    firstName: owner.firstName || '',
+    lastName: owner.lastName || '',
+  }))
+}
+
 /**
  * Create any of `definitions` that the portal does not already have.
  *
@@ -142,6 +173,17 @@ export async function checkToken() {
  * qualification itself is not, and the caller still writes the description block.
  */
 const propertyCache = new Map()
+const uniquePropertyCache = new Set()
+
+export async function requireUniqueProperty(objectType, propertyName) {
+  const key = `${objectType}:${propertyName}`
+  if (uniquePropertyCache.has(key)) return
+  const property = await call('GET', `/crm/v3/properties/${objectType}/${propertyName}`)
+  if (property.hasUniqueValue !== true) {
+    throw new Error(`HubSpot property ${propertyName} exists but is not unique.`)
+  }
+  uniquePropertyCache.add(key)
+}
 
 export async function ensureProperties(objectType, group, definitions) {
   // The portal's schema does not change between saves, and reading every

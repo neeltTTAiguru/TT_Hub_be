@@ -17,6 +17,7 @@
     "surf:twitter": "node scripts/runTwitterSurferCli.js",
     "wordpress:refresh-blog": "node scripts/refreshWordPressBlogDraft.js",
     "hubspot:check": "node scripts/checkHubSpotTools.js",
+    "hubspot:backfill-map-calls": "node scripts/backfillHubspotMapCalls.js",
     "agencies:ingest": "node scripts/ingestLeAgencies.js"
   },
   "dependencies": {

@@ -35,8 +35,14 @@ const callLogEntrySchema = new mongoose.Schema(
     // A promised call-back is the whole reason a log gets reread.
     followUpAt: { type: Date, default: null },
     notes: { type: String, default: '', trim: true },
+    clientCallId: { type: String, default: '', trim: true },
     loggedBy: { type: String, default: '', trim: true },
     loggedAt: { type: Date, default: Date.now },
+    // Native HubSpot Call activity created from this Map call. The ID makes
+    // retries and historical backfills update rather than duplicate it.
+    hubspotCallId: { type: String, default: '', trim: true },
+    hubspotSyncedAt: { type: Date, default: null },
+    hubspotSyncError: { type: String, default: '', trim: true },
   },
 )
 
