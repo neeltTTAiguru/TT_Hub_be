@@ -75,7 +75,7 @@ test('a Hermes-style client lists the active agents and asks one through the sha
     const tools = await client.listTools()
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'ask_agent', 'list_agents',
-      'map_agency', 'map_call_activity', 'map_recent_calls', 'map_research_runs', 'map_search_agencies',
+      'map_agency', 'map_call_activity', 'map_calls_by_sdr', 'map_recent_calls', 'map_research_runs', 'map_search_agencies',
     ])
 
     const listed = await client.callTool({ name: 'list_agents', arguments: {} })
@@ -157,6 +157,14 @@ test('the map tools are read-only views that pass the caller\'s scope through un
     const activity = await client.callTool({ name: 'map_call_activity', arguments: { from: '2026-09-14', to: '2026-09-14', state: 'TX' } })
     assert.equal(activity.structuredContent.totals.calls, 7)
     assert.deepEqual(seen.callActivity, { from: '2026-09-14', to: '2026-09-14', state: 'TX' })
+
+    // The simple per-SDR tool is a projection of the same report, defaulting to today.
+    const bySdr = await client.callTool({ name: 'map_calls_by_sdr', arguments: {} })
+    assert.equal(bySdr.structuredContent.totalCalls, 7)
+    assert.equal(bySdr.structuredContent.bySdr[0].sdr, 'troy@trustedtechnology.ai')
+    assert.equal(bySdr.structuredContent.bySdr[0].calls, 7)
+    assert.match(seen.callActivity.from, /^\d{4}-\d{2}-\d{2}$/)
+    assert.equal(seen.callActivity.from, seen.callActivity.to)
 
     const calls = await client.callTool({ name: 'map_recent_calls', arguments: { sdr: 'troy', limit: 10 } })
     assert.equal(calls.structuredContent.calls[0].loggedBy, 'troy@trustedtechnology.ai')

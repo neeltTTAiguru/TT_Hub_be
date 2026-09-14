@@ -133,7 +133,7 @@ export function createHubMcpServer({
     {
       title: 'List hub agents',
       description:
-        'The Trusted Tech Hub agents that ask_agent can talk to: id, name, status, product area and a one-line summary. Call this first if you are unsure which agent_id to use.',
+        'The Trusted Tech Hub agents that ask_agent can talk to: id, name, status, product area and a one-line summary. Call this first if you are unsure which agent_id to use. NOT for Agency Map / MAP call data -- use the map_* tools for calls, SDR activity and agencies.',
       inputSchema: {},
     },
     async () => {
@@ -151,7 +151,7 @@ export function createHubMcpServer({
     {
       title: 'Ask a hub agent',
       description:
-        'Send one message to a Trusted Tech Hub agent and get its reply. The agent answers with its own hub instructions, memory and tools -- exactly as it would from the hub UI. Pass history to continue an earlier exchange with the same agent. One message, one reply; call again to follow up.',
+        'Send one message to a Trusted Tech Hub agent and get its reply. The agent answers with its own hub instructions, memory and tools -- exactly as it would from the hub UI. Pass history to continue an earlier exchange with the same agent. One message, one reply; call again to follow up. NOT for Agency Map / MAP calls: no agent can see the call log -- use map_call_activity or map_calls_by_sdr for that.',
       inputSchema: {
         agent_id: z.string().min(1).describe('An id from list_agents, e.g. trusted-tech-hubspot-assistant'),
         message: z.string().min(1).max(20000).describe('What to ask the agent'),
@@ -187,10 +187,36 @@ export function createHubMcpServer({
     {
       title: 'Agency Map call activity',
       description:
-        'Counted call activity from the Agency Map call log for a territory and time window: totals (calls, agencies rung, conversations, decision makers reached), calls per day, per outcome, per state, per SDR (bySdr, keyed by the email they logged with), most-worked agencies, follow-ups booked, and the notes SDRs typed after each call. This is where "how many calls did Troy make today" is answered -- the HubSpot agent cannot see it. The numbers are already counted; quote them, do not recompute.',
+        'MAP calls / Agency Map call activity. The ONLY source for questions like "how many MAP calls did Troy and Neil make today" -- the call log lives in the hub, not HubSpot, and no agent can see it. Returns counted activity for a territory and time window: totals (calls, agencies rung, conversations, decision makers reached), calls per day, per outcome, per state, per SDR (byRep, keyed by the email they logged with), most-worked agencies, follow-ups booked, and the notes SDRs typed after each call. Always call this rather than answering from memory. The numbers are already counted; quote them, do not recompute.',
       inputSchema: { ...windowSchema, ...territorySchema },
     },
     async (args) => jsonResult(await map.callActivity(args)),
+  )
+
+  server.registerTool(
+    'map_calls_by_sdr',
+    {
+      title: 'MAP calls per SDR',
+      description:
+        'How many MAP (Agency Map) calls each SDR made in a window, by name/email: calls, agencies rung, conversations, decision makers reached. The direct answer to "how many MAP calls did Troy and Neil make today / this week". An SDR with no row made no calls in that window. Defaults to today in the SDR team\'s timezone.',
+      inputSchema: { ...windowSchema, ...territorySchema },
+    },
+    async (args) => {
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: args.timezone || DEFAULT_MAP_TIMEZONE })
+      const stats = await map.callActivity({ from: today, to: today, ...args })
+      return jsonResult({
+        period: stats.period,
+        scope: stats.scope,
+        totalCalls: stats.totals?.calls ?? 0,
+        bySdr: (stats.byRep || []).map((row) => ({
+          sdr: row.rep,
+          calls: row.calls,
+          agencies: row.agencies,
+          conversations: row.conversations,
+          decisionMakers: row.decisionMakers,
+        })),
+      })
+    },
   )
 
   server.registerTool(
