@@ -4,6 +4,14 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { getAgentById, listAgents } from './agentCatalog.js'
 import { runAgentChat, sanitizeChatMessages } from './agentRunner.js'
+import {
+  DEFAULT_MAP_TIMEZONE,
+  mapAgency,
+  mapCallActivity,
+  mapRecentCalls,
+  mapResearchRuns,
+  mapSearchAgencies,
+} from './agencyMapTools.js'
 
 /**
  * The hub as an MCP server -- the return path from Hermes into the hub.
@@ -13,10 +21,11 @@ import { runAgentChat, sanitizeChatMessages } from './agentRunner.js'
  * hub's agents as tools, so "ask the HubSpot assistant for this week's deals"
  * works from the dashboard the same way clicking the agent does.
  *
- * Deliberately narrow. Two tools, both routed through the same agentRunner the
+ * Deliberately narrow. The agent tools route through the same agentRunner the
  * UI uses, so an agent reached from Hermes carries its own SKILL.md, its GBrain
- * memory and its tool filters, and no hub endpoint is exposed that a person
- * could not already reach from the agent page.
+ * memory and its tool filters. The map tools are read-only views of the Agency
+ * Map (agencyMapTools.js). No hub endpoint is exposed that a person could not
+ * already reach from the hub, and nothing here spends money or writes.
  */
 
 // Who the memory layer and the "saved by" stamps see. A service identity with
@@ -75,12 +84,48 @@ function toolError(message) {
   return { isError: true, content: [{ type: 'text', text: message }] }
 }
 
+// structuredContent must be an object, so a list is wrapped rather than sent bare.
+function jsonResult(value) {
+  const structured = Array.isArray(value) ? { items: value } : value
+  return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured }
+}
+
+// Shared by every map tool that takes a time window.
+const windowSchema = {
+  from: z
+    .string()
+    .optional()
+    .describe('Start of the window: YYYY-MM-DD (a whole day in `timezone`) or an ISO instant. Default: 30 days ago'),
+  to: z.string().optional().describe('End of the window, same forms. Default: now'),
+  timezone: z
+    .string()
+    .optional()
+    .describe(`IANA zone that bare dates are read in. Default ${DEFAULT_MAP_TIMEZONE} (the SDR team)`),
+}
+
+// The map's own filter vocabulary, so a scope Hermes asks for is exactly a
+// scope the map can show.
+const territorySchema = {
+  state: z.string().optional().describe('Two-letter state codes, comma-separated, e.g. "TX" or "TX,OK,NM"'),
+  agencyType: z.string().optional().describe('Comma-separated agency types as the map lists them, e.g. "Sheriff"'),
+  search: z.string().optional().describe('Agency name contains this text (case-insensitive)'),
+  minOfficers: z.number().int().optional().describe('Minimum sworn officers'),
+  maxOfficers: z.number().int().optional().describe('Maximum sworn officers'),
+  bwc: z.enum(['true', 'false', 'unknown']).optional().describe('Body-worn cameras: known to have, known to have none, or undocumented'),
+  crm: z.enum(['matched', 'unmatched']).optional().describe('In the HubSpot pipeline, or never touched'),
+}
+
 /**
  * A server per request. The transport runs stateless (no session id), so a
  * Hermes cron that fires once a day and a chat that fires every few seconds
  * are handled identically, and nothing accumulates in memory between calls.
  */
-export function createHubMcpServer({ run = runAgentChat, agents = listAgents, agent = getAgentById } = {}) {
+export function createHubMcpServer({
+  run = runAgentChat,
+  agents = listAgents,
+  agent = getAgentById,
+  map = { callActivity: mapCallActivity, recentCalls: mapRecentCalls, searchAgencies: mapSearchAgencies, agency: mapAgency, researchRuns: mapResearchRuns },
+} = {}) {
   const server = new McpServer({ name: 'trusted-tech-hub', version: '1.0.0' })
 
   server.registerTool(
@@ -135,6 +180,71 @@ export function createHubMcpServer({ run = runAgentChat, agents = listAgents, ag
         return toolError(`${target.name} could not answer: ${error?.message || 'unknown error'}`)
       }
     },
+  )
+
+  server.registerTool(
+    'map_call_activity',
+    {
+      title: 'Agency Map call activity',
+      description:
+        'Counted call activity from the Agency Map call log for a territory and time window: totals (calls, agencies rung, conversations, decision makers reached), calls per day, per outcome, per state, per SDR (bySdr, keyed by the email they logged with), most-worked agencies, follow-ups booked, and the notes SDRs typed after each call. This is where "how many calls did Troy make today" is answered -- the HubSpot agent cannot see it. The numbers are already counted; quote them, do not recompute.',
+      inputSchema: { ...windowSchema, ...territorySchema },
+    },
+    async (args) => jsonResult(await map.callActivity(args)),
+  )
+
+  server.registerTool(
+    'map_recent_calls',
+    {
+      title: 'Agency Map recent calls',
+      description:
+        'Individual calls from the Agency Map call log, newest first: which agency, when, who answered, outcome, follow-up date, the note, and which SDR logged it. Filter to one SDR with `sdr` (matches the email they signed in with, e.g. "troy").',
+      inputSchema: {
+        ...windowSchema,
+        ...territorySchema,
+        sdr: z.string().optional().describe('Only calls logged by an SDR whose email contains this text'),
+        limit: z.number().int().min(1).max(200).optional().describe('Max calls to return (default 50)'),
+      },
+    },
+    async (args) => jsonResult(await map.recentCalls(args)),
+  )
+
+  server.registerTool(
+    'map_search_agencies',
+    {
+      title: 'Search Agency Map',
+      description:
+        'Law-enforcement agencies on the Agency Map matching the map\'s own filters, largest first: ORI, name, type, state, county, sworn officers, HubSpot stage, body-camera status and vendor, chief, phone, email, website, and outreach summary (calls made, last outcome). Use the ORI with map_agency for the full record.',
+      inputSchema: {
+        ...territorySchema,
+        limit: z.number().int().min(1).max(100).optional().describe('Max agencies to return (default 25)'),
+      },
+    },
+    async (args) => jsonResult(await map.searchAgencies(args)),
+  )
+
+  server.registerTool(
+    'map_agency',
+    {
+      title: 'Agency Map agency',
+      description: 'One agency by ORI with its full call log, newest call first.',
+      inputSchema: { ori: z.string().min(1).describe('The agency ORI, e.g. TX2200000') },
+    },
+    async ({ ori }) => {
+      const found = await map.agency({ ori })
+      return found ? jsonResult(found) : toolError(`No agency with ORI "${ori}".`)
+    },
+  )
+
+  server.registerTool(
+    'map_research_runs',
+    {
+      title: 'Agency Map research runs',
+      description:
+        'Body-camera research runs on the Agency Map, newest first: status, targeting, how many agencies were covered, and what was found (cameras, emails, phones). Read-only -- runs are started from the hub by full-access users, never from here.',
+      inputSchema: { limit: z.number().int().min(1).max(50).optional().describe('Max runs (default 20)') },
+    },
+    async (args) => jsonResult(await map.researchRuns(args)),
   )
 
   return server
