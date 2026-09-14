@@ -17,8 +17,12 @@ const CONVERSATION_OUTCOMES = [
   'Not interested',
 ]
 
-/** A call that reached nobody. Everything else is either a conversation or unlabelled. */
-const UNREACHED_OUTCOMES = ['Left voicemail', 'No answer', 'Wrong number / bad line']
+/**
+ * A call that reached nobody. Everything else is either a conversation or
+ * unlabelled. "Call later" is the map's one-click deferral: the SDR looked at
+ * the agency and put it off, which is work done but not a person reached.
+ */
+const UNREACHED_OUTCOMES = ['Left voicemail', 'No answer', 'Wrong number / bad line', 'Call later']
 
 /**
  * An SDR is identified by the email they signed in with - except when Auth0
