@@ -1,50 +1,24 @@
 import { Router } from 'express'
 import { getAgentById, listAgents } from '../services/agentCatalog.js'
-import { chatWithHermes, streamHermesChat } from '../services/hermesChat.js'
-import { chatWithAgent } from '../services/openaiChat.js'
-import { handleWordPressChat } from '../services/wordpressDraftEditor.js'
+import { streamHermesChat } from '../services/hermesChat.js'
+import { runAgentChat, sanitizeChatMessages, SAVE_CAPABLE_AGENTS } from '../services/agentRunner.js'
 import { getAuthenticatedUser } from '../middleware/auth.js'
 import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listAllBrainMemories, deleteBrainMemory } from '../services/memoryGateway.js'
 import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
 import { buildUserContentWithAttachments } from '../services/chatAttachments.js'
-import { chatWithHubSpotDeals, HUBSPOT_DEAL_INSTRUCTIONS } from '../services/hubspotDeals.js'
+import { HUBSPOT_DEAL_INSTRUCTIONS } from '../services/hubspotDeals.js'
 import {
   assertHubSpotToolsAvailable,
   assertResponseIsLive,
   createSentinelGate,
 } from '../services/hubspotHealth.js'
-import { chatWithYouTrack } from '../services/youtrack.js'
 import { applySaveRequests, createSaveGate } from '../services/brainSave.js'
 import { getWordPressPost, getWordPressEditorUrl, getWordPressSiteUrl } from '../services/wordpress.js'
 
 const router = Router()
 
 let wordpressStylesheetCache = { siteUrl: '', expiresAt: 0, stylesheets: [], inlineStyles: [] }
-
-// Prefer Hermes (same backend as Brain), but bound how long we wait on it: if
-// Hermes is slow or offline, fall back to the fast OpenAI-backed chat instead of
-// hanging until the gateway times out (~2 min). Used by Competitor Analyst.
-const COMPETITOR_HERMES_TIMEOUT_MS = Number(process.env.COMPETITOR_HERMES_TIMEOUT_MS || 25000)
-
-async function chatWithHermesOrOpenAI(agentId, messages, options) {
-  try {
-    return await chatWithHermes(agentId, messages, {
-      ...options,
-      timeoutMs: COMPETITOR_HERMES_TIMEOUT_MS,
-      rateLimitRetries: 0,
-    })
-  } catch (error) {
-    const message = String(error?.message || '')
-    const hermesOffline =
-      error?.statusCode === 503 ||
-      error?.statusCode === 504 ||
-      /fetch failed|ECONNREFUSED|not configured|took too long|empty response|aborted/i.test(message)
-    if (!hermesOffline) throw error
-    // Hermes was slow/unavailable — answer with the fast OpenAI path instead.
-    return chatWithAgent(agentId, messages, options)
-  }
-}
 
 function rendered(field) {
   return typeof field === 'string' ? field : String(field?.rendered ?? field?.raw ?? '')
@@ -132,16 +106,7 @@ router.get('/:id', async (req, res, next) => {
 
 router.post('/:id/chat', async (req, res, next) => {
   try {
-    const messages = Array.isArray(req.body?.messages) ? req.body.messages : []
-    const sanitizedMessages = messages
-      .filter(
-        (message) =>
-          message &&
-          (message.role === 'user' || message.role === 'assistant') &&
-          typeof message.content === 'string' &&
-          message.content.trim(),
-      )
-      .slice(-12)
+    const sanitizedMessages = sanitizeChatMessages(req.body?.messages)
 
     if (!sanitizedMessages.length) {
       return res.status(400).json({ message: 'Provide at least one chat message.' })
@@ -149,22 +114,9 @@ router.post('/:id/chat', async (req, res, next) => {
 
     const user = getAuthenticatedUser(req)
     const competitor = typeof req.body?.competitor === 'string' ? req.body.competitor.trim() : ''
-    const memory = await retrieveMemoryContext({
-      agentId: req.params.id,
-      messages: sanitizedMessages,
-      user,
-      competitor,
-    })
-    const memoryOptions = {
-      memoryContext: memory.context,
-      memoryMeta: {
-        status: memory.status,
-        retrieved: memory.memories.length,
-      },
-    }
 
     // Fold any attachments (PDF/Word/text -> extracted text; images -> vision
-    // parts) into the latest user message. Memory retrieval above uses the plain
+    // parts) into the latest user message. Memory retrieval uses the plain
     // text messages; the model gets the enriched content.
     const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : []
     let chatMessages = sanitizedMessages
@@ -177,38 +129,13 @@ router.post('/:id/chat', async (req, res, next) => {
       }
     }
 
-    const result = req.params.id === 'trusted-tech-hubspot-assistant'
-      ? await chatWithHubSpotDeals(chatMessages, memoryOptions)
-      : req.params.id === 'trusted-tech-youtrack-assistant'
-      ? await chatWithYouTrack(chatMessages, memoryOptions)
-      : req.params.id === 'wordpress-draft-editor'
-      ? await handleWordPressChat(chatMessages, memoryOptions)
-      : req.params.id === 'competitor-analyst'
-      ? await chatWithHermesOrOpenAI(req.params.id, chatMessages, memoryOptions)
-      : req.params.id === 'trusted-tech-assistant' ||
-      req.params.id === 'trusted-tech-hubspot-assistant' ||
-      req.params.id === 'trusted-tech-youtrack-assistant' ||
-      req.params.id === 'trusted-tech-ahrefs-assistant' ||
-      req.params.id === 'content-operations-assistant' ||
-      req.params.id === 'wordpress-draft-test-agent'
-        ? await chatWithHermes(
-          req.params.id,
-          chatMessages,
-          req.params.id === 'trusted-tech-hubspot-assistant'
-            ? { ...memoryOptions, timeoutMs: 30000, rateLimitRetries: 1 }
-            : memoryOptions,
-        )
-        : await chatWithAgent(req.params.id, chatMessages, memoryOptions)
-    if (SAVE_CAPABLE_AGENTS.has(req.params.id) && result?.message?.content) {
-      const applied = await applySaveRequests({
-        agentId: req.params.id,
-        user,
-        content: result.message.content,
-      })
-      result.message.content = applied.content
-      result.meta = { ...(result.meta || {}), saved: applied.saved, saveFailed: applied.failed }
-    }
-    result.meta = { ...(result.meta || {}), memory: memoryOptions.memoryMeta }
+    const result = await runAgentChat({
+      agentId: req.params.id,
+      messages: sanitizedMessages,
+      chatMessages,
+      user,
+      competitor,
+    })
     return res.json(result)
   } catch (error) {
     return next(error)
@@ -219,11 +146,6 @@ router.post('/:id/chat', async (req, res, next) => {
 // and a final `data: {"done":true,"message":...}`. Heartbeat comments keep the
 // connection warm during the (silent) tool-call phase so long HubSpot analyses
 // don't hit a fixed request cap or a proxy idle-timeout.
-// Agents whose replies are scanned for save blocks. Matches MEMORY_WRITERS in
-// memoryGateway -- no other agent can write, so no other agent's output needs
-// parsing.
-const SAVE_CAPABLE_AGENTS = new Set(['trusted-tech-assistant', 'competitor-analyst'])
-
 const STREAMING_AGENTS = new Set([
   'trusted-tech-hubspot-assistant',
   'trusted-tech-assistant',

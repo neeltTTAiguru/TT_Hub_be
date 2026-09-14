@@ -42,6 +42,7 @@ import contentOperationsRouter from './routes/contentOperations.js'
 import brevoRouter from './routes/brevo.js'
 import emailAssetsRouter from './routes/emailAssets.js'
 import contentOperationsDownloadsRouter from './routes/contentOperationsDownloads.js'
+import hubMcpRouter from './routes/hubMcp.js'
 import { startCompetitorCollectorSchedule } from './services/competitorCollector.js'
 import { startHubSpotHealthMonitor } from './services/hubspotHealth.js'
 
@@ -117,6 +118,11 @@ if (!hermesProxyOnly) {
 app.use('/health', healthRouter)
 app.use('/content-operations-download', contentOperationsDownloadsRouter)
 app.use('/email-assets', emailAssetsRouter)
+// The hub as an MCP server for Hermes Operations. Above requireAuth because its
+// caller is the Hermes container, which holds a HUB_MCP_KEY rather than an
+// Auth0 session; the router refuses everything without that key. Not `/mcp`:
+// that is a Hermes dashboard page, and the proxy above would swallow it.
+app.use('/hub-mcp', hubMcpRouter)
 app.use(requireAuth)
 // Above the feature gate on purpose: this is how a restricted account finds
 // out that it is restricted, so refusing it would leave the sidebar guessing.
