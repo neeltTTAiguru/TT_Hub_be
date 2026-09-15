@@ -1,4 +1,4 @@
-import { getGoogleAccessToken } from './googleAuth.js'
+import { getGoogleAccessToken, isGoogleServiceAccountConfigured } from './googleAuth.js'
 
 const DATA_API_BASE_URL = 'https://analyticsdata.googleapis.com/v1beta'
 const ANALYTICS_READ_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly'
@@ -14,8 +14,8 @@ function getConfig() {
 }
 
 export function isGa4Configured() {
-  const { propertyId, credentialsPath } = getConfig()
-  return Boolean(propertyId && credentialsPath)
+  const { propertyId } = getConfig()
+  return Boolean(propertyId && isGoogleServiceAccountConfigured())
 }
 
 // The JWT signing lives in googleAuth.js now, shared with Search Console.

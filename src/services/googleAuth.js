@@ -11,25 +11,47 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 let credentialsCache = null
 const accessTokenCache = new Map()
 
+// Two ways to supply the key. A file path (GOOGLE_APPLICATION_CREDENTIALS) is
+// the local-dev way. A hosted app has no file to point at, so the key's JSON
+// can be pasted straight into GOOGLE_SERVICE_ACCOUNT_JSON — raw or base64 —
+// as an encrypted env var on the DigitalOcean app. The inline form wins when
+// both are set.
 function credentialsPath() {
   return String(process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim()
 }
 
+function inlineCredentials() {
+  return String(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '').trim()
+}
+
 export function isGoogleServiceAccountConfigured() {
-  return Boolean(credentialsPath())
+  return Boolean(inlineCredentials() || credentialsPath())
+}
+
+function parseCredentials(text, source) {
+  let raw = text
+  // Base64 is the safer paste into an env field: no quotes, no newlines to
+  // mangle the private key.
+  if (!raw.startsWith('{')) raw = Buffer.from(raw, 'base64').toString('utf8')
+  const value = JSON.parse(raw)
+  if (value.type !== 'service_account' || !value.client_email || !value.private_key) {
+    throw new Error(`The Google credential in ${source} is not a valid service-account JSON key.`)
+  }
+  return value
 }
 
 export async function loadGoogleCredentials() {
+  const inline = inlineCredentials()
   const path = credentialsPath()
-  if (!path) throw new Error('GOOGLE_APPLICATION_CREDENTIALS is not configured.')
-  if (credentialsCache?.path === path) return credentialsCache.value
+  const key = inline ? `inline:${inline.length}` : path
+  if (!key) throw new Error('Google credentials are not configured (GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS).')
+  if (credentialsCache?.path === key) return credentialsCache.value
 
-  const value = JSON.parse(await readFile(path, 'utf8'))
-  if (value.type !== 'service_account' || !value.client_email || !value.private_key) {
-    throw new Error('The configured Google credential is not a valid service-account JSON file.')
-  }
+  const value = inline
+    ? parseCredentials(inline, 'GOOGLE_SERVICE_ACCOUNT_JSON')
+    : parseCredentials(await readFile(path, 'utf8'), 'GOOGLE_APPLICATION_CREDENTIALS')
 
-  credentialsCache = { path, value }
+  credentialsCache = { path: key, value }
   return value
 }
 
