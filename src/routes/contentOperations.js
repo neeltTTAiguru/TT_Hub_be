@@ -27,6 +27,7 @@ import { createDraftFromChatArticle, publishStateForRunId } from '../services/co
 import { createPdfDownloadToken } from '../services/articlePdf.js'
 import { getGa4ConnectionStatus, getGa4Snapshot } from '../services/ga4Analytics.js'
 import { verifyWordPressAuthentication } from '../services/wordpress.js'
+import { getSitemapStatus, refreshSitemap, runSitemapWatchTick } from '../services/sitemap.js'
 
 const router = Router()
 
@@ -153,6 +154,32 @@ router.get('/integrations/ga4/snapshot', async (_req, res, next) => {
     return snapshot
       ? res.json(snapshot)
       : res.status(503).json({ message: 'GA4 is not configured.' })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// The sitemap as the site serves it and as Google last saw it, plus the recent
+// refresh log. Reads the live copy (cache bypassed), so it is a few seconds.
+router.get('/integrations/sitemap/status', async (_req, res, next) => {
+  try {
+    return res.json(await getSitemapStatus())
+  } catch (error) {
+    return next(error)
+  }
+})
+
+// Manual refresh: verify the given URLs (or just the sitemap itself) and
+// re-submit to Search Console / IndexNow. Also what the "Refresh now" button
+// in the Content Generator calls.
+router.post('/integrations/sitemap/refresh', async (req, res, next) => {
+  try {
+    const urls = Array.isArray(req.body?.urls) ? req.body.urls.map((url) => String(url || '').trim()).filter(Boolean).slice(0, 50) : []
+    if (req.body?.scanWordPress === true) {
+      const tick = await runSitemapWatchTick()
+      if (tick) return res.json(tick)
+    }
+    return res.json(await refreshSitemap({ urls, reason: 'manual' }))
   } catch (error) {
     return next(error)
   }

@@ -26,6 +26,8 @@ import { markdownToWordPressHtml, stripProductionNotes } from './markdown.js'
 import { generateAndUploadArticleImages, insertGeneratedImages } from './articleImages.js'
 import { getAhrefsMcpStatus } from './ahrefsMcp.js'
 import { retrieveMemoryContext } from './memoryGateway.js'
+import { checkArticleLength, describeLengthCheck, lengthDirective, wordCount } from './articleLength.js'
+import { isSearchConsoleConfigured, refreshSitemap } from './sitemap.js'
 
 const DEFAULT_DOMAIN = 'trustedtechnology.ai'
 // The curated Ahrefs "Trusted list" the research stage pulls from by default. Overridable
@@ -389,6 +391,11 @@ async function runDraftAutomation(run, body, signal) {
     if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
     await optimizeArticleWithSurfer(run, { signal })
     if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
+    // Last gate before the draft is approved: the optimisation loop is length-aware
+    // but bounded by its pass budget, so this is what guarantees the article that
+    // reaches WordPress is inside Surfer's range (or says plainly that it is not).
+    await enforceArticleLength(run, { signal, rescore: true })
+    if (signal.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
     await approveArticle(run, { automated: true })
     await generateAndUploadArticleImages(run, { signal })
     await createWordPressDraftForRun(run, { signal })
@@ -480,6 +487,7 @@ Return ONLY valid JSON:
   "slug": "",
   "metaDescription": ""
 }
+metaDescription is the Google snippet: one sentence, under 155 characters, containing the primary keyword, written to earn the click.
 
 Image recommendation requirements:
 - Return exactly three recommendations: one featured image and two inline images.
@@ -518,9 +526,12 @@ export async function approveBriefAndDraft(run, briefOverride, options = {}) {
   try {
     const length = cleanText(briefOverride?.articleLength || 'standard', 30)
     const g = run.surferGuidelines
+    // The band, not just the number: "about 1,900 words" was read as a floor and
+    // every draft came back a third over. The count is measured after writing.
+    const band = checkArticleLength('', g?.targetWordCount)
     const surferGuidance = g ? `
 SurferSEO SERP guidance for this keyword — write the FIRST draft to these targets so it already scores well, but apply them only where they stay truthful and on-brand; never pad, fabricate facts/stats/product claims, or keyword-stuff to hit them:
-- Aim for about ${g.targetWordCount || '1900'} words of genuinely useful content.
+- LENGTH IS A HARD REQUIREMENT: ${band.target ? `${band.min}–${band.max} words (SurferSEO target ${band.target}). The pipeline counts the words after you write and sends a draft outside that range back for cutting or expansion, so plan the section lengths to land inside it.` : 'about 1900 words of genuinely useful content.'}
 - Naturally weave in these priority terms where they fit the facts: ${formatSurferTerms(g.terms)}.
 ` : ''
     const content = await askHermes(`
@@ -550,8 +561,14 @@ Return only the Markdown article.
       'Hermes',
       'Article draft generated from the approved brief.',
       'The draft preserves factual caution and does not publish automatically. Any leaked image/production notes are stripped before storage.',
-      `${run.article.split(/\s+/).filter(Boolean).length} words`,
+      `${wordCount(run.article)} words`,
     ))
+    await run.save()
+    // The length gate runs on the draft itself, before anyone reads it. In the
+    // balanced flow this is the only automated pass the draft gets before a
+    // human sees it, so an over-long draft is trimmed here rather than approved
+    // at 140% of the target.
+    await enforceArticleLength(run, { signal: options.signal })
     run.currentStage = 'article_approval'
     run.status = run.workflowMode === 'draft_automation' ? 'running' : 'waiting_for_approval'
     await run.save()
@@ -591,7 +608,8 @@ function formatSurferTerms(terms) {
 
 // Hermes rewrites the article toward Surfer's guidelines. Scoring is done by the backend
 // via the Surfer REST API, so Hermes just returns the revised Markdown — nothing else.
-function buildReviseArticlePrompt(keyword, article, guidelineTerms, currentSeo, targetScore, targetWordCount, editorialGuidance = '', scoreFloor = null) {
+function buildReviseArticlePrompt(keyword, article, guidelineTerms, currentSeo, targetScore, targetWordCount, editorialGuidance = '', scoreFloor = null, questions = []) {
+  const length = checkArticleLength(article, targetWordCount)
   return `
 Revise this Trusted Technology article to raise its SurferSEO SEO content score toward ${targetScore}/100${currentSeo != null ? ` (currently ${currentSeo})` : ''}. Return ONLY the revised Markdown article — no commentary, no scores, no notes.
 
@@ -602,7 +620,7 @@ SCORE RECOVERY — THIS IS THE JOB THIS PASS: before the rewrite this article sc
 EDITORIAL DIRECTION FROM THE EDITOR — this outranks the SEO target. The article has already been rewritten to this direction; every SEO change you make must preserve it. If a recommended term can only be worked in by contradicting this direction, skip the term:
 ${editorialGuidance}
 ` : ''}
-${targetWordCount ? `LENGTH — SurferSEO's target for this keyword is ${targetWordCount} words. Match it. If the article is materially longer, CUT it: merge overlapping sections, delete restatement, and remove any section that does not earn its place. Length is not depth, and a page far over its SERP target reads as padding to both the reader and the ranking. Never add words to reach a term count.` : ''}
+${lengthDirective(length, questions)}
 ${guidelineTerms ? `SurferSEO recommends naturally including these terms (target frequency in parentheses; [heading] = works well as/inside a heading): ${guidelineTerms}.` : ''}
 
 WRITING RULES (never violate, even to raise the score):
@@ -852,36 +870,60 @@ export async function optimizeArticleWithSurfer(run, options = {}) {
     // not optional just because the generic target was already met.
     const goal = Math.max(targetScore, scoreFloor ?? 0)
     const underFloor = () => scoreFloor != null && (bestSeo == null || bestSeo < scoreFloor)
+    // Length is a second goal alongside the score. The loop keeps going while the
+    // best article is outside Surfer's word range, and a revision that brings it
+    // into range is accepted even if it costs a few points — those points were
+    // being bought with padding, and Surfer's own ranking pages are shorter.
+    const questions = Array.isArray(run.surferGuidelines?.questions) ? run.surferGuidelines.questions : []
+    const lengthOf = (article) => checkArticleLength(article, targetWordCount)
+    const LENGTH_SCORE_ALLOWANCE = 3
 
-    // Revise -> push -> re-score, until we hit the goal, plateau, or run out of passes.
-    while (passes < maxPasses && (bestSeo == null || bestSeo < goal)) {
+    // Revise -> push -> re-score, until we hit the goal AND the length, plateau, or
+    // run out of passes.
+    while (passes < maxPasses && (bestSeo == null || bestSeo < goal || !lengthOf(bestArticle).ok)) {
       const revised = stripProductionNotes(await askHermes(
-        buildReviseArticlePrompt(keyword, bestArticle, guidelineTerms, bestSeo, targetScore, targetWordCount, editorialGuidance, scoreFloor),
+        buildReviseArticlePrompt(keyword, bestArticle, guidelineTerms, bestSeo, targetScore, targetWordCount, editorialGuidance, scoreFloor, questions),
         signal,
         { memoryQuery: memoryQueryFor(run, keyword) },
       ))
       passes += 1
-      if (!revised || revised.length < originalArticle.length * 0.6) break
+      // A cut toward the target is legitimate shrinkage; a truncated response is not.
+      // With a Surfer range the floor is 80% of its bottom edge, so an article twice
+      // its target can be cut to size without tripping the guard; without one it is
+      // 60% of the original, as before.
+      const truncatedBelow = targetWordCount
+        ? Math.min(lengthOf(originalArticle).min * 0.8, lengthOf(originalArticle).words * 0.6)
+        : lengthOf(originalArticle).words * 0.6
+      if (!revised || wordCount(revised) < truncatedBelow) break
       const prevSeo = bestSeo
       await putEditorContent(workspaceId, editorId, revised, { signal })
       ed = await readScoreAfterPush(prevSeo)
       const seo = scoreNum(ed?.content_score?.seo)
       if (seo != null) aiSearch = scoreNum(ed?.content_score?.ai_search)
-      if (seo != null && (bestSeo == null || seo > bestSeo)) {
+      const fixesLength = !lengthOf(bestArticle).ok && lengthOf(revised).ok
+      const breaksLength = lengthOf(bestArticle).ok && !lengthOf(revised).ok
+      const scoreUp = seo != null && (bestSeo == null || seo > bestSeo)
+      const scoreHeld = seo != null && bestSeo != null && seo >= bestSeo - LENGTH_SCORE_ALLOWANCE
+      if ((scoreUp && !breaksLength) || (fixesLength && (scoreUp || scoreHeld))) {
+        logRun(run, `surfer pass ${passes}: accepted (${lengthOf(revised).words} words, seo ${seo}${fixesLength ? ', length fixed' : ''})`)
         bestSeo = seo
         bestArticle = revised
         stalls = 0
       } else {
+        logRun(run, `surfer pass ${passes}: rejected (${lengthOf(revised).words} words, seo ${seo}${breaksLength ? ', left the word range' : ''})`)
         stalls += 1
-        // Above the floor, one flat pass means we have plateaued — stop and keep the best.
-        // Below the floor, keep spending passes: losing the editor's score is the failure
-        // we are here to prevent, and a later pass can still recover it.
-        if (!underFloor() || stalls >= 2) break
+        // Above the floor and inside the range, one flat pass means we have plateaued —
+        // stop and keep the best. Below the floor or outside the range, keep spending
+        // passes: those are the failures we are here to prevent, and a later pass can
+        // still recover.
+        if ((!underFloor() && lengthOf(bestArticle).ok) || stalls >= 2) break
       }
     }
 
     run.article = bestArticle
     const targetMet = bestSeo != null && bestSeo >= targetScore
+    const finalLength = lengthOf(bestArticle)
+    run.lengthCheck = { ...finalLength, checkedAt: new Date().toISOString(), stage: 'content_optimization' }
     run.surferOptimization = {
       editorId, editorUrl,
       seoScoreBefore: beforeSeo,
@@ -890,13 +932,16 @@ export async function optimizeArticleWithSurfer(run, options = {}) {
       targetScore, targetMet, passes,
       scoreFloor,
       floorMet: scoreFloor == null || (bestSeo != null && bestSeo >= scoreFloor),
+      wordCount: finalLength.words,
+      targetWordCount: finalLength.target,
+      lengthOk: finalLength.ok,
       notes: '', optimizedAt: new Date().toISOString(),
     }
     pushStage(run, stageRecord(
       'content_optimization',
       'SurferSEO API',
-      `SEO score ${beforeSeo ?? '—'} → ${bestSeo ?? '—'} (target ${targetScore}${targetMet ? ' ✓ met' : ', best reached without keyword-stuffing'}) over ${passes} revision pass(es).`,
-      'The backend scored the draft in SurferSEO and Hermes revised it toward the target without fabricating facts or keyword-stuffing.',
+      `SEO score ${beforeSeo ?? '—'} → ${bestSeo ?? '—'} (target ${targetScore}${targetMet ? ' ✓ met' : ', best reached without keyword-stuffing'}) over ${passes} revision pass(es). ${describeLengthCheck(finalLength)}`,
+      'The backend scored the draft in SurferSEO and Hermes revised it toward the target without fabricating facts or keyword-stuffing. Revisions were also held to Surfer\'s word range: one that brought the article into range was kept even at a small score cost.',
       editorUrl || `Surfer editor ${editorId}`,
     ))
     await run.save()
@@ -904,6 +949,146 @@ export async function optimizeArticleWithSurfer(run, options = {}) {
   } catch (error) {
     if (error.code === 'RUN_STOPPED') throw error
     return skip(`The Surfer step errored (${cleanText(error.message, 200)}).`)
+  }
+}
+
+// The dedicated length prompt. Unlike the Surfer reviser this has ONE job, so it
+// is not asked to raise a score at the same time — that is how cuts get undone.
+function buildLengthFixPrompt(keyword, article, check, guidelineTerms, questions, editorialGuidance = '') {
+  return `
+Bring this Trusted Technology article to the required length. Return ONLY the revised Markdown article — no commentary, no notes, no word counts.
+
+Target keyword: ${keyword}
+${lengthDirective(check, questions)}
+${editorialGuidance ? `
+EDITORIAL DIRECTION FROM THE EDITOR — preserve it in full:
+${editorialGuidance}
+` : ''}${guidelineTerms ? `
+Keep these SurferSEO priority terms in the article at roughly their current frequency (target in parentheses): ${guidelineTerms}. ${check.status === 'long' ? 'When cutting, remove restatement and weak sections, not the sentences that carry these terms.' : ''}` : ''}
+
+WRITING RULES (never violate, even to hit the length):
+- Keep Trusted Technology's voice: clear, authoritative, useful, written as the maker of the T500. No hedging.
+- Keep the Field Guide structure: one H1, answer-first intro, H2/H3 progression, summary, FAQ.
+- Never invent facts, statistics, laws, customers, certifications, prices, or product capabilities.
+- Output ONLY reader-facing prose and headings — no image notes, asset paths, alt text, or production direction. Preserve existing [SOURCE NEEDED] markers.
+
+CURRENT ARTICLE:
+${cleanText(article, 45000)}
+
+Return only the revised Markdown article.`
+}
+
+// The workflow check for length. Measures the article against Surfer's word
+// target, and when it is outside the range spends up to
+// CONTENT_OPS_LENGTH_MAX_PASSES (default 2) focused Hermes passes bringing it
+// in. Records a `length_check` stage either way, so the verdict is visible on
+// every run — including "no Surfer target, nothing to check". NON-FATAL: a
+// failure here keeps the current article and says so.
+//
+// rescore: push the corrected article to the run's Surfer editor and refresh
+// surferOptimization.seoScoreAfter, so a score shown after this gate is the
+// score of the article that was actually kept.
+export async function enforceArticleLength(run, options = {}) {
+  const signal = options.signal
+  const keyword = cleanText(run.selectedOpportunity?.primaryKeyword || run.brief?.primaryKeyword, 300)
+  const target = scoreNum(run.surferGuidelines?.targetWordCount)
+  const maxPasses = Math.max(0, Number(process.env.CONTENT_OPS_LENGTH_MAX_PASSES ?? 2))
+  const original = run.article
+  // `corrected` tells the panel the article changed here, so a length fix is
+  // applied even when the SEO pass alone would have left the draft as written.
+  const record = (check, result, explanation, output) => {
+    run.lengthCheck = { ...check, corrected: run.article !== original, checkedAt: new Date().toISOString(), stage: 'length_check' }
+    run.markModified('lengthCheck')
+    if (run.surferOptimization) {
+      run.surferOptimization = { ...run.surferOptimization, wordCount: check.words, targetWordCount: check.target, lengthOk: check.ok }
+      run.markModified('surferOptimization')
+    }
+    pushStage(run, stageRecord('length_check', 'Length check', result, explanation, output))
+  }
+
+  if (!run.article) return run
+  let check = checkArticleLength(run.article, target)
+  if (check.status === 'unknown') {
+    record(check, `Length check skipped — ${check.words.toLocaleString()} words, no SurferSEO target.`,
+      'Surfer did not supply a word target for this keyword (its setup was skipped or timed out), so there is no range to hold the article to.',
+      'skipped')
+    await run.save()
+    return run
+  }
+  if (check.ok) {
+    record(check, `Length check passed — ${describeLengthCheck(check)}`,
+      'The article is inside SurferSEO\'s word range for this keyword, so it is neither padded past the ranking pages nor thin against them.',
+      `${check.words} / ${check.target}`)
+    await run.save()
+    return run
+  }
+
+  run.currentStage = 'length_check'
+  await run.save()
+  const before = check
+  const guidelineTerms = formatSurferTerms(run.surferGuidelines?.terms)
+  const questions = Array.isArray(run.surferGuidelines?.questions) ? run.surferGuidelines.questions : []
+  let passes = 0
+  try {
+    while (passes < maxPasses && !check.ok) {
+      if (signal?.aborted) throw Object.assign(new Error('Run stopped by user.'), { code: 'RUN_STOPPED' })
+      const revised = stripProductionNotes(await askHermes(
+        buildLengthFixPrompt(keyword, run.article, check, guidelineTerms, questions, options.editorialGuidance || ''),
+        signal,
+        { memoryQuery: memoryQueryFor(run, keyword) },
+      ))
+      passes += 1
+      const next = checkArticleLength(revised, target)
+      // Accept only movement toward the range. A pass that overshoots to the far
+      // side, or comes back empty, is discarded rather than made the new baseline.
+      const closer = Math.abs(next.delta) < Math.abs(check.delta)
+      const plausible = revised && next.words >= Math.min(check.min * 0.8, check.words * 0.6)
+      logRun(run, `length pass ${passes}: ${check.words} → ${next.words} words (${next.status})${closer && plausible ? '' : ' — rejected'}`)
+      if (!plausible || !closer) continue
+      run.article = revised
+      check = next
+      await run.save()
+    }
+
+    let scoreNote = ''
+    if (options.rescore && run.article !== original && run.surferEditorId && isSurferConfigured()) {
+      const workspaceId = cleanText(process.env.CONTENT_OPS_SURFER_WORKSPACE_ID || DEFAULT_SURFER_WORKSPACE_ID, 40).replace(/[^0-9]/g, '')
+      const prev = scoreNum(run.surferOptimization?.seoScoreAfter)
+      await putEditorContent(workspaceId, run.surferEditorId, run.article, { signal })
+      let seo = null
+      for (let i = 0; i < 7; i += 1) {
+        await sleep(4000, signal)
+        const ed = await getContentEditor(workspaceId, run.surferEditorId, { signal }).catch(() => null)
+        seo = scoreNum(ed?.content_score?.seo)
+        if (seo != null && seo !== prev) break
+      }
+      if (seo != null && run.surferOptimization) {
+        run.surferOptimization = { ...run.surferOptimization, seoScoreAfter: seo, targetMet: seo >= Number(run.surferOptimization.targetScore || 0) }
+        scoreNote = ` Surfer re-scored the corrected article at ${seo}${prev != null ? ` (was ${prev})` : ''}.`
+      }
+    }
+
+    if (check.ok) {
+      record(check,
+        `Length corrected — ${before.words.toLocaleString()} → ${describeLengthCheck(check)}`,
+        `The draft came back ${before.status === 'long' ? 'over' : 'under'} SurferSEO's word range, so Hermes ${before.status === 'long' ? 'cut restatement and weak sections' : 'covered questions searchers ask that the draft had missed'} over ${passes} pass(es) until it fit.${scoreNote}`,
+        `${check.words} / ${check.target}`)
+    } else {
+      record(check,
+        `Length check FAILED — ${describeLengthCheck(check)}${before.words !== check.words ? ` (was ${before.words.toLocaleString()})` : ''}`,
+        `After ${passes} correction pass(es) the article is still ${check.status === 'long' ? 'over' : 'under'} the range. It was kept as the best version reached; trim or expand it by hand, or raise CONTENT_OPS_LENGTH_MAX_PASSES.${scoreNote}`,
+        `${check.words} / ${check.target}`)
+    }
+    await run.save()
+    return run
+  } catch (error) {
+    if (error.code === 'RUN_STOPPED') throw error
+    logRun(run, `length check errored: ${error.message}`)
+    record(check, `Length check could not finish — ${describeLengthCheck(check)}`,
+      `${cleanText(error.message, 300)} The current article was kept.`,
+      `${check.words} / ${check.target}`)
+    await run.save().catch(() => {})
+    return run
   }
 }
 
@@ -993,6 +1178,24 @@ export async function findReusableDraftForRun(run, { slug, title }, deps = {}) {
   return candidate
 }
 
+// Yoast's own fields, which are what Google actually reads for the snippet and
+// what Yoast's traffic-light checks the article against. The excerpt is set too,
+// for the theme, but an excerpt is not a meta description: the live post had one
+// and still showed Yoast's description as empty. Yoast registers these keys with
+// show_in_rest, so they go up as ordinary post meta. The SEO title is left to
+// Yoast's template ("%%title%% - Trusted Technology Solutions") unless the brief
+// carries an explicit meta title, so the suffix is never doubled.
+function yoastMetaForRun(run) {
+  const meta = {}
+  const description = cleanText(run.brief?.metaDescription, 300)
+  const keyphrase = cleanText(run.brief?.primaryKeyword || run.selectedOpportunity?.primaryKeyword, 191)
+  const metaTitle = cleanText(run.brief?.metaTitle, 200)
+  if (description) meta._yoast_wpseo_metadesc = description
+  if (keyphrase) meta._yoast_wpseo_focuskw = keyphrase
+  if (metaTitle) meta._yoast_wpseo_title = metaTitle
+  return meta
+}
+
 export async function createWordPressDraftForRun(run, options = {}) {
   if (!run.article || !run.approval.article) {
     throw Object.assign(new Error('Approve the article before creating a WordPress draft.'), { statusCode: 400 })
@@ -1029,6 +1232,8 @@ export async function createWordPressDraftForRun(run, options = {}) {
     status: 'draft',
     featured_media: images.find((image) => image.role === 'featured')?.mediaId || 0,
   }
+  const yoast = yoastMetaForRun(run)
+  if (Object.keys(yoast).length) draftPayload.meta = yoast
   const post = existingDraft
     ? await updateWordPressPost(existingDraft.id, draftPayload)
     : await createWordPressDraft(draftPayload)
@@ -1046,7 +1251,7 @@ export async function createWordPressDraftForRun(run, options = {}) {
     'wordpress_draft',
     'WordPress REST API',
     existingDraft ? 'Existing WordPress draft updated.' : 'Article created as a WordPress draft.',
-    'The integration forces draft status, reuses a matching draft, and does not publish live content.',
+    `The integration forces draft status, reuses a matching draft, and does not publish live content.${yoast._yoast_wpseo_metadesc ? ' The brief\'s meta description and focus keyphrase were written into Yoast SEO, so the Google snippet is the one the pipeline wrote.' : ''}`,
     post.link || `WordPress post ${post.id}`,
   ))
   await run.save()
@@ -1089,7 +1294,37 @@ export async function publishWordPressPostForRun(run) {
     post.link || `${getWordPressSiteUrl()}/?p=${postId}`,
   ))
   await run.save()
+  await refreshSitemapForRun(run, 'publish')
   return run
+}
+
+// Confirm the post is in the sitemap and tell Google it changed. Best-effort:
+// the post is already live, so a sitemap problem is recorded on the run rather
+// than turned into a failed publish.
+async function refreshSitemapForRun(run, reason) {
+  const url = run.wordpressPublication?.url
+  if (!url) return null
+  try {
+    const result = await refreshSitemap({ urls: [url], reason })
+    run.sitemap = result
+    run.markModified('sitemap')
+    pushStage(run, stageRecord(
+      'sitemap_refresh',
+      'Sitemap + Search Console',
+      result.ok ? `Sitemap updated and submitted. ${result.summary}` : `Sitemap check needs attention. ${result.summary}`,
+      'Yoast rebuilds the sitemap on publish; the pipeline confirms the post is listed in it and re-submits the sitemap to Google Search Console so the change is crawled promptly instead of on Google\'s own schedule.',
+      result.sitemapUrl,
+    ))
+  } catch (error) {
+    pushStage(run, stageRecord(
+      'sitemap_refresh', 'Sitemap + Search Console',
+      'Sitemap check could not run.',
+      `${cleanText(error.message, 300)} The post is live; Google will pick the sitemap up on its normal schedule.`,
+      'skipped',
+    ))
+  }
+  await run.save().catch(() => {})
+  return run.sitemap
 }
 
 export async function trashWordPressDraftForRun(run) {
@@ -1118,10 +1353,6 @@ export async function trashWordPressDraftForRun(run) {
 // re-scored in Surfer, and pushed back to WordPress. Every instruction snapshots the
 // previous article first, so any edit can be reverted.
 // ---------------------------------------------------------------------------
-
-function wordCount(value) {
-  return String(value || '').split(/\s+/).filter(Boolean).length
-}
 
 // The accumulated editorial direction: every instruction the editor has given on this
 // article, oldest first. Passed to both the rewrite and the Surfer re-optimization so a
@@ -1219,6 +1450,8 @@ async function syncArticleToWordPress(run, { applyToLive = false } = {}) {
   const excerpt = cleanText(run.brief?.metaDescription, 500)
   if (excerpt) payload.excerpt = excerpt
   if (featured) payload.featured_media = featured
+  const yoast = yoastMetaForRun(run)
+  if (Object.keys(yoast).length) payload.meta = yoast
   // Slug moves with the title on a draft. On a live post the slug is the public URL and
   // WordPress leaves no redirect behind, so changing it would break every existing link.
   const slug = slugify(run.brief?.slug || title)
@@ -1233,6 +1466,8 @@ async function syncArticleToWordPress(run, { applyToLive = false } = {}) {
 
   if (live) {
     const cache = await purgeBlogListingCache()
+    // An edited live post has a new lastmod in the sitemap; Google should hear.
+    await refreshSitemapForRun(run, 'live_edit')
     return { synced: true, live: true, cachePurged: Boolean(cache.purged), slugKept: slugChanged }
   }
   return { synced: true, live: false, slugUpdated: slugChanged }
@@ -1486,6 +1721,7 @@ ${shape}
     // ---- 4. Surfer, with the pre-edit score as a hard floor -------------------------
     if (options.reoptimize !== false) {
       await optimizeArticleWithSurfer(run, { signal, editorialGuidance: guidanceHistory, scoreFloor })
+      await enforceArticleLength(run, { signal, rescore: true, editorialGuidance: guidanceHistory })
     }
     stopIfAborted()
     const newSeo = scoreNum(run.surferOptimization?.seoScoreAfter)
@@ -2030,7 +2266,7 @@ export async function failOrphanedRuns() {
 export async function contentIntegrationStatus() {
   return {
     ahrefs: { label: 'Ahrefs MCP', status: await getAhrefsMcpStatus() },
-    searchConsole: { label: 'Google Search Console', status: 'not_configured' },
+    searchConsole: { label: 'Google Search Console', status: isSearchConsoleConfigured() ? 'connected' : 'not_configured' },
     ga4: { label: 'GA4', status: isGa4Configured() ? 'connected' : 'not_configured' },
     googleAds: { label: 'Google Ads', status: 'not_configured' },
     surfer: { label: 'SurferSEO', status: isSurferConfigured() ? 'connected' : 'not_configured' },

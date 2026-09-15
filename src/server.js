@@ -1,5 +1,6 @@
 import express from 'express'
 import { failOrphanedRuns } from './services/contentOperations.js'
+import { startSitemapWatcher } from './services/sitemap.js'
 import { resumeRunOnBoot } from './services/researchRunner.js'
 import cors from 'cors'
 import mongoose from 'mongoose'
@@ -206,6 +207,9 @@ async function start() {
     void failOrphanedRuns().catch((error) => console.error('Failed to release orphaned content runs', error))
     startCompetitorCollectorSchedule()
     startHubSpotHealthMonitor()
+    // Catches posts published or edited inside wp-admin, which never pass
+    // through the CRM's own publish path.
+    startSitemapWatcher()
     // Same reasoning as above: a research run costs real money per agency, so
     // only the process that actually owns the port may pick one back up.
     void resumeRunOnBoot().catch((error) => console.error('Failed to resume research run', error))

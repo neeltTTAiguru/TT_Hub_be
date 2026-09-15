@@ -113,6 +113,28 @@ export function listWordPressPublishedPosts({ perPage = 12, status = 'publish' }
   return wordpressRequest(`/posts?${query}`)
 }
 
+// Published posts and pages, most recently modified first, for the sitemap
+// watcher. Both types are listed because Yoast puts both in the sitemap and an
+// edited page deserves a re-crawl as much as a new post.
+export async function listWordPressRecentlyModified({ perPage = 50 } = {}) {
+  const query = new URLSearchParams({
+    context: 'edit',
+    status: 'publish',
+    per_page: String(Math.min(100, Math.max(1, perPage))),
+    orderby: 'modified',
+    order: 'desc',
+    _fields: 'id,link,modified,modified_gmt,status,type',
+  })
+  const [posts, pages] = await Promise.all([
+    wordpressRequest(`/posts?${query}`),
+    wordpressRequest(`/pages?${query}`).catch(() => []),
+  ])
+  return [
+    ...(Array.isArray(posts) ? posts : []).map((item) => ({ ...item, type: 'post' })),
+    ...(Array.isArray(pages) ? pages : []).map((item) => ({ ...item, type: 'page' })),
+  ]
+}
+
 export async function getWordPressDraft(postId) {
   const id = String(postId || '').trim()
   if (!/^\d+$/.test(id)) {

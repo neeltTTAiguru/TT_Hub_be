@@ -1,18 +1,10 @@
-import crypto from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { getGoogleAccessToken } from './googleAuth.js'
 
-const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const DATA_API_BASE_URL = 'https://analyticsdata.googleapis.com/v1beta'
 const ANALYTICS_READ_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly'
 const CACHE_TTL_MS = Number(process.env.GA4_CACHE_TTL_MS || 5 * 60 * 1000)
 
-let credentialsCache = null
-let accessTokenCache = null
 let snapshotCache = null
-
-function encodeBase64Url(value) {
-  return Buffer.from(value).toString('base64url')
-}
 
 function getConfig() {
   return {
@@ -26,57 +18,8 @@ export function isGa4Configured() {
   return Boolean(propertyId && credentialsPath)
 }
 
-async function loadCredentials() {
-  const { credentialsPath } = getConfig()
-  if (!credentialsPath) throw new Error('GOOGLE_APPLICATION_CREDENTIALS is not configured.')
-  if (credentialsCache?.path === credentialsPath) return credentialsCache.value
-
-  const value = JSON.parse(await readFile(credentialsPath, 'utf8'))
-  if (value.type !== 'service_account' || !value.client_email || !value.private_key) {
-    throw new Error('The configured Google credential is not a valid service-account JSON file.')
-  }
-
-  credentialsCache = { path: credentialsPath, value }
-  return value
-}
-
-async function getAccessToken() {
-  if (accessTokenCache?.expiresAt > Date.now() + 60_000) return accessTokenCache.token
-
-  const credentials = await loadCredentials()
-  const issuedAt = Math.floor(Date.now() / 1000)
-  const header = encodeBase64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
-  const claim = encodeBase64Url(JSON.stringify({
-    iss: credentials.client_email,
-    scope: ANALYTICS_READ_SCOPE,
-    aud: TOKEN_URL,
-    iat: issuedAt,
-    exp: issuedAt + 3600,
-  }))
-  const unsignedToken = `${header}.${claim}`
-  const signature = crypto.sign('RSA-SHA256', Buffer.from(unsignedToken), credentials.private_key)
-  const assertion = `${unsignedToken}.${signature.toString('base64url')}`
-
-  const response = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`Google OAuth token request failed (${response.status}).`)
-  }
-
-  const payload = await response.json()
-  accessTokenCache = {
-    token: payload.access_token,
-    expiresAt: Date.now() + Number(payload.expires_in || 3600) * 1000,
-  }
-  return accessTokenCache.token
-}
+// The JWT signing lives in googleAuth.js now, shared with Search Console.
+const getAccessToken = () => getGoogleAccessToken(ANALYTICS_READ_SCOPE)
 
 async function runReport(body) {
   const { propertyId } = getConfig()

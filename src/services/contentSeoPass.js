@@ -1,7 +1,8 @@
 import crypto from 'node:crypto'
 import ContentOperationsRun from '../models/ContentOperationsRun.js'
-import { optimizeArticleWithSurfer, prepareSurferForRun, registerRunController } from './contentOperations.js'
+import { enforceArticleLength, optimizeArticleWithSurfer, prepareSurferForRun, registerRunController } from './contentOperations.js'
 import { chatWithHermes } from './hermesChat.js'
+import { wordCount } from './articleLength.js'
 
 // The chat writes an article with no run behind it, but every Surfer function
 // speaks the run model. This mints one to carry the draft through the SEO pass,
@@ -103,7 +104,7 @@ export async function startSeoPassForDraft({ article, title = '', primaryKeyword
       // common reason these read as padded, and it was previously invisible.
       const target = run.surferGuidelines?.targetWordCount
       if (target) {
-        const words = String(run.article || '').trim().split(/\s+/).filter(Boolean).length
+        const words = wordCount(run.article)
         run.stages.push({
           cycle: 0,
           stage: 'surfer_setup',
@@ -119,6 +120,9 @@ export async function startSeoPassForDraft({ article, title = '', primaryKeyword
         await run.save()
       }
       await optimizeArticleWithSurfer(run, { editorialGuidance: guidance, signal: controller.signal })
+      // The length gate, with a re-score so the number reported is for the
+      // article actually handed back to the panel.
+      await enforceArticleLength(run, { editorialGuidance: guidance, signal: controller.signal, rescore: true })
       run.status = 'completed'
       await run.save()
     } catch (error) {

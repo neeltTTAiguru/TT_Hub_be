@@ -28,6 +28,11 @@ const contentOperationsRunSchema = new mongoose.Schema(
     surferEditorUrl: { type: String, default: '' },
     surferGuidelines: { type: mongoose.Schema.Types.Mixed, default: null },
     surferOptimization: { type: mongoose.Schema.Types.Mixed, default: null },
+    // The word-count gate's last verdict: { words, target, min, max, status, ok, delta, checkedAt }.
+    lengthCheck: { type: mongoose.Schema.Types.Mixed, default: null },
+    // What happened to the sitemap after this run's post went live: whether the
+    // URL was found in it, and whether Search Console / IndexNow were told.
+    sitemap: { type: mongoose.Schema.Types.Mixed, default: null },
     generatedImages: { type: [mongoose.Schema.Types.Mixed], default: [] },
     testPublication: {
       published: { type: Boolean, default: false },

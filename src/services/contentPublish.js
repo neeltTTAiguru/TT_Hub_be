@@ -36,6 +36,8 @@ export function briefFromDraft(article, title = '') {
   return {
     proposedTitle,
     slug,
+    // Kept separately so Yoast's SEO title is set only when the writer chose one.
+    metaTitle,
     metaDescription: field(article, 'Meta description', 'Description'),
     primaryKeyword: field(article, 'Primary keyword', 'Target keyword')
       || (slug ? slug.replace(/-/g, ' ') : proposedTitle),
