@@ -24,6 +24,16 @@ test('tool-use guardrails cover every logged failure mode that caused retry loop
   assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /Never repeat the identical failing call/)
 })
 
+test('the agent is fenced to HubSpot and cannot pass off map call logs as CRM data', () => {
+  // 2026-09-15: asked whether calls were logged in HubSpot, the agent fetched
+  // the hub's Agency Map call logs through Hermes' other tools and listed them
+  // as "today's map logs" - none of which had actually reached HubSpot.
+  assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /only tools you may call are those whose name starts with mcp__hubspot__/)
+  assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /not the hub's agents \(list_agents, ask_agent\)/)
+  assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /Agency Map call logs are NOT HubSpot data/)
+  assert.match(HUBSPOT_DEAL_INSTRUCTIONS, /HubSpot has no record of that/)
+})
+
 test('chatWithHubSpotDeals forwards the exported instructions to Hermes', async () => {
   const originalUrl = process.env.HERMES_API_URL
   const originalKey = process.env.HERMES_API_KEY
