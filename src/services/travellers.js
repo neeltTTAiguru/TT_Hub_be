@@ -115,7 +115,7 @@ export async function positionsFor(req) {
     key: { $ne: me.key, $nin: ['singleton'] },
     lastSeenAt: { $gte: since },
   })
-    .select('key email displayName ori name state county lat lon movedAt')
+    .select('key email displayName ori name state county lat lon movedAt lastSeenAt')
     .lean()
 
   const live = await BwcResearchRun.findOne({ status: { $in: ['running', 'stopping'] } })
@@ -165,6 +165,7 @@ export async function positionsFor(req) {
       ownsRun,
       working,
       at,
+      lastSeenAt: doc.lastSeenAt || null,
     }
   }
 
