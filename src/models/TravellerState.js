@@ -1,20 +1,40 @@
 import mongoose from 'mongoose'
 
 /**
- * Where the traveller is standing, when he was put there by hand.
+ * One traveller per person who has opened the map.
  *
- * A single document. Normally his position is derived - the agency being
- * researched, or the last one finished - and needs no storage at all. This
- * exists only for the case where someone tells him to go somewhere: that is an
- * instruction, not an observation, so it has to be remembered or he snaps back
- * to the last research the moment the page reloads.
+ * `key` is who he belongs to - the caller's email, or their token subject when
+ * the token carries no email - and the doc is created the first time that
+ * person loads the map. The field is still called `key` rather than `userId`
+ * on purpose: the collection already carries a unique index on it from when
+ * there was a single traveller stored under key 'singleton', and reusing the
+ * field means no index migration and no chance of a second traveller silently
+ * failing to save against a stale unique index on a null field.
  *
- * `movedAt` is what settles a conflict: if research has happened since he was
- * sent somewhere, the research wins, because he has evidently moved on.
+ * Position is stored, not derived. A person's traveller is wherever they last
+ * sent him - by search, by briefing, or by asking him to go - and that is an
+ * instruction, so it has to be remembered or he snaps back on reload. The one
+ * exception is a research run: while the run's owner has a run walking, their
+ * traveller IS the walker, and `movedAt` settles the conflict afterwards - if
+ * the run got somewhere more recently than they sent him, the run wins.
+ *
+ * `chat` is the last stretch of conversation, capped, so reloading the hub
+ * does not wipe what he just told you.
  */
+const chatLineSchema = new mongoose.Schema(
+  {
+    role: { type: String, enum: ['user', 'assistant'], required: true },
+    content: { type: String, default: '' },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false },
+)
+
 const travellerStateSchema = new mongoose.Schema(
   {
-    key: { type: String, default: 'singleton', unique: true, index: true },
+    key: { type: String, required: true, unique: true, index: true },
+    email: { type: String, default: '', trim: true },
+    displayName: { type: String, default: '', trim: true },
     ori: { type: String, default: '', trim: true },
     name: { type: String, default: '', trim: true },
     state: { type: String, default: '', trim: true },
@@ -22,6 +42,8 @@ const travellerStateSchema = new mongoose.Schema(
     lat: { type: Number, default: null },
     lon: { type: Number, default: null },
     movedAt: { type: Date, default: null },
+    chat: { type: [chatLineSchema], default: [] },
+    lastSeenAt: { type: Date, default: null, index: true },
   },
   { timestamps: true },
 )

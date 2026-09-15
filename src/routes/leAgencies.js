@@ -4,7 +4,7 @@ import { getAgencyBriefing } from '../services/agencyBriefing.js'
 import { buildCallReportStats, generateCallReportNarrative } from '../services/callReport.js'
 import { createCallReportPdfBuffer } from '../services/callReportPdf.js'
 import { chatWithHermes } from '../services/hermesChat.js'
-import TravellerState from '../models/TravellerState.js'
+import { moveTraveller, placeTraveller, positionsFor, rememberChat, travellerFor } from '../services/travellers.js'
 import { researchAndSaveBwc } from '../services/bwcResearch.js'
 import {
   buildResearchRunWorkbook,
@@ -324,14 +324,11 @@ router.get('/stats', async (req, res, next) => {
  * again to watch a job progress would move ten megabytes every few seconds.
  * This returns only what changed since the caller last asked.
  *
- * The traveller needs no state of its own. An agency is claimed as
+ * The in-flight list needs no state of its own. An agency is claimed as
  * 'processing' with a timestamp before any work starts, so the most recently
- * claimed one IS where the run currently stands.
+ * claimed one IS where the run currently stands. Where each person's traveller
+ * is standing comes from positionsFor, which knows whose run that is.
  */
-// Held for the life of the process so the idle traveller stays put between
-// polls instead of teleporting every few seconds.
-let idlePosition = null
-
 router.get('/research-activity', async (req, res, next) => {
   try {
     const since = req.query.since ? new Date(String(req.query.since)) : null
@@ -361,88 +358,15 @@ router.get('/research-activity', async (req, res, next) => {
           .lean()
       : []
 
-    // Where the run last got to, so the traveller has a position even when
-    // nothing is in flight. Without this he simply vanishes between runs, and
-    // the most useful question - where did we get up to? - has no answer.
-    const [last] = await LeAgency.find({ 'enrichment.bwcResearchedAt': { $ne: null } })
-      .select('ori agencyName state county surveillance.bwc.status enrichment.bwcResearchedAt latitude longitude location.latitude location.longitude')
-      .sort({ 'enrichment.bwcResearchedAt': -1 })
-      .limit(1)
-      .lean()
-    const lastPoint = last ? point(last) : null
-    const lastPosition =
-      last && Number.isFinite(lastPoint.lat) && Number.isFinite(lastPoint.lon)
-        ? {
-            ori: last.ori,
-            name: last.agencyName,
-            state: last.state,
-            county: last.county,
-            status: last.surveillance?.bwc?.status || 'unknown',
-            at: last.enrichment?.bwcResearchedAt || null,
-            ...lastPoint,
-          }
-        : null
-
-    // Before anything has been researched the traveller still needs somewhere
-    // to stand, so he is dropped on a random mapped agency. Cached rather than
-    // re-rolled per request: the map polls this every few seconds, and a fresh
-    // random point each time would have him twitching across the country.
-    let startPosition = null
-    if (!lastPosition) {
-      if (!idlePosition) {
-        const [random] = await LeAgency.aggregate([
-          {
-            $match: {
-              $or: [{ latitude: { $ne: null } }, { 'location.latitude': { $ne: null } }],
-            },
-          },
-          { $sample: { size: 1 } },
-          { $project: { ori: 1, agencyName: 1, state: 1, county: 1, latitude: 1, longitude: 1, location: 1 } },
-        ])
-        const randomPoint = random ? point(random) : null
-        if (random && Number.isFinite(randomPoint.lat) && Number.isFinite(randomPoint.lon)) {
-          idlePosition = {
-            ori: random.ori,
-            name: random.agencyName,
-            state: random.state,
-            county: random.county,
-            status: 'unknown',
-            at: null,
-            ...randomPoint,
-          }
-        }
-      }
-      startPosition = idlePosition
-    }
-
-    // Somewhere he was sent by hand. It beats the last research only if it
-    // happened more recently - if research has run since, he has evidently
-    // moved on and the instruction is stale.
-    const sent = await TravellerState.findOne({ key: 'singleton' }).lean()
-    const sentAt = sent?.movedAt ? new Date(sent.movedAt).getTime() : 0
-    const researchedAt = lastPosition?.at ? new Date(lastPosition.at).getTime() : 0
-    const sentWins =
-      sent && Number.isFinite(sent.lat) && Number.isFinite(sent.lon) && sentAt > researchedAt
-
-    const resting = sentWins
-      ? {
-          ori: sent.ori,
-          name: sent.name,
-          state: sent.state,
-          county: sent.county,
-          status: 'unknown',
-          at: sent.movedAt,
-          lat: sent.lat,
-          lon: sent.lon,
-        }
-      : lastPosition || startPosition
+    // Everyone's traveller, the caller's first. Created on first sight, so
+    // opening the map is what puts you on it.
+    const { me, others } = await positionsFor(req)
 
     res.json({
       now: now.toISOString(),
       travellers,
-      lastPosition: resting,
-      sentByHand: Boolean(sentWins),
-      atStart: !lastPosition && !sentWins,
+      me,
+      others,
       completed: done.map((agency) => ({
         ori: agency.ori,
         name: agency.agencyName,
@@ -481,37 +405,33 @@ router.get('/research-activity', async (req, res, next) => {
  * council portals and check registers being dug through.
  */
 /**
- * Put the traveller at a named agency.
+ * Put the caller's traveller at a named agency.
  *
- * Writes the same singleton the chat does, so sending him from the map and
+ * Writes the same document the chat does, so sending him from the map and
  * sending him by conversation cannot disagree about where he is.
  */
 router.put('/traveller-position', async (req, res, next) => {
   try {
-    const ori = String(req.body?.ori || '').toUpperCase()
-    const agency = await LeAgency.findOne({ ori })
-      .select('ori agencyName state county latitude longitude location.latitude location.longitude')
-      .lean()
-    if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
+    res.json(await moveTraveller(req, req.body?.ori))
+  } catch (error) {
+    next(error)
+  }
+})
 
-    const at = point(agency)
-    if (!Number.isFinite(at.lat) || !Number.isFinite(at.lon)) {
-      return res.status(400).json({ message: 'That agency has no location to stand on.' })
-    }
-
-    const position = {
-      ori: agency.ori,
-      name: agency.agencyName,
-      state: agency.state,
-      county: agency.county,
-      ...at,
-    }
-    await TravellerState.updateOne(
-      { key: 'singleton' },
-      { $set: { ...position, movedAt: new Date() } },
-      { upsert: true },
-    )
-    res.json(position)
+/**
+ * The caller's own traveller: where he is and what was last said.
+ *
+ * Lets the chat panel pick the conversation back up after a reload rather
+ * than opening on an empty thread every time.
+ */
+router.get('/traveller', async (req, res, next) => {
+  try {
+    const doc = await travellerFor(req)
+    const { me } = await positionsFor(req)
+    res.json({
+      ...me,
+      chat: (doc.chat || []).map((line) => ({ role: line.role, content: line.content, at: line.at })),
+    })
   } catch (error) {
     next(error)
   }
@@ -756,8 +676,9 @@ router.get('/research-run', async (req, res, next) => {
 /**
  * What the run is doing right now, for anyone who has the hub open.
  *
- * Global, not per user: everybody watching sees the same traveller in the same
- * place, because there is one run and the server owns it.
+ * Global, not per user: everybody watching sees the same walker in the same
+ * place, because there is one run and the server owns it. The walker is the
+ * traveller of whoever started the run; everyone else's stays put.
  */
 router.get('/research-run/active', async (req, res, next) => {
   try {
@@ -1159,11 +1080,7 @@ router.post('/traveller-chat', async (req, res, next) => {
           county: destination.county,
           ...destPoint,
         }
-        await TravellerState.updateOne(
-          { key: 'singleton' },
-          { $set: { ...moved, movedAt: new Date() } },
-          { upsert: true },
-        )
+        await placeTraveller(req, moved)
       }
     }
 
@@ -1231,6 +1148,9 @@ router.post('/traveller-chat', async (req, res, next) => {
             }${researched.contractEnd ? `, contract to ${researched.contractEnd}` : ''}. ` +
             `${researched.quote ? `"${researched.quote}" ` : ''}Source: ${researched.sourceUrl}`
       : searchReply || finalReply
+
+    // Remembered per person, so a reload does not lose what he just said.
+    await rememberChat(req, messages[messages.length - 1]?.content, spoken)
 
     res.json({
       reply: spoken,
