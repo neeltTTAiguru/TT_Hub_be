@@ -75,6 +75,11 @@ export const buildFilter = (query) => {
   if (query.bwc === 'false') {
     filter.$and = [verdict('no_bwc', { 'surveillance.bwc.status': 'no' })]
   }
+  // Everything except a confirmed yes: the ones still worth a call. The exact
+  // complement of bwc=true, so an agency is on one side or the other, never both.
+  if (query.bwc === 'not_yes') {
+    filter.$and = [{ $nor: [verdict('has_bwc', { 'surveillance.bwc.status': 'yes' })] }]
+  }
   if (query.bwc === 'unknown') {
     filter.$and = [
       trustedUnset,

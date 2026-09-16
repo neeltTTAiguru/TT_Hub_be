@@ -1,0 +1,164 @@
+/**
+ * The command board's rules, applied.
+ *
+ * Two jobs: keep the roster current (every sign-in is stamped), and turn a
+ * member's configuration into the Mongo clause the map routes intersect with.
+ * The clause is built by the same buildFilter the map's own query goes
+ * through, so a scope of "TX, Sheriff, 25 or fewer" means exactly what those
+ * filters mean when you set them by hand.
+ */
+import HubMember from '../models/HubMember.js'
+import BwcResearchRun from '../models/BwcResearchRun.js'
+import LeAgency from '../models/LeAgency.js'
+import TravellerState from '../models/TravellerState.js'
+import { hasFullAccess, resolveActorEmail } from '../middleware/featureAccess.js'
+import { buildFilter } from './leAgencyFilters.js'
+
+const CAMERA_TO_QUERY = { unknown: 'unknown', yes: 'true', no: 'false', not_yes: 'not_yes' }
+
+/** Record that this email signed in. Never throws - it is on the sign-in path. */
+export async function touchMember(email, name = '') {
+  if (!email) return
+  try {
+    await HubMember.updateOne(
+      { email },
+      { $set: { lastSeenAt: new Date(), ...(name ? { name } : {}) }, $setOnInsert: { email } },
+      { upsert: true },
+    )
+  } catch (error) {
+    console.error(`[hub-members] could not stamp ${email}: ${error?.message || error}`)
+  }
+}
+
+/**
+ * Put everyone who has ever used the hub on the roster.
+ *
+ * Sign-ins are only stamped from today, but the people who matter have been
+ * here for months: they logged calls and have a traveller. Those records name
+ * them, so the board can list them without waiting for each to sign in again.
+ * Upserts the email only - a person already on the board keeps their rules.
+ */
+export async function seedRosterFromActivity() {
+  try {
+    const [callers, travellers, runners] = await Promise.all([
+      LeAgency.distinct('callLog.loggedBy', { 'callLog.loggedBy': { $regex: '@' } }),
+      TravellerState.distinct('email', { email: { $regex: '@' } }),
+      BwcResearchRun.distinct('startedBy', { startedBy: { $regex: '@' } }),
+    ])
+    const emails = [...new Set([...callers, ...travellers, ...runners].map((e) => String(e).trim().toLowerCase()))]
+    if (!emails.length) return
+    await HubMember.bulkWrite(
+      emails.map((email) => ({
+        updateOne: { filter: { email }, update: { $setOnInsert: { email } }, upsert: true },
+      })),
+      { ordered: false },
+    )
+  } catch (error) {
+    console.error(`[hub-members] roster seed failed: ${error?.message || error}`)
+  }
+}
+
+/** The ORIs every assigned run covered, as one set. */
+async function assignedOris(runIds = []) {
+  if (!runIds.length) return []
+  const runs = await BwcResearchRun.find({ _id: { $in: runIds } })
+    .select('queue')
+    .lean()
+  return [...new Set(runs.flatMap((run) => run.queue || []))]
+}
+
+/**
+ * The clause a member's map is intersected with, or null for no limit.
+ *
+ * Rebuilt per request rather than cached: a run's queue never changes after
+ * it starts, but the board can change at any moment and a stale scope is a
+ * person seeing what they were just told they cannot.
+ */
+export async function scopeClauseFor(member) {
+  if (!member) return null
+  const scope = member.scope || {}
+  const query = {}
+  if (scope.states?.length) query.state = scope.states.join(',')
+  if (scope.agencyTypes?.length) query.agencyType = scope.agencyTypes.join(',')
+  if (Number.isFinite(scope.maxOfficers)) query.maxOfficers = String(scope.maxOfficers)
+  if (CAMERA_TO_QUERY[scope.camera]) query.bwc = CAMERA_TO_QUERY[scope.camera]
+
+  const built = buildFilter(query)
+  const hasScope = Object.keys(built).length > 0
+  const runIds = member.assignedRunIds || []
+
+  // Only their runs: an empty worklist when none are assigned, not the
+  // whole country. $in [] matches nothing, which is the honest answer.
+  if (member.limitToAssignedRuns) return { ori: { $in: await assignedOris(runIds) } }
+  if (!hasScope) return null
+  // Their scope is what they are working; anything researched for them sits
+  // on top of it whatever state or size it is in.
+  if (!runIds.length) return built
+  return { $or: [built, { ori: { $in: await assignedOris(runIds) } }] }
+}
+
+/**
+ * Express middleware: work out the caller's scope once, for the routes below.
+ *
+ * Full-access accounts get no scope. Everyone else gets their member record's,
+ * which is nothing at all until the board says otherwise. Fails open on a
+ * lookup error - the map's baseline is "everyone signed in sees it", and a
+ * database blip should not turn that into a blank page.
+ */
+export async function withMemberScope(req, res, next) {
+  req.member = null
+  req.memberScope = null
+  if (req.method === 'OPTIONS') return next()
+  try {
+    const email = await resolveActorEmail(req)
+    if (!email || hasFullAccess(email)) return next()
+    const member = await HubMember.findOne({ email }).lean()
+    if (!member) return next()
+    req.member = member
+    req.memberScope = await scopeClauseFor(member)
+  } catch (error) {
+    console.error(`[hub-members] scope lookup failed: ${error?.message || error}`)
+  }
+  return next()
+}
+
+/** Intersect a route's own filter with the caller's scope, if they have one. */
+export const scoped = (req, filter) => (req.memberScope ? { $and: [filter, req.memberScope] } : filter)
+
+/**
+ * The run ids a member may see, or null for all of them.
+ *
+ * Only a member limited to their assigned runs is limited here: a member with
+ * assignments but a free map still watches every run, as they always could.
+ */
+export const visibleRunIds = (req) =>
+  req.member?.limitToAssignedRuns ? (req.member.assignedRunIds || []).map(String) : null
+
+/** What the client needs to draw a member's map: their rules and their runs. */
+export async function memberViewFor(member) {
+  if (!member) return null
+  const runs = await BwcResearchRun.find({ _id: { $in: member.assignedRunIds || [] } })
+    .select('status brief filtersLabel total completed failed startedAt finishedAt')
+    .sort({ startedAt: -1 })
+    .lean()
+  return {
+    assignedRuns: runs.map((run) => ({
+      id: String(run._id),
+      status: run.status,
+      brief: run.brief || '',
+      filtersLabel: run.filtersLabel || '',
+      total: run.total,
+      completed: run.completed,
+      failed: run.failed,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+    })),
+    limitToAssignedRuns: Boolean(member.limitToAssignedRuns),
+    scope: {
+      states: member.scope?.states || [],
+      agencyTypes: member.scope?.agencyTypes || [],
+      maxOfficers: Number.isFinite(member.scope?.maxOfficers) ? member.scope.maxOfficers : null,
+      camera: member.scope?.camera || 'any',
+    },
+  }
+}

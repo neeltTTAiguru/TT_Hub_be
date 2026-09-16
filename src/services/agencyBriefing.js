@@ -13,6 +13,7 @@
 import LeAgency from '../models/LeAgency.js'
 import AgencyBriefing from '../models/AgencyBriefing.js'
 import { chatWithHermes } from './hermesChat.js'
+import { recordAgencyResearch } from './agencyResearchLog.js'
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses'
 // gpt-4.1-mini returns ~2 citations per search; gpt-4.1 returns ~12 for the
@@ -627,5 +628,6 @@ export async function getAgencyBriefing(ori, { refresh = false } = {}) {
   await applyBwcFinding(facts.ori, agency, bwcStatus)
 
   await AgencyBriefing.updateOne({ ori: facts.ori }, { $set: doc }, { upsert: true })
+  await recordAgencyResearch(facts.ori, { source: 'briefing', searches: searchCount })
   return { ...doc, cached: false }
 }

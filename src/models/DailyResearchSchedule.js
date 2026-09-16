@@ -1,0 +1,37 @@
+import mongoose from 'mongoose'
+
+/**
+ * The schedule itself: on or off, and when. One document.
+ *
+ * Who gets how many lives on each HubMember (`dailyResearch`), so the board
+ * edits it in the same row as everything else about that person.
+ */
+const dailyResearchScheduleSchema = new mongoose.Schema(
+  {
+    key: { type: String, default: 'singleton', unique: true },
+    enabled: { type: Boolean, default: false },
+    hour: { type: Number, default: 5 },
+    minute: { type: Number, default: 0 },
+    timezone: { type: String, default: 'America/Los_Angeles' },
+    // Where the morning's random picks come from. Blank states means the
+    // whole country. Always unknown camera status and never researched, on
+    // top of this - that is the point of the picks, not a setting.
+    pick: {
+      states: { type: [String], default: [] },
+      agencyTypes: { type: [String], default: [] },
+      maxOfficers: { type: Number, default: 25 },
+      // unknown | not_yes | any - which camera statuses are worth researching.
+      camera: { type: String, default: 'unknown' },
+    },
+    updatedBy: { type: String, default: '' },
+  },
+  { timestamps: true },
+)
+
+const DailyResearchSchedule = mongoose.model(
+  'DailyResearchSchedule',
+  dailyResearchScheduleSchema,
+  'dailyresearchschedule',
+)
+
+export default DailyResearchSchedule

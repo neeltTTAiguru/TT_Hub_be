@@ -2,6 +2,7 @@ import express from 'express'
 import { failOrphanedRuns } from './services/contentOperations.js'
 import { startSitemapWatcher } from './services/sitemap.js'
 import { resumeRunOnBoot } from './services/researchRunner.js'
+import { startDailyResearchScheduler } from './services/dailyResearch.js'
 import cors from 'cors'
 import mongoose from 'mongoose'
 import dotenv from 'dotenv'
@@ -18,6 +19,8 @@ import { requireAuth } from './middleware/auth.js'
 import { requireFeatureAccess } from './middleware/featureAccess.js'
 import healthRouter from './routes/health.js'
 import accessRouter from './routes/access.js'
+import commandBoardRouter from './routes/commandBoard.js'
+import gmailRouter, { gmailCallbackRouter } from './routes/gmail.js'
 import agentsRouter from './routes/agents.js'
 import companyContextRouter from './routes/companyContext.js'
 import competitorsRouter from './routes/competitors.js'
@@ -124,6 +127,9 @@ app.use('/email-assets', emailAssetsRouter)
 // Auth0 session; the router refuses everything without that key. Not `/mcp`:
 // that is a Hermes dashboard page, and the proxy above would swallow it.
 app.use('/hub-mcp', hubMcpRouter)
+// Google sends the browser here after consent, with no Auth0 token. The
+// router trusts only the signed state it issued.
+app.use('/gmail/callback', gmailCallbackRouter)
 app.use(requireAuth)
 // Above the feature gate on purpose: this is how a restricted account finds
 // out that it is restricted, so refusing it would leave the sidebar guessing.
@@ -140,6 +146,8 @@ app.use('/research-runs', researchRunsRouter)
 app.use('/chat-threads', chatThreadsRouter)
 app.use('/police-grant-leads', policeGrantLeadsRouter)
 app.use('/le-agencies', leAgenciesRouter)
+app.use('/command-board', commandBoardRouter)
+app.use('/gmail', gmailRouter)
 app.use('/crm-deals', crmDealsRouter)
 app.use('/grant-sources', grantSourcesRouter)
 app.use('/grant-opportunities', grantOpportunitiesRouter)
@@ -213,6 +221,9 @@ async function start() {
     // Same reasoning as above: a research run costs real money per agency, so
     // only the process that actually owns the port may pick one back up.
     void resumeRunOnBoot().catch((error) => console.error('Failed to resume research run', error))
+    // The 5 AM research for each SAE. Safe alongside production: the day is
+    // claimed in Mongo, so two backends never research the same morning twice.
+    startDailyResearchScheduler()
   })
 
   // The chat terminal is a PTY over a websocket. Upgrades never reach Express,

@@ -101,6 +101,9 @@ const bwcResearchRunSchema = new mongoose.Schema(
     current: { type: stopSchema, default: null },
 
     startedBy: { type: String, default: '' },
+    // The person this run was researched for, when the daily schedule made
+    // it. Their map is limited to these agencies; the board lists it under them.
+    assignedTo: { type: String, default: '', index: true },
     startedAt: { type: Date, default: Date.now },
     finishedAt: { type: Date, default: null },
     lastError: { type: String, default: '' },

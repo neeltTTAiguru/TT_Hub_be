@@ -29,7 +29,7 @@ const DEFAULT_FULL_ACCESS_EMAILS = 'neel@trustedtechnology.ai'
  * added to one of the two features keeps working, and a new router is closed
  * until someone puts it here on purpose.
  */
-export const RESTRICTED_ACCESS_PREFIXES = ['/le-agencies', '/crm-deals', '/brevo']
+export const RESTRICTED_ACCESS_PREFIXES = ['/le-agencies', '/crm-deals', '/brevo', '/gmail']
 
 function splitEnvList(value = '') {
   return String(value)

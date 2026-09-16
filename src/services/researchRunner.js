@@ -17,6 +17,7 @@ import BwcResearchRun from '../models/BwcResearchRun.js'
 import TravellerState from '../models/TravellerState.js'
 import { researchAndSaveBwc } from './bwcResearch.js'
 import { researchLeadership, saveLeadership } from './agencyLeadership.js'
+import { recordAgencyResearch } from './agencyResearchLog.js'
 
 const LEASE_MS = 5 * 60 * 1000
 // A pause between agencies. Not rate limiting - it is so a run cannot spend
@@ -117,6 +118,7 @@ export async function startRun({
   includeOffMap = false,
   limit = null,
   startedBy = '',
+  assignedTo = '',
 }) {
   const existing = await activeRun()
   if (existing) {
@@ -151,6 +153,7 @@ export async function startRun({
     queue,
     total: queue.length,
     startedBy,
+    assignedTo,
     leaseId,
     leaseExpiresAt: new Date(Date.now() + LEASE_MS),
   })
@@ -342,6 +345,14 @@ async function loop() {
       await moveTravellerTo(agency)
 
       const outcome = await researchOne(agency)
+      await recordAgencyResearch(agency.ori, {
+        source: 'run',
+        runId: run._id,
+        by: run.startedBy,
+        searches: outcome.searches,
+        error: outcome.error,
+        added: outcome.added,
+      })
 
       // Re-read: the run may have been asked to stop while this agency was in
       // flight, and saving the stale document would undo that request.

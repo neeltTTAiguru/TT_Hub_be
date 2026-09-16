@@ -6,6 +6,7 @@ import { createCallReportPdfBuffer } from '../services/callReportPdf.js'
 import { chatWithHermes } from '../services/hermesChat.js'
 import { moveTraveller, placeTraveller, positionsFor, rememberChat, travellerFor } from '../services/travellers.js'
 import { researchAndSaveBwc } from '../services/bwcResearch.js'
+import { recordAgencyResearch } from '../services/agencyResearchLog.js'
 import {
   buildResearchRunWorkbook,
   buildRunFindingsWorkbook,
@@ -15,8 +16,10 @@ import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
 import { requireLoggedByEmail, syncMapCallToHubSpot } from '../services/hubspotMapCalls.js'
 import BwcResearchRun from '../models/BwcResearchRun.js'
+import AgencyResearchLog from '../models/AgencyResearchLog.js'
 import { resolveActor } from '../middleware/auth.js'
 import { requireFullAccess } from '../middleware/featureAccess.js'
+import { scoped, visibleRunIds, withMemberScope } from '../services/hubMembers.js'
 import { buildFilter, describeFilters, parseNumber } from '../services/leAgencyFilters.js'
 
 const router = Router()
@@ -69,12 +72,19 @@ const serializeRun = (run) => {
     startedAt: doc.startedAt,
     finishedAt: doc.finishedAt,
     lastError: doc.lastError || '',
+    startedBy: doc.startedBy || '',
+    assignedTo: doc.assignedTo || '',
   }
 }
 
+// A restricted account's map is intersected with whatever the command board
+// set for them. Resolved once here for every route below; full-access accounts
+// and unconfigured members get no scope and see the map as it always was.
+router.use(withMemberScope)
+
 router.get('/', async (req, res, next) => {
   try {
-    const filter = buildFilter(req.query)
+    const filter = scoped(req, buildFilter(req.query))
     const limit = Math.min(parseNumber(req.query.limit) ?? 100, MAX_LIMIT)
     const page = Math.max(parseNumber(req.query.page) ?? 1, 1)
 
@@ -102,7 +112,7 @@ router.get('/geojson', async (req, res, next) => {
     // only because enrichment resolved one, so requiring `geo` would drop them.
     // $and, not a spread: `bwc=unknown` also sets `$or`, and spreading a second
     // one overwrote it - silently dropping the camera filter from the map feed.
-    const filter = base.geo ? base : { $and: [base, PLOTTABLE] }
+    const filter = scoped(req, base.geo ? base : { $and: [base, PLOTTABLE] })
 
     const limit = Math.min(parseNumber(req.query.limit) ?? MAX_LIMIT, MAX_LIMIT)
 
@@ -209,7 +219,7 @@ router.get('/geojson', async (req, res, next) => {
 router.get('/stats', async (req, res, next) => {
   try {
     // A test record joining the headline counts is worse than no test record.
-    const filter = { ...buildFilter(req.query), isTestRecord: { $ne: true } }
+    const filter = scoped(req, { ...buildFilter(req.query), isTestRecord: { $ne: true } })
 
     const [totals, byState, byBand, byStage] = await Promise.all([
       LeAgency.aggregate([
@@ -643,6 +653,98 @@ router.post('/research-run/start', requireFullAccess, async (req, res, next) => 
 })
 
 /**
+ * The research log: every agency ever researched, one row each, with the
+ * columns as they stand now. Newest research first.
+ *
+ * Distinct from a run's findings, which say what one run filed at the time.
+ * This is the reference table across every run, every "Research this agency",
+ * every briefing and every hand-set verdict - the thing to open when the
+ * question is "have we done this one, and what did we get". History is left
+ * off the list by default; ask for one agency with ?history=true to see the
+ * trail.
+ */
+router.get('/research-log', requireFullAccess, async (req, res, next) => {
+  try {
+    const limit = Math.min(Math.max(parseNumber(req.query.limit) || 100, 1), 1000)
+    const page = Math.max(parseNumber(req.query.page) || 1, 1)
+    const where = {}
+    if (req.query.state) {
+      where.state = { $in: String(req.query.state).toUpperCase().split(',').map((s) => s.trim()).filter(Boolean) }
+    }
+    if (req.query.agencyType) where.agencyType = String(req.query.agencyType)
+    if (req.query.verdict === 'yes') where['cameras.trustedVerdict'] = 'has_bwc'
+    if (req.query.verdict === 'no') where['cameras.trustedVerdict'] = 'no_bwc'
+    if (req.query.verdict === 'unknown') where['cameras.trustedVerdict'] = { $nin: ['has_bwc', 'no_bwc'] }
+    if (req.query.source) where.lastSource = String(req.query.source)
+    if (req.query.runId) where['history.runId'] = String(req.query.runId)
+    if (req.query.search) {
+      where.agencyName = { $regex: String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' }
+    }
+
+    const withHistory = req.query.history === 'true'
+    const [total, rows] = await Promise.all([
+      AgencyResearchLog.countDocuments(where),
+      AgencyResearchLog.find(where)
+        .select(withHistory ? '-__v' : '-history -__v')
+        .sort({ lastResearchedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+    ])
+    res.json({ total, page, limit, rows })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * The whole log as a spreadsheet, same columns as a run's workbook so the two
+ * read the same. Built from the agency records the log points at, which is
+ * what the log mirrors - so this is the current answer for every researched
+ * agency, in one file.
+ */
+router.get('/research-log/export', requireFullAccess, async (req, res, next) => {
+  try {
+    const where = {}
+    if (req.query.state) {
+      where.state = { $in: String(req.query.state).toUpperCase().split(',').map((s) => s.trim()).filter(Boolean) }
+    }
+    const oris = (await AgencyResearchLog.find(where).select('ori').lean()).map((row) => row.ori)
+    const agencies = await LeAgency.find({ ori: { $in: oris } }).sort({ state: 1, agencyName: 1 }).lean()
+    const workbook = await buildResearchRunWorkbook(agencies, {
+      'What this is': 'Every agency that has been researched, with the current findings',
+      Scope: req.query.state ? String(req.query.state).toUpperCase() : 'All states',
+      'Researched agencies': oris.length,
+    })
+    const date = new Date().toISOString().slice(0, 10)
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="trustedtech_research_log_${date}_${oris.length}-agencies.xlsx"`,
+      'Content-Length': String(workbook.length),
+      'Cache-Control': 'private, no-store',
+    })
+    res.send(workbook)
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
+ * One agency's entry, trail and all.
+ */
+router.get('/research-log/:ori', requireFullAccess, async (req, res, next) => {
+  try {
+    const row = await AgencyResearchLog.findOne({ ori: String(req.params.ori).toUpperCase() })
+      .select('-__v')
+      .lean()
+    if (!row) return res.status(404).json({ message: 'This agency has not been researched.' })
+    return res.json(row)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+/**
  * Every run there has been, newest first, for the menu on the map.
  *
  * Summaries only - no path, no queue. A run with two thousand stops is a
@@ -652,7 +754,9 @@ router.post('/research-run/start', requireFullAccess, async (req, res, next) => 
 router.get('/research-run', async (req, res, next) => {
   try {
     const limit = Math.min(Math.max(parseNumber(req.query.limit) || 50, 1), 200)
-    const runs = await BwcResearchRun.find({})
+    // Someone limited to their assigned runs gets just those in the menu.
+    const only = visibleRunIds(req)
+    const runs = await BwcResearchRun.find(only ? { _id: { $in: only } } : {})
       .select('-path -queue -current -leaseId -leaseExpiresAt')
       .sort({ createdAt: -1 })
       .limit(limit)
@@ -671,6 +775,7 @@ router.get('/research-run', async (req, res, next) => {
         foundEmails: run.foundEmails,
         foundPhones: run.foundPhones,
         startedBy: run.startedBy || '',
+        assignedTo: run.assignedTo || '',
         startedAt: run.startedAt,
         finishedAt: run.finishedAt,
         lastError: run.lastError || '',
@@ -714,6 +819,10 @@ router.get('/research-run/:id/findings', async (req, res, next) => {
   try {
     const run = await BwcResearchRun.findById(req.params.id).lean()
     if (!run) return res.status(404).json({ message: 'That run no longer exists.' })
+    const only = visibleRunIds(req)
+    if (only && !only.includes(String(run._id))) {
+      return res.status(404).json({ message: 'That run is not one of yours.' })
+    }
 
     return res.json({
       id: String(run._id),
@@ -798,8 +907,18 @@ router.get('/:ori/research-stream', requireFullAccess, async (req, res, next) =>
 
     try {
       const result = await researchAndSaveBwc(req.params.ori, (query) => send('search', { query }))
+      await recordAgencyResearch(result.ori, {
+        source: 'agency',
+        by: await resolveActor(req),
+        searches: result.searches,
+      })
       send('done', result)
     } catch (error) {
+      await recordAgencyResearch(req.params.ori, {
+        source: 'agency',
+        by: await resolveActor(req).catch(() => ''),
+        error: String(error.message),
+      })
       send('failed', { message: String(error.message).slice(0, 300) })
     } finally {
       clearInterval(heartbeat)
@@ -1225,6 +1344,9 @@ router.patch('/:ori/trusted-bwc', async (req, res, next) => {
 
     const result = await LeAgency.updateOne({ ori }, { $set: set })
     if (!result.matchedCount) return res.status(404).json({ message: 'Agency was not found.' })
+    // A hand-set verdict is a research event too, and the log's columns have
+    // to say what the map says. Clearing one is recorded the same way.
+    await recordAgencyResearch(ori, { source: 'manual', by: await resolveActor(req) })
 
     const agency = await LeAgency.findOne({ ori }).select('ori agencyName surveillance.bwc').lean()
     res.json({
@@ -1496,8 +1618,8 @@ router.delete('/:ori/call-log/:callId', async (req, res, next) => {
  * notes, which is the part no table can show, and explicitly told not to do
  * arithmetic.
  */
-const callReportInput = (source = {}) => ({
-  filter: buildFilter(source),
+const callReportInput = (req, source = {}) => ({
+  filter: scoped(req, buildFilter(source)),
   from: typeof source.from === 'string' ? source.from : '',
   to: typeof source.to === 'string' ? source.to : '',
   timezone: typeof source.timezone === 'string' ? source.timezone : 'UTC',
@@ -1506,7 +1628,7 @@ const callReportInput = (source = {}) => ({
 /** The figures on their own, for the preview in the report dialog. */
 router.get('/call-report', async (req, res, next) => {
   try {
-    const stats = await buildCallReportStats(callReportInput(req.query))
+    const stats = await buildCallReportStats(callReportInput(req, req.query))
     // The notes are for Hermes, not for the browser: sixty call notes is a lot
     // of somebody else's typing to put on the wire for a dialog showing counts.
     res.json({ ...stats, notes: undefined, scopeLabel: describeFilters(req.query) })
@@ -1521,7 +1643,7 @@ router.post('/call-report/pdf', async (req, res, next) => {
     const body = req.body || {}
     const source = { ...(body.filters || {}), from: body.from, to: body.to, timezone: body.timezone }
     const scopeLabel = describeFilters(source)
-    const stats = await buildCallReportStats(callReportInput(source))
+    const stats = await buildCallReportStats(callReportInput(req, source))
 
     // Never fatal. The counted figures are the part this document is
     // accountable for, and they are already in hand by the time Hermes is
