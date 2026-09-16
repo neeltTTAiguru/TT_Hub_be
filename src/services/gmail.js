@@ -225,11 +225,12 @@ const gmailFetch = async (member, path, init = {}) => {
  * Send a plain-text email as the member. Returns Gmail's message id.
  * With `thread` it goes out as a reply, threaded under the original.
  */
-export async function sendAsMember(member, { to, subject, text, fromName = '', thread = null }) {
+export async function sendAsMember(member, { to, cc = [], subject, text, fromName = '', thread = null }) {
   const from = fromName ? `${encodeHeader(fromName)} <${member.gmail.address}>` : member.gmail.address
   const headers = [
     `From: ${from}`,
     `To: ${to}`,
+    ...(cc.length ? [`Cc: ${cc.join(', ')}`] : []),
     `Subject: ${encodeHeader(subject)}`,
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=UTF-8',

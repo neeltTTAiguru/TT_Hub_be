@@ -87,14 +87,18 @@ export async function scopeClauseFor(member) {
   const hasScope = Object.keys(built).length > 0
   const runIds = member.assignedRunIds || []
 
+  // Agencies researched for them, minus any the research found to have
+  // cameras. Those are not leads - the research existed to rule them out.
+  const theirs = async () => ({ $and: [{ ori: { $in: await assignedOris(runIds) } }, buildFilter({ bwc: 'not_yes' })] })
+
   // Only their runs: an empty worklist when none are assigned, not the
   // whole country. $in [] matches nothing, which is the honest answer.
-  if (member.limitToAssignedRuns) return { ori: { $in: await assignedOris(runIds) } }
+  if (member.limitToAssignedRuns) return theirs()
   if (!hasScope) return null
   // Their scope is what they are working; anything researched for them sits
   // on top of it whatever state or size it is in.
   if (!runIds.length) return built
-  return { $or: [built, { ori: { $in: await assignedOris(runIds) } }] }
+  return { $or: [built, await theirs()] }
 }
 
 /**

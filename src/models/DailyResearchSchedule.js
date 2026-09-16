@@ -27,6 +27,8 @@ const dailyResearchScheduleSchema = new mongoose.Schema(
     // member with Gmail connected; otherwise the morning runs and nobody is
     // told, which the board says.
     notifyFrom: { type: String, default: '' },
+    // Copied on every leads email - a manager who wants to see what went out.
+    notifyCc: { type: [String], default: [] },
     updatedBy: { type: String, default: '' },
   },
   { timestamps: true },

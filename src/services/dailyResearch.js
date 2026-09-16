@@ -60,9 +60,12 @@ export const getSchedule = async () => {
   }
 }
 
-export async function saveSchedule({ enabled, hour, minute, pick, notifyFrom, updatedBy = '' }) {
+export async function saveSchedule({ enabled, hour, minute, pick, notifyFrom, notifyCc, updatedBy = '' }) {
   const set = { updatedBy }
   if (typeof notifyFrom === 'string') set.notifyFrom = notifyFrom.trim().toLowerCase()
+  if (Array.isArray(notifyCc)) {
+    set.notifyCc = [...new Set(notifyCc.map((v) => String(v).trim().toLowerCase()).filter((v) => v.includes('@')))]
+  }
   if (typeof enabled === 'boolean') set.enabled = enabled
   if (Number.isInteger(hour) && hour >= 0 && hour <= 23) set.hour = hour
   if (Number.isInteger(minute) && minute >= 0 && minute <= 59) set.minute = minute
@@ -297,8 +300,10 @@ async function notifyLeadsReady(day, entry, schedule) {
   if (!run) return note('Not emailed: run missing.')
 
   const rows = runFindingsRows(run)
-  const found = rows.filter((row) => row.cameras !== 'Not researched')
-  const withCameras = found.filter((row) => row.cameras === 'Yes').length
+  const researched = rows.filter((row) => row.cameras !== 'Not researched')
+  // Found to have cameras: ruled out, not a lead. Mentioned as a count only.
+  const ruledOut = researched.filter((row) => row.cameras === 'Yes').length
+  const found = researched.filter((row) => row.cameras !== 'Yes')
   const withEmail = found.filter((row) => row.email).length
   const withPhone = found.filter((row) => row.phone).length
   const firstName = (to?.name || entry.email.split('@')[0]).split(/\s+/)[0]
@@ -308,16 +313,16 @@ async function notifyLeadsReady(day, entry, schedule) {
     const where = [row.county ? `${row.county} County` : '', row.state].filter(Boolean).join(', ')
     const who = row.chief ? `${row.chief}${row.chiefTitle ? `, ${row.chiefTitle}` : ''}` : 'decision maker not found'
     const reach = [row.phone, row.email].filter(Boolean).join(' · ') || 'no contact found'
-    const cams = row.cameras === 'Yes' ? `HAS cameras${row.vendor ? ` (${row.vendor})` : ''}` : row.cameras === 'No' ? 'no cameras' : 'cameras unknown'
+    const cams = row.cameras === 'No' ? 'confirmed no cameras' : 'cameras unknown'
     return `- ${row.agency}${where ? ` (${where})` : ''}\n    ${who}\n    ${reach}\n    ${cams}`
   }
 
   const text = [
     `Hi ${firstName},`,
     '',
-    `The traveller researched ${found.length} new agencies for you overnight. They are on your map now, on top of your Texas list.`,
+    `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads. They are on your map now, on top of your Texas list.`,
     '',
-    `${withCameras} already have body cameras, ${withEmail} have an email address and ${withPhone} have a phone number.`,
+    `${withEmail} have an email address and ${withPhone} have a phone number.${ruledOut ? ` ${ruledOut} turned out to already have cameras and were left off.` : ''}`,
     '',
     `Open the map: ${hub}/agency-map`,
     '',
@@ -328,13 +333,15 @@ async function notifyLeadsReady(day, entry, schedule) {
     `Sent by the Smart Hub on behalf of ${from.name || from.email}.`,
   ].join('\n')
 
+  const cc = (schedule.notifyCc || []).filter((address) => address && address !== entry.email)
   const id = await sendAsMember(from, {
     to: entry.email,
+    cc,
     subject: `${found.length} new leads on your map - ${day.date}`,
     text,
     fromName: from.name || '',
   })
-  return note(`Emailed from ${from.gmail.address} (${id}).`)
+  return note(`Emailed from ${from.gmail.address}${cc.length ? `, cc ${cc.join(', ')}` : ''} (${id}).`)
 }
 
 /** When the schedule next fires, for the board. */
