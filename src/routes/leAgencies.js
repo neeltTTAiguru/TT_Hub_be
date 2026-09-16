@@ -488,7 +488,13 @@ router.post('/research-run/preview', requireFullAccess, async (req, res, next) =
       LeAgency.countDocuments({ $and: [scope, { 'contacts.phone': { $in: [null, ''] } }] }),
     ])
 
-    const queue = skipResearched ? Math.max(matched - alreadyDone, 0) : matched
+    const eligible = skipResearched ? Math.max(matched - alreadyDone, 0) : matched
+
+    // A cap is the same knob start honours: "25 of these", not "all of these".
+    // Priced here so the confirmation shows the bill for the run that will
+    // actually happen, not for the whole pool it is drawn from.
+    const limit = parseNumber(req.body?.limit)
+    const queue = Number.isFinite(limit) && limit > 0 ? Math.min(eligible, limit) : eligible
 
     // $10 per 1,000 web_search calls, plus measured input+output tokens.
     const SEARCH = 0.01
@@ -504,7 +510,9 @@ router.post('/research-run/preview', requireFullAccess, async (req, res, next) =
     res.json({
       matched,
       alreadyDone,
+      eligible,
       queue,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : null,
       offMap,
       includeOffMap,
       needEmail,
@@ -774,7 +782,10 @@ router.post('/research-run/stop', requireFullAccess, async (req, res, next) => {
   }
 })
 
-router.get('/:ori/research-stream', async (req, res, next) => {
+// Behind the same gate as a run: one agency is one agency's worth of searches,
+// but it is still money, and the button that reaches it is hidden for the same
+// accounts the run form is.
+router.get('/:ori/research-stream', requireFullAccess, async (req, res, next) => {
   try {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
@@ -1544,7 +1555,9 @@ router.post('/call-report/pdf', async (req, res, next) => {
   }
 })
 
-router.get('/:ori/briefing', async (req, res, next) => {
+// A briefing that is not cached researches the agency on the way, so it is
+// gated like research-stream rather than like the plain agency read below.
+router.get('/:ori/briefing', requireFullAccess, async (req, res, next) => {
   try {
     const briefing = await getAgencyBriefing(req.params.ori, {
       refresh: req.query.refresh === 'true',
