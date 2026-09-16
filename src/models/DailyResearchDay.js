@@ -15,9 +15,16 @@ const entrySchema = new mongoose.Schema(
     count: { type: Number, required: true },
     // pending | starting | running | done | skipped | failed
     status: { type: String, default: 'pending' },
+    // The run in flight (or the last one). `runIds` is every run this entry
+    // started: the first draw plus each top-up.
     runId: { type: String, default: '' },
-    // How many were actually queued - fewer than `count` when the pool ran dry.
+    runIds: { type: [String], default: [] },
+    // How many were actually queued across all rounds.
     queued: { type: Number, default: 0 },
+    // Leads delivered so far: researched and not found to have cameras.
+    // `count` is the target for this, not for agencies researched.
+    leads: { type: Number, default: 0 },
+    rounds: { type: Number, default: 0 },
     note: { type: String, default: '' },
     // How the "your leads are ready" email went, or why it did not go.
     notified: { type: String, default: '' },

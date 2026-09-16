@@ -36,6 +36,11 @@ const TICK_MS = 60 * 1000
 // for tomorrow: switching the schedule on at noon must not spend the day's
 // budget at noon. "Run now" on the board is the deliberate version of that.
 const GRACE_MINUTES = 180
+// A person's number is leads, not agencies researched: when research rules
+// some out (cameras found), the shortfall is drawn again. Bounded so a bad
+// morning cannot spend without limit - at worst about this many times the
+// quota gets researched.
+const MAX_ROUNDS = 4
 const PLOTTABLE = { $or: [{ geo: { $exists: true } }, { 'location.geo': { $exists: true } }] }
 const NOT_RESEARCHED = {
   'enrichment.bwcResearchedAt': null,
@@ -45,7 +50,6 @@ const NOT_RESEARCHED = {
 const me = `${os.hostname()}:${process.pid}`
 
 const DEFAULT_PICK = { states: [], agencyTypes: [], maxOfficers: 25, camera: 'unknown' }
-const PICK_CAMERA = { unknown: 'unknown', not_yes: 'not_yes', any: null }
 
 export const getSchedule = async () => {
   const doc = await DailyResearchSchedule.findOne({ key: 'singleton' }).lean()
@@ -79,7 +83,7 @@ export async function saveSchedule({ enabled, hour, minute, pick, notifyFrom, no
       states: list(pick.states, true),
       agencyTypes: list(pick.agencyTypes),
       maxOfficers: Number.isFinite(max) && max > 0 ? Math.floor(max) : null,
-      camera: pick.camera in PICK_CAMERA ? pick.camera : 'unknown',
+      camera: 'unknown',
     }
   }
   return DailyResearchSchedule.findOneAndUpdate(
@@ -117,9 +121,9 @@ export function localNow(timezone, at = new Date()) {
  */
 const pickFilter = (schedule) => {
   const pick = schedule.pick || DEFAULT_PICK
-  const query = {}
-  const camera = PICK_CAMERA[pick.camera] === undefined ? 'unknown' : PICK_CAMERA[pick.camera]
-  if (camera) query.bwc = camera
+  // Always the yellow pins. The morning exists to turn unknowns into leads;
+  // researching an agency whose status is already known buys nothing.
+  const query = { bwc: 'unknown' }
   if (pick.states?.length) query.state = pick.states.join(',')
   if (pick.agencyTypes?.length) query.agencyType = pick.agencyTypes.join(',')
   if (Number.isFinite(pick.maxOfficers)) query.maxOfficers = String(pick.maxOfficers)
@@ -168,34 +172,49 @@ async function claimDay(date, trigger) {
 }
 
 /**
- * Start one entry: pick, run, assign. The entry must already be ours (status
- * 'starting'); on any failure it is marked and the plan moves on.
+ * Start one entry, or top it up: pick, run, assign. Returns the run, or null
+ * when nothing was started (the entry is then already marked).
  */
 async function startEntry(day, entry) {
   const member = await HubMember.findOne({ email: entry.email }).lean()
   const mark = (set) =>
     DailyResearchDay.updateOne({ _id: day._id, 'plan.email': entry.email }, { $set: Object.fromEntries(Object.entries(set).map(([k, v]) => [`plan.$.${k}`, v])) })
 
-  if (!member) return mark({ status: 'skipped', note: 'No longer on the board.', finishedAt: new Date() })
+  if (!member) {
+    await mark({ status: 'skipped', note: 'No longer on the board.', finishedAt: new Date() })
+    return null
+  }
 
   const { query, where } = pickFilter(await getSchedule())
+  // How many more leads they still need, not the whole number again.
+  const need = Math.max(entry.count - (entry.leads || 0), 0)
+  if (!need) {
+    await mark({ status: 'done', finishedAt: new Date() })
+    return null
+  }
   // Re-read at the moment of the draw, not at the start of the morning, so
   // the entry before this one - just finished - is already excluded.
   const taken = await everQueued()
   const picked = await LeAgency.aggregate([
     { $match: { $and: [where, { ori: { $nin: taken } }] } },
-    { $sample: { size: entry.count } },
+    { $sample: { size: need } },
     { $project: { ori: 1 } },
   ])
   const oris = picked.map((row) => row.ori)
   if (!oris.length) {
-    return mark({ status: 'skipped', note: 'Nothing left to pick: every agency in the pick scope is researched or has a known camera status.', finishedAt: new Date() })
+    await mark({
+      status: entry.leads ? 'done' : 'skipped',
+      note: 'Nothing left to pick: every agency in the pick scope is researched or has a known camera status.',
+      finishedAt: new Date(),
+    })
+    return null
   }
 
   const label = describeFilters(query)
+  const round = (entry.rounds || 0) + 1
   const run = await startRun({
     oris,
-    brief: `Daily research for ${member.name || member.email}: ${oris.length} random agencies, ${label}.`,
+    brief: `Daily research for ${member.name || member.email}: ${oris.length} random agencies, ${label}${round > 1 ? ` (top-up ${round})` : ''}.`,
     filters: query,
     filtersLabel: `${member.name || member.email} - ${label}`,
     skipResearched: true,
@@ -209,8 +228,28 @@ async function startEntry(day, entry) {
   // stay on the map.
   await HubMember.updateOne({ email: member.email }, { $addToSet: { assignedRunIds: String(run._id) } })
 
-  return mark({ status: 'running', runId: String(run._id), queued: oris.length, startedAt: new Date() })
+  await DailyResearchDay.updateOne(
+    { _id: day._id, 'plan.email': entry.email },
+    {
+      $set: {
+        'plan.$.status': 'running',
+        'plan.$.runId': String(run._id),
+        'plan.$.rounds': round,
+        ...(entry.startedAt ? {} : { 'plan.$.startedAt': new Date() }),
+      },
+      $push: { 'plan.$.runIds': String(run._id) },
+      $inc: { 'plan.$.queued': oris.length },
+    },
+  )
+  return run
 }
+
+/**
+ * Leads a run delivered: researched and still unknown - nothing published
+ * either way, so a call can settle it. A yes is ruled out; a no is an
+ * answer, not a lead to chase, and is on their map without counting here.
+ */
+const leadsIn = (run) => runFindingsRows(run).filter((row) => row.cameras === 'Unknown').length
 
 /**
  * Move today's plan one step, if there is a step to take. Safe to call from
@@ -233,17 +272,48 @@ export async function advance({ force = false } = {}) {
   // Settle whatever was running.
   const running = day.plan.find((entry) => entry.status === 'running')
   if (running) {
-    const run = await BwcResearchRun.findById(running.runId).select('status').lean()
+    const run = await BwcResearchRun.findById(running.runId).lean()
     if (!run || ['done', 'stopped', 'failed'].includes(run.status)) {
-      const settled = await DailyResearchDay.updateOne(
-        { _id: day._id, 'plan.email': running.email, 'plan.status': 'running' },
-        { $set: { 'plan.$.status': run?.status === 'failed' ? 'failed' : 'done', 'plan.$.finishedAt': new Date() } },
+      // Claim the settle atomically ('settling'), so two backends ticking
+      // against the same plan count, top up and email exactly once.
+      const claimed = await DailyResearchDay.updateOne(
+        { _id: day._id, 'plan.email': running.email, 'plan.status': 'running', 'plan.runId': running.runId },
+        { $set: { 'plan.$.status': 'settling' } },
       )
-      // Only the process that flipped it tells them, so two backends
-      // ticking against the same plan send one email, not two.
-      if (settled.modifiedCount && run) {
-        await notifyLeadsReady(day, running, schedule).catch((error) =>
-          console.error(`[daily-research] could not email ${running.email}: ${error?.message || error}`),
+      if (!claimed.modifiedCount) return day
+
+      const leads = (running.leads || 0) + (run ? leadsIn(run) : 0)
+      await DailyResearchDay.updateOne({ _id: day._id, 'plan.email': running.email }, { $set: { 'plan.$.leads': leads } })
+      const entry = { ...running, leads }
+
+      // Short of the number, the run went fine, rounds left: draw the
+      // shortfall now - the traveller is free, this run just ended.
+      const short = leads < entry.count
+      const canTopUp = run && run.status !== 'failed' && (entry.rounds || 1) < MAX_ROUNDS
+      if (short && canTopUp) {
+        try {
+          const next = await startEntry(day, entry)
+          if (next) return DailyResearchDay.findById(day._id)
+        } catch (error) {
+          console.error(`[daily-research] top-up for ${entry.email} failed: ${error?.message || error}`)
+        }
+      }
+
+      await DailyResearchDay.updateOne(
+        { _id: day._id, 'plan.email': entry.email },
+        {
+          $set: {
+            'plan.$.status': run?.status === 'failed' && !leads ? 'failed' : 'done',
+            'plan.$.finishedAt': new Date(),
+            ...(short && !canTopUp && run?.status !== 'failed'
+              ? { 'plan.$.note': `${leads} of ${entry.count} - stopped after ${entry.rounds || 1} rounds.` }
+              : {}),
+          },
+        },
+      )
+      if (run) {
+        await notifyLeadsReady(day, entry, schedule).catch((error) =>
+          console.error(`[daily-research] could not email ${entry.email}: ${error?.message || error}`),
         )
       }
       day = await DailyResearchDay.findById(day._id)
@@ -252,6 +322,7 @@ export async function advance({ force = false } = {}) {
     }
   }
 
+  if (day.plan.some((entry) => entry.status === 'settling')) return day
   const next = day.plan.find((entry) => entry.status === 'pending')
   if (!next) {
     await DailyResearchDay.updateOne({ _id: day._id }, { $set: { finishedAt: new Date() } })
@@ -296,14 +367,18 @@ async function notifyLeadsReady(day, entry, schedule) {
     return note(`Not emailed: ${schedule.notifyFrom || 'no sender set'} has no Gmail connected.`)
   }
   const to = await HubMember.findOne({ email: entry.email }).lean()
-  const run = await BwcResearchRun.findById(entry.runId).lean()
-  if (!run) return note('Not emailed: run missing.')
+  const runs = await BwcResearchRun.find({ _id: { $in: entry.runIds?.length ? entry.runIds : [entry.runId] } })
+    .sort({ startedAt: 1 })
+    .lean()
+  if (!runs.length) return note('Not emailed: run missing.')
 
-  const rows = runFindingsRows(run)
+  const rows = runs.flatMap((run) => runFindingsRows(run))
   const researched = rows.filter((row) => row.cameras !== 'Not researched')
-  // Found to have cameras: ruled out, not a lead. Mentioned as a count only.
+  // Found to have cameras: ruled out. Found to have none: settled. Neither is
+  // a lead; the leads are the unknowns.
   const ruledOut = researched.filter((row) => row.cameras === 'Yes').length
-  const found = researched.filter((row) => row.cameras !== 'Yes')
+  const settledNo = researched.filter((row) => row.cameras === 'No').length
+  const found = researched.filter((row) => row.cameras === 'Unknown')
   const withEmail = found.filter((row) => row.email).length
   const withPhone = found.filter((row) => row.phone).length
   const firstName = (to?.name || entry.email.split('@')[0]).split(/\s+/)[0]
@@ -313,16 +388,15 @@ async function notifyLeadsReady(day, entry, schedule) {
     const where = [row.county ? `${row.county} County` : '', row.state].filter(Boolean).join(', ')
     const who = row.chief ? `${row.chief}${row.chiefTitle ? `, ${row.chiefTitle}` : ''}` : 'decision maker not found'
     const reach = [row.phone, row.email].filter(Boolean).join(' · ') || 'no contact found'
-    const cams = row.cameras === 'No' ? 'confirmed no cameras' : 'cameras unknown'
-    return `- ${row.agency}${where ? ` (${where})` : ''}\n    ${who}\n    ${reach}\n    ${cams}`
+    return `- ${row.agency}${where ? ` (${where})` : ''}\n    ${who}\n    ${reach}`
   }
 
   const text = [
     `Hi ${firstName},`,
     '',
-    `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads. They are on your map now, on top of your Texas list.`,
+    `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now, on top of your Texas list.`,
     '',
-    `${withEmail} have an email address and ${withPhone} have a phone number.${ruledOut ? ` ${ruledOut} turned out to already have cameras and were left off.` : ''}`,
+    `${withEmail} have an email address and ${withPhone} have a phone number.${ruledOut || settledNo ? ` Left off: ${[ruledOut ? `${ruledOut} already have cameras` : '', settledNo ? `${settledNo} confirmed none` : ''].filter(Boolean).join(', ')}.` : ''}`,
     '',
     `Open the map: ${hub}/agency-map`,
     '',
