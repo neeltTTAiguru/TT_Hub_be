@@ -119,12 +119,20 @@ export async function positionsFor(req) {
     .lean()
 
   const live = await BwcResearchRun.findOne({ status: { $in: ['running', 'stopping'] } })
-    .select('startedBy current path')
+    .select('startedBy assignedTo current path')
     .sort({ createdAt: -1 })
     .lean()
 
   const resolve = async (doc, mine) => {
-    const ownsRun = Boolean(live && live.startedBy && live.startedBy === doc.key)
+    // A run is yours if you started it - or if the morning schedule is
+    // researching it for you, in which case it is your traveller doing the
+    // walking even though nobody pressed the button.
+    const owner = (doc.email || doc.key || '').toLowerCase()
+    const ownsRun = Boolean(
+      live &&
+        ((live.startedBy && live.startedBy === doc.key) ||
+          (live.assignedTo && owner && live.assignedTo.toLowerCase() === owner)),
+    )
     let at = null
     let working = false
 
