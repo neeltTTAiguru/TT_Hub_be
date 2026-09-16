@@ -353,6 +353,47 @@ export async function advance({ force = false } = {}) {
   return DailyResearchDay.findById(day._id)
 }
 
+/** The leads email, as text. Pure, so it can be read before anyone gets it. */
+export function buildLeadsEmail({ rows, to, entry, day, from }) {
+  const researched = rows.filter((row) => row.cameras !== 'Not researched')
+  // Found to have cameras: ruled out. Found to have none: settled. Neither is
+  // a lead; the leads are the unknowns.
+  const ruledOut = researched.filter((row) => row.cameras === 'Yes').length
+  const settledNo = researched.filter((row) => row.cameras === 'No').length
+  const found = researched.filter((row) => row.cameras === 'Unknown')
+  const withEmail = found.filter((row) => row.email).length
+  const withPhone = found.filter((row) => row.phone).length
+  const firstName = (to?.name || entry.email.split('@')[0]).split(/\s+/)[0]
+  const hub = (process.env.HUB_FRONTEND_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '')
+
+  // Counties arrive upper-cased from the FBI feed; the email is read by a person.
+  const titleCase = (text) => String(text).toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase())
+  const line = (row) => {
+    const where = [row.county ? `${titleCase(row.county)} County` : '', row.state].filter(Boolean).join(', ')
+    const who = row.chief ? `${row.chief}${row.chiefTitle ? `, ${row.chiefTitle}` : ''}` : 'decision maker not found'
+    const reach = [row.phone, row.email].filter(Boolean).join(' · ') || 'no contact found'
+    return `- ${row.agency}${where ? ` (${where})` : ''}\n    ${who}\n    ${reach}`
+  }
+
+  const text = [
+    `Hi ${firstName},`,
+    '',
+    `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now, on top of your Texas list.`,
+    '',
+    `${withEmail} have an email address and ${withPhone} have a phone number.${ruledOut || settledNo ? ` Left off: ${[ruledOut ? `${ruledOut} already have cameras` : '', settledNo ? `${settledNo} confirmed none` : ''].filter(Boolean).join(', ')}.` : ''}`,
+    '',
+    `Open the map: ${hub}/agency-map`,
+    '',
+    `Your new leads (${day.date}):`,
+    ...found.map(line),
+    ...(rows.length > researched.length ? ['', `${rows.length - researched.length} could not be researched and will be retried another day.`] : []),
+    '',
+    `Sent by the Smart Hub on behalf of ${from.name || from.email}.`,
+  ].join('\n')
+
+  return { subject: `${found.length} new leads on your map - ${day.date}`, text, found: found.length }
+}
+
 /**
  * Tell the person their morning's leads are on the map, from the notifier's
  * own Gmail. Plain text, with the leads listed so the email is useful on a
@@ -372,46 +413,13 @@ async function notifyLeadsReady(day, entry, schedule) {
     .lean()
   if (!runs.length) return note('Not emailed: run missing.')
 
-  const rows = runs.flatMap((run) => runFindingsRows(run))
-  const researched = rows.filter((row) => row.cameras !== 'Not researched')
-  // Found to have cameras: ruled out. Found to have none: settled. Neither is
-  // a lead; the leads are the unknowns.
-  const ruledOut = researched.filter((row) => row.cameras === 'Yes').length
-  const settledNo = researched.filter((row) => row.cameras === 'No').length
-  const found = researched.filter((row) => row.cameras === 'Unknown')
-  const withEmail = found.filter((row) => row.email).length
-  const withPhone = found.filter((row) => row.phone).length
-  const firstName = (to?.name || entry.email.split('@')[0]).split(/\s+/)[0]
-  const hub = (process.env.HUB_FRONTEND_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '')
-
-  const line = (row) => {
-    const where = [row.county ? `${row.county} County` : '', row.state].filter(Boolean).join(', ')
-    const who = row.chief ? `${row.chief}${row.chiefTitle ? `, ${row.chiefTitle}` : ''}` : 'decision maker not found'
-    const reach = [row.phone, row.email].filter(Boolean).join(' · ') || 'no contact found'
-    return `- ${row.agency}${where ? ` (${where})` : ''}\n    ${who}\n    ${reach}`
-  }
-
-  const text = [
-    `Hi ${firstName},`,
-    '',
-    `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now, on top of your Texas list.`,
-    '',
-    `${withEmail} have an email address and ${withPhone} have a phone number.${ruledOut || settledNo ? ` Left off: ${[ruledOut ? `${ruledOut} already have cameras` : '', settledNo ? `${settledNo} confirmed none` : ''].filter(Boolean).join(', ')}.` : ''}`,
-    '',
-    `Open the map: ${hub}/agency-map`,
-    '',
-    `Your new leads (${day.date}):`,
-    ...found.map(line),
-    ...(rows.length > found.length ? ['', `${rows.length - found.length} could not be researched and will be retried another day.`] : []),
-    '',
-    `Sent by the Smart Hub on behalf of ${from.name || from.email}.`,
-  ].join('\n')
-
+  const { subject, text, found } = buildLeadsEmail({ rows: runs.flatMap((run) => runFindingsRows(run)), to, entry, day, from })
+  if (!found) return note('Not emailed: no leads to send.')
   const cc = (schedule.notifyCc || []).filter((address) => address && address !== entry.email)
   const id = await sendAsMember(from, {
     to: entry.email,
     cc,
-    subject: `${found.length} new leads on your map - ${day.date}`,
+    subject,
     text,
     fromName: from.name || '',
   })
