@@ -28,6 +28,8 @@ import LeAgency from '../models/LeAgency.js'
 import { activeRun, startRun } from './researchRunner.js'
 import { hasFullAccess } from '../middleware/featureAccess.js'
 import { buildFilter, describeFilters } from './leAgencyFilters.js'
+import { runFindingsRows } from './researchRunWorkbook.js'
+import { sendAsMember } from './gmail.js'
 
 const TICK_MS = 60 * 1000
 // How long after the hour a missed morning is still run. Past this it waits
@@ -58,8 +60,9 @@ export const getSchedule = async () => {
   }
 }
 
-export async function saveSchedule({ enabled, hour, minute, pick, updatedBy = '' }) {
+export async function saveSchedule({ enabled, hour, minute, pick, notifyFrom, updatedBy = '' }) {
   const set = { updatedBy }
+  if (typeof notifyFrom === 'string') set.notifyFrom = notifyFrom.trim().toLowerCase()
   if (typeof enabled === 'boolean') set.enabled = enabled
   if (Number.isInteger(hour) && hour >= 0 && hour <= 23) set.hour = hour
   if (Number.isInteger(minute) && minute >= 0 && minute <= 59) set.minute = minute
@@ -229,10 +232,17 @@ export async function advance({ force = false } = {}) {
   if (running) {
     const run = await BwcResearchRun.findById(running.runId).select('status').lean()
     if (!run || ['done', 'stopped', 'failed'].includes(run.status)) {
-      await DailyResearchDay.updateOne(
+      const settled = await DailyResearchDay.updateOne(
         { _id: day._id, 'plan.email': running.email, 'plan.status': 'running' },
         { $set: { 'plan.$.status': run?.status === 'failed' ? 'failed' : 'done', 'plan.$.finishedAt': new Date() } },
       )
+      // Only the process that flipped it tells them, so two backends
+      // ticking against the same plan send one email, not two.
+      if (settled.modifiedCount && run) {
+        await notifyLeadsReady(day, running, schedule).catch((error) =>
+          console.error(`[daily-research] could not email ${running.email}: ${error?.message || error}`),
+        )
+      }
       day = await DailyResearchDay.findById(day._id)
     } else {
       return day
@@ -267,6 +277,64 @@ export async function advance({ force = false } = {}) {
     )
   }
   return DailyResearchDay.findById(day._id)
+}
+
+/**
+ * Tell the person their morning's leads are on the map, from the notifier's
+ * own Gmail. Plain text, with the leads listed so the email is useful on a
+ * phone before they open the hub. Recorded on the plan entry either way.
+ */
+async function notifyLeadsReady(day, entry, schedule) {
+  const note = (text) =>
+    DailyResearchDay.updateOne({ _id: day._id, 'plan.email': entry.email }, { $set: { 'plan.$.notified': text } })
+
+  const from = schedule.notifyFrom ? await HubMember.findOne({ email: schedule.notifyFrom }).lean() : null
+  if (!from?.gmail?.refreshToken) {
+    return note(`Not emailed: ${schedule.notifyFrom || 'no sender set'} has no Gmail connected.`)
+  }
+  const to = await HubMember.findOne({ email: entry.email }).lean()
+  const run = await BwcResearchRun.findById(entry.runId).lean()
+  if (!run) return note('Not emailed: run missing.')
+
+  const rows = runFindingsRows(run)
+  const found = rows.filter((row) => row.cameras !== 'Not researched')
+  const withCameras = found.filter((row) => row.cameras === 'Yes').length
+  const withEmail = found.filter((row) => row.email).length
+  const withPhone = found.filter((row) => row.phone).length
+  const firstName = (to?.name || entry.email.split('@')[0]).split(/\s+/)[0]
+  const hub = (process.env.HUB_FRONTEND_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '')
+
+  const line = (row) => {
+    const where = [row.county ? `${row.county} County` : '', row.state].filter(Boolean).join(', ')
+    const who = row.chief ? `${row.chief}${row.chiefTitle ? `, ${row.chiefTitle}` : ''}` : 'decision maker not found'
+    const reach = [row.phone, row.email].filter(Boolean).join(' · ') || 'no contact found'
+    const cams = row.cameras === 'Yes' ? `HAS cameras${row.vendor ? ` (${row.vendor})` : ''}` : row.cameras === 'No' ? 'no cameras' : 'cameras unknown'
+    return `- ${row.agency}${where ? ` (${where})` : ''}\n    ${who}\n    ${reach}\n    ${cams}`
+  }
+
+  const text = [
+    `Hi ${firstName},`,
+    '',
+    `The traveller researched ${found.length} new agencies for you overnight. They are on your map now, on top of your Texas list.`,
+    '',
+    `${withCameras} already have body cameras, ${withEmail} have an email address and ${withPhone} have a phone number.`,
+    '',
+    `Open the map: ${hub}/agency-map`,
+    '',
+    `Your new leads (${day.date}):`,
+    ...found.map(line),
+    ...(rows.length > found.length ? ['', `${rows.length - found.length} could not be researched and will be retried another day.`] : []),
+    '',
+    `Sent by the Smart Hub on behalf of ${from.name || from.email}.`,
+  ].join('\n')
+
+  const id = await sendAsMember(from, {
+    to: entry.email,
+    subject: `${found.length} new leads on your map - ${day.date}`,
+    text,
+    fromName: from.name || '',
+  })
+  return note(`Emailed from ${from.gmail.address} (${id}).`)
 }
 
 /** When the schedule next fires, for the board. */

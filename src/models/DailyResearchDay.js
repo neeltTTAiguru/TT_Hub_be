@@ -19,6 +19,8 @@ const entrySchema = new mongoose.Schema(
     // How many were actually queued - fewer than `count` when the pool ran dry.
     queued: { type: Number, default: 0 },
     note: { type: String, default: '' },
+    // How the "your leads are ready" email went, or why it did not go.
+    notified: { type: String, default: '' },
     startedAt: { type: Date, default: null },
     finishedAt: { type: Date, default: null },
   },

@@ -90,6 +90,7 @@ router.get('/', async (req, res, next) => {
         minute: schedule.minute,
         timezone: schedule.timezone,
         pick: schedule.pick,
+        notifyFrom: schedule.notifyFrom || '',
         pool,
         nextFireAt: schedule.enabled ? nextFireAt(schedule) : null,
         days: days.map((day) => ({
@@ -163,6 +164,7 @@ router.put('/schedule', async (req, res, next) => {
       hour: Number.isInteger(body.hour) ? body.hour : undefined,
       minute: Number.isInteger(body.minute) ? body.minute : undefined,
       pick: body.pick,
+      notifyFrom: typeof body.notifyFrom === 'string' ? body.notifyFrom : undefined,
       updatedBy: await resolveActor(req),
     })
     res.json({ ...schedule, nextFireAt: schedule.enabled ? nextFireAt(schedule) : null })

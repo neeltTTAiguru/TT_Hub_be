@@ -23,6 +23,10 @@ const dailyResearchScheduleSchema = new mongoose.Schema(
       // unknown | not_yes | any - which camera statuses are worth researching.
       camera: { type: String, default: 'unknown' },
     },
+    // Whose Gmail the "your leads are ready" email goes out from. Must be a
+    // member with Gmail connected; otherwise the morning runs and nobody is
+    // told, which the board says.
+    notifyFrom: { type: String, default: '' },
     updatedBy: { type: String, default: '' },
   },
   { timestamps: true },
