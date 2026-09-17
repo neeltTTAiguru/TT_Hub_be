@@ -128,14 +128,20 @@ const rowFromStop = (stop = {}) => {
   const cameras = stop.cameras || {}
   const contact = stop.contact || {}
   const added = stop.added || {}
+  // 'planned' is not an unknown: something IS published - a budget line, a
+  // council vote, often a vendor already named. Shown as 'Unknown' it read as
+  // a contradiction ("Unknown - Motorola Solutions"). It is still a lead: the
+  // one worth calling before the purchase order goes out.
   const verdict =
     stop.verdict === 'yes' || stop.verdict === 'purchased_not_deployed'
       ? 'Yes'
       : stop.verdict === 'no'
         ? 'No'
-        : stop.error
-          ? 'Not researched'
-          : 'Unknown'
+        : stop.verdict === 'planned'
+          ? 'Planned'
+          : stop.error
+            ? 'Not researched'
+            : 'Unknown'
   const addedBits = [
     added.cameras ? 'cameras' : '',
     added.chief ? 'decision maker' : '',

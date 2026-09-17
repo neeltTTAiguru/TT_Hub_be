@@ -251,11 +251,13 @@ async function startEntry(day, entry) {
 }
 
 /**
- * Leads a run delivered: researched and still unknown - nothing published
- * either way, so a call can settle it. A yes is ruled out; a no is an
- * answer, not a lead to chase, and is on their map without counting here.
+ * Leads a run delivered: researched and not yet running cameras - nothing
+ * published either way, or a purchase only planned, so a call can settle or
+ * win it. A yes is ruled out; a no is an answer, not a lead to chase, and is
+ * on their map without counting here.
  */
-const leadsIn = (run) => runFindingsRows(run).filter((row) => row.cameras === 'Unknown').length
+export const isLead = (row) => row.cameras === 'Unknown' || row.cameras === 'Planned'
+const leadsIn = (run) => runFindingsRows(run).filter(isLead).length
 
 /** Leads over every run an entry has started, from the runs themselves. */
 async function leadsAcross(runIds) {
@@ -390,7 +392,7 @@ export function buildLeadsEmail({ rows, to, entry, day, from }) {
   // a lead; the leads are the unknowns.
   const ruledOut = researched.filter((row) => row.cameras === 'Yes').length
   const settledNo = researched.filter((row) => row.cameras === 'No').length
-  const found = researched.filter((row) => row.cameras === 'Unknown')
+  const found = researched.filter(isLead)
   const withEmail = found.filter((row) => row.email).length
   const withPhone = found.filter((row) => row.phone).length
   const firstName = (to?.name || entry.email.split('@')[0]).split(/\s+/)[0]
