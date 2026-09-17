@@ -14,6 +14,7 @@ import {
   getTemplate,
   listInbox,
   readState,
+  recentPeople,
   renderTemplate,
   sendAsMember,
   statusFor,
@@ -81,6 +82,51 @@ router.delete('/', async (req, res, next) => {
 })
 
 /** A page of their inbox. `q` is Gmail's own search syntax. */
+/**
+ * Suggestions for a To field: hub members first, then people this mailbox
+ * has written to or heard from, then agency contacts on file. Matched on
+ * name or address, eight at most.
+ */
+router.get('/contacts', async (req, res, next) => {
+  try {
+    const { member } = await memberFor(req)
+    const q = String(req.query.q || '').trim().toLowerCase()
+    if (q.length < 2) return res.json([])
+    const hit = (p) => `${p.name} ${p.email}`.toLowerCase().includes(q)
+
+    const members = (await HubMember.find({}).select('name email').lean()).map((m) => ({
+      name: m.name || '',
+      email: m.email,
+      source: 'Team',
+    }))
+    const people = member?.gmail?.refreshToken
+      ? (await recentPeople(member)).map((p) => ({ ...p, source: 'Recent' }))
+      : []
+    const agencies = (
+      await LeAgency.find({ 'contacts.email': { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } })
+        .select('agencyName contacts.email contacts.chiefName')
+        .limit(5)
+        .lean()
+    ).map((a) => ({
+      name: a.contacts?.chiefName ? `${a.contacts.chiefName} (${a.agencyName})` : a.agencyName,
+      email: String(a.contacts.email).toLowerCase(),
+      source: 'Agency',
+    }))
+
+    const out = []
+    const used = new Set()
+    for (const p of [...members.filter(hit), ...people.filter(hit), ...agencies]) {
+      if (used.has(p.email)) continue
+      used.add(p.email)
+      out.push(p)
+      if (out.length >= 8) break
+    }
+    res.json(out)
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.get('/inbox', async (req, res, next) => {
   try {
     const { member } = await memberFor(req)

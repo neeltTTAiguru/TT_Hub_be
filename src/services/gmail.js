@@ -303,6 +303,61 @@ export async function listInbox(member, { q = '', pageToken = '', max = 50, fold
   }
 }
 
+/**
+ * People to suggest in a To field, without the Contacts permission.
+ *
+ * Built from what the connection can already see: everyone you have written
+ * to (Sent) or heard from (Inbox) recently. Cached per mailbox for ten
+ * minutes - it costs a hundred small header reads to build, and a person
+ * typing an address must not pay that per keystroke.
+ */
+const peopleCache = new Map()
+const PEOPLE_TTL_MS = 10 * 60 * 1000
+
+const parseAddresses = (value) =>
+  String(value || '')
+    .split(',')
+    .map((part) => {
+      const m = part.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/) || part.match(/^\s*([^\s<>]+@[^\s<>]+)\s*$/)
+      if (!m) return null
+      const email = (m[2] || m[1]).trim().toLowerCase()
+      const name = m[2] ? m[1].trim() : ''
+      return email.includes('@') ? { name, email } : null
+    })
+    .filter(Boolean)
+
+export async function recentPeople(member) {
+  const key = member.gmail.address
+  const cached = peopleCache.get(key)
+  if (cached && cached.expires > Date.now()) return cached.people
+  const seen = new Map()
+  const note = ({ name, email }) => {
+    if (email === key) return
+    const current = seen.get(email)
+    if (!current) seen.set(email, { name, email })
+    else if (!current.name && name) current.name = name
+  }
+  for (const [label, headers] of [
+    ['SENT', ['To', 'Cc']],
+    ['INBOX', ['From']],
+  ]) {
+    try {
+      const list = await gmailFetch(member, `/messages?maxResults=60&labelIds=${label}`)
+      const metas = await Promise.all(
+        (list.messages || []).map((m) =>
+          gmailFetch(member, `/messages/${m.id}?format=metadata&${headers.map((h) => `metadataHeaders=${h}`).join('&')}`),
+        ),
+      )
+      for (const m of metas) for (const h of headers) parseAddresses(header(m, h)).forEach(note)
+    } catch {
+      // One folder failing must not empty the suggestions from the other.
+    }
+  }
+  const people = [...seen.values()]
+  peopleCache.set(key, { people, expires: Date.now() + PEOPLE_TTL_MS })
+  return people
+}
+
 // Walk a MIME tree for the first text/plain part, falling back to text/html
 // with the tags stripped. Enough to read a reply; not a mail client.
 const bodyOf = (payload) => {
