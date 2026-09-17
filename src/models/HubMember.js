@@ -24,6 +24,10 @@ const memberSchema = new mongoose.Schema(
     // only the agencies those runs covered - a worklist rather than a country.
     assignedRunIds: { type: [String], default: [] },
     limitToAssignedRuns: { type: Boolean, default: false },
+    // Also every agency anyone has called - the Reached out and Call later
+    // pins - on top of whatever else their map shows. For the person who
+    // works the follow-ups rather than the fresh leads.
+    includeCalled: { type: Boolean, default: false },
     // How many agencies the daily schedule researches for them each morning.
     // Zero means the schedule leaves them alone.
     dailyResearch: { type: Number, default: 0 },

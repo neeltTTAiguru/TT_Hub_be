@@ -33,6 +33,7 @@ const asMember = (doc) => ({
   fullAccess: fullAccessEmails().includes(doc.email),
   assignedRunIds: (doc.assignedRunIds || []).map(String),
   limitToAssignedRuns: Boolean(doc.limitToAssignedRuns),
+  includeCalled: Boolean(doc.includeCalled),
   dailyResearch: Number.isFinite(doc.dailyResearch) ? doc.dailyResearch : 0,
   gmail: { connected: Boolean(doc.gmail?.refreshToken), address: doc.gmail?.address || '' },
   scope: {
@@ -139,6 +140,7 @@ router.put('/members/:email', async (req, res, next) => {
       name: String(body.name || '').slice(0, 120),
       assignedRunIds: runIds.filter((id) => known.has(id)),
       limitToAssignedRuns: body.limitToAssignedRuns === true,
+      includeCalled: body.includeCalled === true,
       dailyResearch: Number.isFinite(daily) && daily > 0 ? Math.min(Math.floor(daily), 500) : 0,
       scope: {
         states: list(scope.states, true),

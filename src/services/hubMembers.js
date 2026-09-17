@@ -91,14 +91,19 @@ export async function scopeClauseFor(member) {
   // cameras. Those are not leads - the research existed to rule them out.
   const theirs = async () => ({ $and: [{ ori: { $in: await assignedOris(runIds) } }, buildFilter({ bwc: 'not_yes' })] })
 
+  // Every agency with a call logged, whoever logged it: the Reached out and
+  // Call later pins. Callable follow-ups, not leads, so no camera filter.
+  const called = { 'outreach.callCount': { $gt: 0 } }
+  const plus = (clause) => (member.includeCalled ? { $or: [clause, called] } : clause)
+
   // Only their runs: an empty worklist when none are assigned, not the
   // whole country. $in [] matches nothing, which is the honest answer.
-  if (member.limitToAssignedRuns) return theirs()
+  if (member.limitToAssignedRuns) return plus(await theirs())
   if (!hasScope) return null
   // Their scope is what they are working; anything researched for them sits
   // on top of it whatever state or size it is in.
-  if (!runIds.length) return built
-  return { $or: [built, await theirs()] }
+  if (!runIds.length) return plus(built)
+  return plus({ $or: [built, await theirs()] })
 }
 
 /**
@@ -158,6 +163,7 @@ export async function memberViewFor(member) {
       finishedAt: run.finishedAt,
     })),
     limitToAssignedRuns: Boolean(member.limitToAssignedRuns),
+    includeCalled: Boolean(member.includeCalled),
     scope: {
       states: member.scope?.states || [],
       agencyTypes: member.scope?.agencyTypes || [],
