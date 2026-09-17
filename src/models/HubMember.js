@@ -31,6 +31,9 @@ const memberSchema = new mongoose.Schema(
     // How many agencies the daily schedule researches for them each morning.
     // Zero means the schedule leaves them alone.
     dailyResearch: { type: Number, default: 0 },
+    // Their morning switched off without losing the number: out sick, on
+    // leave, buried in follow-ups. Everyone else's morning runs as normal.
+    dailyPaused: { type: Boolean, default: false },
 
     // Empty list / null means no limit on that axis.
     scope: {

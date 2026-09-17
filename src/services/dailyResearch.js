@@ -163,7 +163,9 @@ export async function poolSize(schedule) {
  * document if this process won it, null if someone else already had.
  */
 async function claimDay(date, trigger) {
-  const members = await HubMember.find({ dailyResearch: { $gt: 0 } }).sort({ dailyResearch: -1, email: 1 }).lean()
+  const members = await HubMember.find({ dailyResearch: { $gt: 0 }, dailyPaused: { $ne: true } })
+    .sort({ dailyResearch: -1, email: 1 })
+    .lean()
   const plan = members
     .filter((member) => !hasFullAccess(member.email))
     .map((member) => ({ email: member.email, count: Math.min(Math.floor(member.dailyResearch), 500) }))
@@ -188,6 +190,12 @@ async function startEntry(day, entry) {
 
   if (!member) {
     await mark({ status: 'skipped', note: 'No longer on the board.', finishedAt: new Date() })
+    return null
+  }
+  // Paused after the morning was planned - before their turn, or between a
+  // round and its top-up. Whatever they already got stays on their map.
+  if (member.dailyPaused) {
+    await mark({ status: entry.leads ? 'done' : 'skipped', note: 'Paused on the board.', finishedAt: new Date() })
     return null
   }
 

@@ -35,6 +35,7 @@ const asMember = (doc) => ({
   limitToAssignedRuns: Boolean(doc.limitToAssignedRuns),
   includeCalled: Boolean(doc.includeCalled),
   dailyResearch: Number.isFinite(doc.dailyResearch) ? doc.dailyResearch : 0,
+  dailyPaused: Boolean(doc.dailyPaused),
   gmail: { connected: Boolean(doc.gmail?.refreshToken), address: doc.gmail?.address || '' },
   scope: {
     states: doc.scope?.states || [],
@@ -148,6 +149,7 @@ router.put('/members/:email', async (req, res, next) => {
       limitToAssignedRuns: body.limitToAssignedRuns === true,
       includeCalled: body.includeCalled === true,
       dailyResearch: Number.isFinite(daily) && daily > 0 ? Math.min(Math.floor(daily), 500) : 0,
+      dailyPaused: body.dailyPaused === true,
       scope: {
         states: list(scope.states, true),
         agencyTypes: list(scope.agencyTypes),
