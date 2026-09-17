@@ -41,6 +41,12 @@ const GRACE_MINUTES = 180
 // morning cannot spend without limit - at worst about this many times the
 // quota gets researched.
 const MAX_ROUNDS = 4
+
+// A settle takes seconds: count a finished run, maybe start a top-up, send an
+// email. One sitting in 'settling' longer than this was claimed by a process
+// that then died or lost its database - 2026-09-17 it wedged Kyle at 27 of 40
+// for five hours and never started Neil or Troy - so it is taken back over.
+const SETTLE_STALE_MS = 10 * 60 * 1000
 const PLOTTABLE = { $or: [{ geo: { $exists: true } }, { 'location.geo': { $exists: true } }] }
 const NOT_RESEARCHED = {
   'enrichment.bwcResearchedAt': null,
@@ -251,6 +257,12 @@ async function startEntry(day, entry) {
  */
 const leadsIn = (run) => runFindingsRows(run).filter((row) => row.cameras === 'Unknown').length
 
+/** Leads over every run an entry has started, from the runs themselves. */
+async function leadsAcross(runIds) {
+  const runs = await BwcResearchRun.find({ _id: { $in: runIds.filter(Boolean) } }).lean()
+  return runs.reduce((sum, run) => sum + leadsIn(run), 0)
+}
+
 /**
  * Move today's plan one step, if there is a step to take. Safe to call from
  * any process at any time.
@@ -269,20 +281,34 @@ export async function advance({ force = false } = {}) {
   }
   if (day.finishedAt) return day
 
-  // Settle whatever was running.
-  const running = day.plan.find((entry) => entry.status === 'running')
+  // Settle whatever was running - or whatever a dead process left half-settled.
+  const staleBefore = new Date(Date.now() - SETTLE_STALE_MS)
+  const abandoned = (entry) =>
+    entry.status === 'settling' && (!entry.settlingAt || new Date(entry.settlingAt) < staleBefore)
+  const running = day.plan.find((entry) => entry.status === 'running' || abandoned(entry))
   if (running) {
     const run = await BwcResearchRun.findById(running.runId).lean()
     if (!run || ['done', 'stopped', 'failed'].includes(run.status)) {
       // Claim the settle atomically ('settling'), so two backends ticking
-      // against the same plan count, top up and email exactly once.
+      // against the same plan count, top up and email exactly once. A stale
+      // settle is claimed the same way, by its old timestamp, so two backends
+      // cannot both take it back over.
       const claimed = await DailyResearchDay.updateOne(
-        { _id: day._id, 'plan.email': running.email, 'plan.status': 'running', 'plan.runId': running.runId },
-        { $set: { 'plan.$.status': 'settling' } },
+        {
+          _id: day._id,
+          'plan.email': running.email,
+          'plan.runId': running.runId,
+          ...(running.status === 'settling'
+            ? { 'plan.status': 'settling', 'plan.settlingAt': running.settlingAt || null }
+            : { 'plan.status': 'running' }),
+        },
+        { $set: { 'plan.$.status': 'settling', 'plan.$.settlingAt': new Date() } },
       )
       if (!claimed.modifiedCount) return day
 
-      const leads = (running.leads || 0) + (run ? leadsIn(run) : 0)
+      // Counted from every run this entry has had, not accumulated - so a
+      // settle that is taken over and redone cannot count the same run twice.
+      const leads = await leadsAcross(running.runIds?.length ? running.runIds : [running.runId])
       await DailyResearchDay.updateOne({ _id: day._id, 'plan.email': running.email }, { $set: { 'plan.$.leads': leads } })
       const entry = { ...running, leads }
 
@@ -322,7 +348,7 @@ export async function advance({ force = false } = {}) {
     }
   }
 
-  if (day.plan.some((entry) => entry.status === 'settling')) return day
+  if (day.plan.some((entry) => entry.status === 'settling' && !abandoned(entry))) return day
   const next = day.plan.find((entry) => entry.status === 'pending')
   if (!next) {
     await DailyResearchDay.updateOne({ _id: day._id }, { $set: { finishedAt: new Date() } })

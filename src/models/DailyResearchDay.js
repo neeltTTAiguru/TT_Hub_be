@@ -13,8 +13,12 @@ const entrySchema = new mongoose.Schema(
   {
     email: { type: String, required: true },
     count: { type: Number, required: true },
-    // pending | starting | running | done | skipped | failed
+    // pending | starting | running | settling | done | skipped | failed
     status: { type: String, default: 'pending' },
+    // When 'settling' was claimed. A settle that has sat here longer than
+    // SETTLE_STALE_MS was abandoned by a process that died mid-step, and is
+    // re-claimable; without this one crash wedged the whole morning.
+    settlingAt: { type: Date, default: null },
     // The run in flight (or the last one). `runIds` is every run this entry
     // started: the first draw plus each top-up.
     runId: { type: String, default: '' },
