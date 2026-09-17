@@ -54,7 +54,7 @@ router.get('/', async (req, res, next) => {
     const [members, runs, agencyTypes, schedule, days] = await Promise.all([
       HubMember.find({}).sort({ lastSeenAt: -1, email: 1 }).lean(),
       BwcResearchRun.find({})
-        .select('status brief filtersLabel total completed failed foundCameras foundEmails foundPhones startedAt finishedAt startedBy assignedTo')
+        .select('status brief filtersLabel total completed failed foundCameras foundEmails foundPhones startedAt finishedAt startedBy assignedTo sharedWith')
         .sort({ startedAt: -1 })
         .limit(300)
         .lean(),
@@ -80,6 +80,7 @@ router.get('/', async (req, res, next) => {
         foundPhones: run.foundPhones || 0,
         startedBy: run.startedBy || '',
         assignedTo: run.assignedTo || '',
+        sharedWith: run.sharedWith || [],
         startedAt: run.startedAt,
         finishedAt: run.finishedAt,
       })),
@@ -123,8 +124,13 @@ router.put('/members/:email', async (req, res, next) => {
     // someone; putting Kyle's on Troy's map hands Troy leads that are Kyle's
     // to call. Runs started by hand carry no assignee and can go to anyone.
     const known = new Set(
-      (await BwcResearchRun.find({ _id: { $in: runIds } }).select('_id assignedTo').lean())
-        .filter((r) => !r.assignedTo || r.assignedTo.toLowerCase() === email)
+      (await BwcResearchRun.find({ _id: { $in: runIds } }).select('_id assignedTo sharedWith').lean())
+        .filter(
+          (r) =>
+            !r.assignedTo ||
+            r.assignedTo.toLowerCase() === email ||
+            (r.sharedWith || []).some((who) => who.toLowerCase() === email),
+        )
         .map((r) => String(r._id)),
     )
 
@@ -164,6 +170,55 @@ router.put('/members/:email', async (req, res, next) => {
 })
 
 /** Switch the morning schedule on or off, or move the hour. */
+/**
+ * Hand a run's leads to other people.
+ *
+ * The day someone is out, their morning's leads would otherwise sit on a map
+ * nobody is looking at. This puts the run on each recipient's map and
+ * board, labelled as handed off from its owner, who keeps it too. Sending
+ * the same run to two people is deliberate: the leads board shows every
+ * call the moment it is logged, so they split the list by what is already
+ * Done rather than by a rule.
+ */
+router.post('/runs/:id/handoff', async (req, res, next) => {
+  try {
+    const run = await BwcResearchRun.findById(req.params.id)
+    if (!run) return res.status(404).json({ message: 'That run no longer exists.' })
+    const to = [...new Set((Array.isArray(req.body?.to) ? req.body.to : []).map((e) => String(e).trim().toLowerCase()).filter((e) => e.includes('@')))]
+    if (!to.length) return res.status(400).json({ message: 'Say who should get the leads.' })
+    const recipients = await HubMember.find({ email: { $in: to } }).select('email name').lean()
+    const missing = to.filter((e) => !recipients.some((m) => m.email === e))
+    if (missing.length) return res.status(400).json({ message: `Not on the board: ${missing.join(', ')}.` })
+
+    await BwcResearchRun.updateOne({ _id: run._id }, { $addToSet: { sharedWith: { $each: to } } })
+    await HubMember.updateMany({ email: { $in: to } }, { $addToSet: { assignedRunIds: String(run._id) } })
+    res.json({
+      id: String(run._id),
+      from: run.assignedTo || '',
+      to: recipients.map((m) => ({ email: m.email, name: m.name || '' })),
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/** Take a handed-off run back off someone's map. */
+router.delete('/runs/:id/handoff/:email', async (req, res, next) => {
+  try {
+    const email = String(req.params.email || '').trim().toLowerCase()
+    const run = await BwcResearchRun.findById(req.params.id).select('assignedTo').lean()
+    if (!run) return res.status(404).json({ message: 'That run no longer exists.' })
+    if (run.assignedTo && run.assignedTo.toLowerCase() === email) {
+      return res.status(400).json({ message: 'That run is theirs; it was not handed off to them.' })
+    }
+    await BwcResearchRun.updateOne({ _id: req.params.id }, { $pull: { sharedWith: email } })
+    await HubMember.updateOne({ email }, { $pull: { assignedRunIds: String(req.params.id) } })
+    res.json({ ok: true })
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.put('/schedule', async (req, res, next) => {
   try {
     const body = req.body || {}

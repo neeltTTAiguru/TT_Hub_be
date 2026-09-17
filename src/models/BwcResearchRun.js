@@ -104,6 +104,10 @@ const bwcResearchRunSchema = new mongoose.Schema(
     // The person this run was researched for, when the daily schedule made
     // it. Their map is limited to these agencies; the board lists it under them.
     assignedTo: { type: String, default: '', index: true },
+    // Handed off from that person to these people - the day they are out
+    // and their leads must not sit idle. They keep it too; a lead on two
+    // boards is fine, the shared Done status stops the double call.
+    sharedWith: { type: [String], default: [] },
     startedAt: { type: Date, default: Date.now },
     finishedAt: { type: Date, default: null },
     lastError: { type: String, default: '' },

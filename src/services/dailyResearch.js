@@ -423,7 +423,7 @@ export function buildLeadsEmail({ rows, to, entry, day, from }) {
     ...found.map(line),
     ...(rows.length > researched.length ? ['', `${rows.length - researched.length} could not be researched and will be retried another day.`] : []),
     '',
-    `Sent by the Smart Hub on behalf of ${from.name || from.email}.`,
+    `Sent by Trusted Tech Central on behalf of ${from.name || from.email}.`,
   ].join('\n')
 
   return { subject: `${found.length} new leads on your map - ${day.date}`, text, found: found.length }

@@ -210,7 +210,7 @@ export async function buildResearchRunWorkbook(agencies, meta = {}) {
 
 async function writeWorkbook(rows, meta = {}) {
   const book = new ExcelJS.Workbook()
-  book.creator = 'Trusted Technology Smart Hub'
+  book.creator = 'Trusted Tech Central'
   book.created = new Date()
 
   const sheet = book.addWorksheet('Research run', {

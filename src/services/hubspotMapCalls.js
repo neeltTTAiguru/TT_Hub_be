@@ -54,7 +54,7 @@ export function buildMapCallProperties({ agency, entry, ownerId = '' }) {
     entry?.outcome ? `Outcome: ${clean(entry.outcome)}` : '',
     entry?.followUpAt ? `Follow-up: ${new Date(entry.followUpAt).toISOString()}` : '',
     entry?.notes ? `Notes: ${clean(entry.notes)}` : '',
-    email ? `Logged in SmartHub by: ${email}` : '',
+    email ? `Logged in Trusted Tech Central by: ${email}` : '',
     agency?.ori ? `ORI: ${clean(agency.ori).toUpperCase()}` : '',
   ].filter(Boolean)
 

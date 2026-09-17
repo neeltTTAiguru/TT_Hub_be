@@ -176,13 +176,22 @@ export const visibleRunIds = (req) =>
 export async function memberViewFor(member) {
   if (!member) return null
   const runs = await BwcResearchRun.find({ _id: { $in: member.assignedRunIds || [] } })
-    .select('status brief filtersLabel total completed failed startedAt finishedAt')
+    .select('status brief filtersLabel total completed failed startedAt finishedAt assignedTo sharedWith')
     .sort({ startedAt: -1 })
     .lean()
+  // A name for "handed off from", where one is on the board.
+  const owners = await HubMember.find({ email: { $in: runs.map((r) => r.assignedTo).filter(Boolean) } })
+    .select('email name')
+    .lean()
+  const nameOf = (email) => owners.find((o) => o.email === email)?.name || (email || '').split('@')[0]
   return {
     assignedRuns: runs.map((run) => ({
       id: String(run._id),
       status: run.status,
+      assignedTo: run.assignedTo || '',
+      // Set when this run was researched for somebody else and handed here.
+      handedOffFrom:
+        run.assignedTo && run.assignedTo.toLowerCase() !== member.email.toLowerCase() ? nameOf(run.assignedTo) : '',
       brief: run.brief || '',
       filtersLabel: run.filtersLabel || '',
       total: run.total,
