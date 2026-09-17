@@ -394,7 +394,10 @@ export function buildLeadsEmail({ rows, to, entry, day, from }) {
   const withEmail = found.filter((row) => row.email).length
   const withPhone = found.filter((row) => row.phone).length
   const firstName = (to?.name || entry.email.split('@')[0]).split(/\s+/)[0]
-  const hub = (process.env.HUB_FRONTEND_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '')
+  // The people reading this use the hosted hub, whichever backend happened to
+  // run their research - a localhost link from the laptop backend is useless
+  // to Kyle. So the fallback is production, never a dev server.
+  const hub = (process.env.HUB_FRONTEND_URL?.trim() || 'https://trusted-fe-hub-agl8a.ondigitalocean.app').replace(/\/$/, '')
 
   // Counties arrive upper-cased from the FBI feed; the email is read by a person.
   const titleCase = (text) => String(text).toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase())
