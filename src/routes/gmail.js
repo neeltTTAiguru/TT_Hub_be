@@ -88,6 +88,7 @@ router.get('/inbox', async (req, res, next) => {
       await listInbox(member, {
         q: String(req.query.q || '').slice(0, 200),
         pageToken: String(req.query.pageToken || ''),
+        folder: String(req.query.folder || 'inbox'),
       }),
     )
   } catch (error) {

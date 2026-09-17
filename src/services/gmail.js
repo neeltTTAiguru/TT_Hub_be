@@ -265,9 +265,18 @@ const unescape = (text) =>
 const header = (message, name) =>
   (message.payload?.headers || []).find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || ''
 
-/** A page of the inbox: newest first, headers and snippet only. */
-export async function listInbox(member, { q = '', pageToken = '', max = 25 } = {}) {
-  const params = new URLSearchParams({ maxResults: String(max), labelIds: 'INBOX' })
+/** The folders the page offers, as Gmail's system labels. Anything else is Inbox. */
+export const FOLDERS = { inbox: 'INBOX', starred: 'STARRED', sent: 'SENT', drafts: 'DRAFT' }
+
+/**
+ * A page of one folder: newest first, headers and snippet only.
+ *
+ * `total` is Gmail's own estimate for the folder (or the search), which is
+ * what its "1-50 of 1,091" shows too - it is an estimate there as well.
+ */
+export async function listInbox(member, { q = '', pageToken = '', max = 50, folder = 'inbox' } = {}) {
+  const label = FOLDERS[folder] || FOLDERS.inbox
+  const params = new URLSearchParams({ maxResults: String(max), labelIds: label })
   if (q) params.set('q', q)
   if (pageToken) params.set('pageToken', pageToken)
   const list = await gmailFetch(member, `/messages?${params.toString()}`)
@@ -279,6 +288,7 @@ export async function listInbox(member, { q = '', pageToken = '', max = 25 } = {
   )
   return {
     nextPageToken: list.nextPageToken || '',
+    total: Number(list.resultSizeEstimate) || 0,
     messages: messages.map((m) => ({
       id: m.id,
       threadId: m.threadId,
@@ -288,6 +298,7 @@ export async function listInbox(member, { q = '', pageToken = '', max = 25 } = {
       date: header(m, 'Date'),
       snippet: unescape(m.snippet),
       unread: (m.labelIds || []).includes('UNREAD'),
+      starred: (m.labelIds || []).includes('STARRED'),
     })),
   }
 }
