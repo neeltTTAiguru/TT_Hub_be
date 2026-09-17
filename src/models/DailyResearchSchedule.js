@@ -13,6 +13,10 @@ const dailyResearchScheduleSchema = new mongoose.Schema(
     hour: { type: Number, default: 5 },
     minute: { type: Number, default: 0 },
     timezone: { type: String, default: 'America/Los_Angeles' },
+    // Which days the morning runs. 0 = Sunday ... 6 = Saturday, in the
+    // schedule's timezone. Work days by default: nobody is calling agencies
+    // on a Saturday, and leads researched then are stale by Monday.
+    weekdays: { type: [Number], default: [1, 2, 3, 4, 5] },
     // Where the morning's random picks come from. Blank states means the
     // whole country. Always unknown camera status and never researched, on
     // top of this - that is the point of the picks, not a setting.

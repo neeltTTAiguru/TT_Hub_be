@@ -65,13 +65,17 @@ export const getSchedule = async () => {
     hour: 5,
     minute: 0,
     timezone: 'America/Los_Angeles',
+    weekdays: [1, 2, 3, 4, 5],
     ...(doc || {}),
     pick: { ...DEFAULT_PICK, ...(doc?.pick || {}) },
   }
 }
 
-export async function saveSchedule({ enabled, hour, minute, pick, notifyFrom, notifyCc, updatedBy = '' }) {
+export async function saveSchedule({ enabled, hour, minute, weekdays, pick, notifyFrom, notifyCc, updatedBy = '' }) {
   const set = { updatedBy }
+  if (Array.isArray(weekdays)) {
+    set.weekdays = [...new Set(weekdays.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort()
+  }
   if (typeof notifyFrom === 'string') set.notifyFrom = notifyFrom.trim().toLowerCase()
   if (Array.isArray(notifyCc)) {
     set.notifyCc = [...new Set(notifyCc.map((v) => String(v).trim().toLowerCase()).filter((v) => v.includes('@')))]
@@ -109,6 +113,7 @@ export function localNow(timezone, at = new Date()) {
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
+      weekday: 'short',
       hour12: false,
     })
       .formatToParts(at)
@@ -117,8 +122,13 @@ export function localNow(timezone, at = new Date()) {
   return {
     date: `${parts.year}-${parts.month}-${parts.day}`,
     minutes: Number(parts.hour) % 24 * 60 + Number(parts.minute),
+    // 0 = Sunday ... 6 = Saturday, in the zone.
+    weekday: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(parts.weekday),
   }
 }
+
+/** Whether the schedule runs on this local weekday. Unset means every day. */
+const runsOn = (schedule, weekday) => !schedule.weekdays?.length || schedule.weekdays.includes(weekday)
 
 /**
  * The picker's targeting: the schedule's pick scope (states, size, camera
@@ -279,9 +289,9 @@ async function leadsAcross(runIds) {
  */
 export async function advance({ force = false } = {}) {
   const schedule = await getSchedule()
-  const { date, minutes } = localNow(schedule.timezone)
+  const { date, minutes, weekday } = localNow(schedule.timezone)
   const target = schedule.hour * 60 + schedule.minute
-  const due = minutes >= target && minutes < target + GRACE_MINUTES
+  const due = runsOn(schedule, weekday) && minutes >= target && minutes < target + GRACE_MINUTES
 
   let day = await DailyResearchDay.findOne({ date })
   if (!day) {
@@ -471,11 +481,13 @@ async function notifyLeadsReady(day, entry, schedule) {
 
 /** When the schedule next fires, for the board. */
 export function nextFireAt(schedule) {
-  const { date, minutes } = localNow(schedule.timezone)
+  const { date, minutes, weekday } = localNow(schedule.timezone)
   const target = schedule.hour * 60 + schedule.minute
-  // Walk forward from midnight of today (local) to find the next occurrence.
+  // Walk forward from midnight of today (local) to find the next occurrence
+  // on a day the schedule runs - at most a week away.
   const [y, m, d] = date.split('-').map(Number)
-  const dayOffset = minutes < target ? 0 : 1
+  let dayOffset = minutes < target ? 0 : 1
+  while (dayOffset < 8 && !runsOn(schedule, (weekday + dayOffset) % 7)) dayOffset += 1
   // Build the instant by probing: start at the UTC date and adjust by the
   // zone's offset at that moment. Good to the minute across DST.
   const guess = new Date(Date.UTC(y, m - 1, d + dayOffset, schedule.hour, schedule.minute))
