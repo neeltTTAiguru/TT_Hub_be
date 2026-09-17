@@ -310,7 +310,11 @@ export async function advance({ force = false } = {}) {
       // settle that is taken over and redone cannot count the same run twice.
       const leads = await leadsAcross(running.runIds?.length ? running.runIds : [running.runId])
       await DailyResearchDay.updateOne({ _id: day._id, 'plan.email': running.email }, { $set: { 'plan.$.leads': leads } })
-      const entry = { ...running, leads }
+      // toObject first: `running` is a Mongoose subdocument, and spreading one
+      // copies its internals but none of its fields - email, count and rounds
+      // all came out undefined, so the top-up drew for nobody and marked
+      // nothing done, and the entry sat in 'settling' for good.
+      const entry = { ...(running.toObject ? running.toObject() : running), leads }
 
       // Short of the number, the run went fine, rounds left: draw the
       // shortfall now - the traveller is free, this run just ended.
