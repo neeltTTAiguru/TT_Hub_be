@@ -34,7 +34,7 @@ const env = () => ({
   redirectUri:
     process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim() ||
     'https://trusted-hub-be-piemr.ondigitalocean.app/gmail/callback',
-  frontendUrl: (process.env.HUB_FRONTEND_URL?.trim() || 'http://localhost:5173').replace(/\/$/, ''),
+  frontendUrl: (process.env.HUB_FRONTEND_URL?.trim() || 'https://trusted-fe-hub-agl8a.ondigitalocean.app').replace(/\/$/, ''),
   tokenKey: process.env.GMAIL_TOKEN_KEY?.trim() || '',
 })
 
