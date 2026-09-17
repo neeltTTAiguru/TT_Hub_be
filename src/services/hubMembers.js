@@ -87,9 +87,10 @@ export async function scopeClauseFor(member) {
   const hasScope = Object.keys(built).length > 0
   const runIds = member.assignedRunIds || []
 
-  // Agencies researched for them, minus any the research found to have
-  // cameras. Those are not leads - the research existed to rule them out.
-  const theirs = async () => ({ $and: [{ ori: { $in: await assignedOris(runIds) } }, buildFilter({ bwc: 'not_yes' })] })
+  // Everything researched for them - including what the research found to
+  // have cameras. Those stay on the map as red pins rather than vanishing:
+  // a lead that turns red is an answer the person should see, not a gap.
+  const theirs = async () => ({ ori: { $in: await assignedOris(runIds) } })
 
   const always = await alwaysClauseFor(member)
   const plus = (clause) => (always ? { $or: [clause, always] } : clause)
@@ -117,10 +118,8 @@ export async function scopeClauseFor(member) {
 export async function alwaysClauseFor(member) {
   const parts = []
   const runIds = member?.assignedRunIds || []
-  if (runIds.length) {
-    // Researched for them, minus any found to have cameras - not a lead.
-    parts.push({ $and: [{ ori: { $in: await assignedOris(runIds) } }, buildFilter({ bwc: 'not_yes' })] })
-  }
+  // Researched for them - camera or not; found-to-have-cameras shows red.
+  if (runIds.length) parts.push({ ori: { $in: await assignedOris(runIds) } })
   // Every agency with a call logged, whoever logged it: the Reached out and
   // Call later pins. Callable follow-ups, not leads, so no camera filter.
   if (member?.includeCalled) parts.push({ 'outreach.callCount': { $gt: 0 } })
