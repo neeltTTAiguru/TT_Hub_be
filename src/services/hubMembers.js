@@ -58,6 +58,20 @@ export async function seedRosterFromActivity() {
   }
 }
 
+/**
+ * The runs a member sees: their own, plus everything assigned to anyone they
+ * are covering for while that switch is on. Resolved fresh each time - the
+ * board can flip it at any moment, and stale cover is someone seeing leads
+ * they were just told are not theirs any more.
+ */
+export async function effectiveRunIds(member) {
+  const own = (member?.assignedRunIds || []).map(String)
+  const covering = (member?.coveringFor || []).map((e) => String(e).toLowerCase()).filter(Boolean)
+  if (!covering.length) return own
+  const covered = await HubMember.find({ email: { $in: covering } }).select('assignedRunIds').lean()
+  return [...new Set([...own, ...covered.flatMap((m) => (m.assignedRunIds || []).map(String))])]
+}
+
 /** The ORIs every assigned run covered, as one set. */
 async function assignedOris(runIds = []) {
   if (!runIds.length) return []
@@ -85,7 +99,7 @@ export async function scopeClauseFor(member) {
 
   const built = buildFilter(query)
   const hasScope = Object.keys(built).length > 0
-  const runIds = member.assignedRunIds || []
+  const runIds = await effectiveRunIds(member)
 
   // Everything researched for them - including what the research found to
   // have cameras. Those stay on the map as red pins rather than vanishing:
@@ -117,7 +131,7 @@ export async function scopeClauseFor(member) {
  */
 export async function alwaysClauseFor(member) {
   const parts = []
-  const runIds = member?.assignedRunIds || []
+  const runIds = await effectiveRunIds(member)
   // Researched for them - camera or not; found-to-have-cameras shows red.
   if (runIds.length) parts.push({ ori: { $in: await assignedOris(runIds) } })
   // Every agency with a call logged, whoever logged it: the Reached out and
@@ -145,6 +159,7 @@ export async function withMemberScope(req, res, next) {
     const member = await HubMember.findOne({ email }).lean()
     if (!member) return next()
     req.member = member
+    req.memberRunIds = await effectiveRunIds(member)
     req.memberScope = await scopeClauseFor(member)
     req.memberAlways = await alwaysClauseFor(member)
   } catch (error) {
@@ -170,16 +185,16 @@ export const scoped = (req, filter) => {
  * assignments but a free map still watches every run, as they always could.
  */
 export const visibleRunIds = (req) =>
-  req.member?.limitToAssignedRuns ? (req.member.assignedRunIds || []).map(String) : null
+  req.member?.limitToAssignedRuns ? req.memberRunIds || (req.member.assignedRunIds || []).map(String) : null
 
 /** What the client needs to draw a member's map: their rules and their runs. */
 export async function memberViewFor(member) {
   if (!member) return null
-  const runs = await BwcResearchRun.find({ _id: { $in: member.assignedRunIds || [] } })
-    .select('status brief filtersLabel total completed failed startedAt finishedAt assignedTo sharedWith')
+  const runs = await BwcResearchRun.find({ _id: { $in: await effectiveRunIds(member) } })
+    .select('status brief filtersLabel total completed failed startedAt finishedAt assignedTo')
     .sort({ startedAt: -1 })
     .lean()
-  // A name for "handed off from", where one is on the board.
+  // A name for "covering for", where one is on the board.
   const owners = await HubMember.find({ email: { $in: runs.map((r) => r.assignedTo).filter(Boolean) } })
     .select('email name')
     .lean()
@@ -189,8 +204,9 @@ export async function memberViewFor(member) {
       id: String(run._id),
       status: run.status,
       assignedTo: run.assignedTo || '',
-      // Set when this run was researched for somebody else and handed here.
-      handedOffFrom:
+      // Set when this run is somebody else's, on this board because this
+      // person is covering for them.
+      coveringFor:
         run.assignedTo && run.assignedTo.toLowerCase() !== member.email.toLowerCase() ? nameOf(run.assignedTo) : '',
       brief: run.brief || '',
       filtersLabel: run.filtersLabel || '',

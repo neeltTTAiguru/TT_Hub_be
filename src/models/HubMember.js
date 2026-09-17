@@ -24,6 +24,11 @@ const memberSchema = new mongoose.Schema(
     // only the agencies those runs covered - a worklist rather than a country.
     assignedRunIds: { type: [String], default: [] },
     limitToAssignedRuns: { type: Boolean, default: false },
+    // Whose leads this person is covering, while it is switched on: out sick,
+    // on leave. Their runs show on this person's map and board as if they
+    // were theirs, labelled with the name. Nothing is copied; switch it off
+    // and they are gone again.
+    coveringFor: { type: [String], default: [] },
     // Also every agency anyone has called - the Reached out and Call later
     // pins - on top of whatever else their map shows. For the person who
     // works the follow-ups rather than the fresh leads.
