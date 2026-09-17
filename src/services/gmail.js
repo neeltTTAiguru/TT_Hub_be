@@ -11,7 +11,7 @@
  *   GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET - the Web application
  *     client from Google Cloud Console, Internal to the Workspace.
  *   GOOGLE_OAUTH_REDIRECT_URI - this API's /gmail/callback, as registered on
- *     that client. Defaults to localhost for development.
+ *     that client. Defaults to production; local .env points it at localhost.
  *   GMAIL_TOKEN_KEY - 32+ characters; encrypts the stored refresh tokens.
  *   HUB_FRONTEND_URL - where the browser is sent back to after consent.
  */
@@ -28,8 +28,12 @@ const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo'
 const env = () => ({
   clientId: process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || '',
   clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || '',
+  // Production unless told otherwise. This defaulted to localhost, DO never
+  // had the variable, and Troy got "Error 400: redirect_uri_mismatch" from
+  // Google on the hosted hub. Local development sets it in .env.
   redirectUri:
-    process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim() || `http://localhost:${process.env.PORT || 3000}/gmail/callback`,
+    process.env.GOOGLE_OAUTH_REDIRECT_URI?.trim() ||
+    'https://trusted-hub-be-piemr.ondigitalocean.app/gmail/callback',
   frontendUrl: (process.env.HUB_FRONTEND_URL?.trim() || 'http://localhost:5173').replace(/\/$/, ''),
   tokenKey: process.env.GMAIL_TOKEN_KEY?.trim() || '',
 })

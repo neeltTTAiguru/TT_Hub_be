@@ -27,7 +27,7 @@ import {
 export const gmailCallbackRouter = Router()
 
 gmailCallbackRouter.get('/', async (req, res) => {
-  const frontend = (process.env.HUB_FRONTEND_URL?.trim() || 'http://localhost:5173').replace(/\/$/, '')
+  const frontend = (process.env.HUB_FRONTEND_URL?.trim() || 'https://trusted-fe-hub-agl8a.ondigitalocean.app').replace(/\/$/, '')
   const back = (outcome, detail = '') =>
     res.redirect(`${frontend}/gmail?gmail=${outcome}${detail ? `&reason=${encodeURIComponent(detail)}` : ''}`)
   try {
