@@ -117,9 +117,14 @@ router.put('/members/:email', async (req, res, next) => {
     const runIds = Array.isArray(body.assignedRunIds)
       ? [...new Set(body.assignedRunIds.map(String).filter((id) => /^[a-f0-9]{24}$/i.test(id)))]
       : []
-    // Only runs that exist. A stale id would silently be an empty worklist.
+    // Only runs that exist - a stale id would silently be an empty worklist -
+    // and only runs that are this person's. A morning run is researched FOR
+    // someone; putting Kyle's on Troy's map hands Troy leads that are Kyle's
+    // to call. Runs started by hand carry no assignee and can go to anyone.
     const known = new Set(
-      (await BwcResearchRun.find({ _id: { $in: runIds } }).select('_id').lean()).map((r) => String(r._id)),
+      (await BwcResearchRun.find({ _id: { $in: runIds } }).select('_id assignedTo').lean())
+        .filter((r) => !r.assignedTo || r.assignedTo.toLowerCase() === email)
+        .map((r) => String(r._id)),
     )
 
     const scope = body.scope || {}
