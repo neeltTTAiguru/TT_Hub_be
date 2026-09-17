@@ -91,10 +91,8 @@ export async function scopeClauseFor(member) {
   // cameras. Those are not leads - the research existed to rule them out.
   const theirs = async () => ({ $and: [{ ori: { $in: await assignedOris(runIds) } }, buildFilter({ bwc: 'not_yes' })] })
 
-  // Every agency with a call logged, whoever logged it: the Reached out and
-  // Call later pins. Callable follow-ups, not leads, so no camera filter.
-  const called = { 'outreach.callCount': { $gt: 0 } }
-  const plus = (clause) => (member.includeCalled ? { $or: [clause, called] } : clause)
+  const always = await alwaysClauseFor(member)
+  const plus = (clause) => (always ? { $or: [clause, always] } : clause)
 
   // Only their runs: an empty worklist when none are assigned, not the
   // whole country. $in [] matches nothing, which is the honest answer.
@@ -104,6 +102,30 @@ export async function scopeClauseFor(member) {
   // on top of it whatever state or size it is in.
   if (!runIds.length) return plus(built)
   return plus({ $or: [built, await theirs()] })
+}
+
+/**
+ * What is on a member's map no matter what filter the map itself applies.
+ *
+ * The map opens on the scope's state and a size ceiling and sends those as
+ * its own filter. Intersected with the scope alone, that dropped everything
+ * researched for the person outside that state: Kyle's morning draw is
+ * national, his scope is Texas, and most of his leads were on his list but
+ * not on his map - "Show on map" had nothing to show. These bypass the
+ * map's filter entirely (see `scoped`).
+ */
+export async function alwaysClauseFor(member) {
+  const parts = []
+  const runIds = member?.assignedRunIds || []
+  if (runIds.length) {
+    // Researched for them, minus any found to have cameras - not a lead.
+    parts.push({ $and: [{ ori: { $in: await assignedOris(runIds) } }, buildFilter({ bwc: 'not_yes' })] })
+  }
+  // Every agency with a call logged, whoever logged it: the Reached out and
+  // Call later pins. Callable follow-ups, not leads, so no camera filter.
+  if (member?.includeCalled) parts.push({ 'outreach.callCount': { $gt: 0 } })
+  if (!parts.length) return null
+  return parts.length === 1 ? parts[0] : { $or: parts }
 }
 
 /**
@@ -125,14 +147,22 @@ export async function withMemberScope(req, res, next) {
     if (!member) return next()
     req.member = member
     req.memberScope = await scopeClauseFor(member)
+    req.memberAlways = await alwaysClauseFor(member)
   } catch (error) {
     console.error(`[hub-members] scope lookup failed: ${error?.message || error}`)
   }
   return next()
 }
 
-/** Intersect a route's own filter with the caller's scope, if they have one. */
-export const scoped = (req, filter) => (req.memberScope ? { $and: [filter, req.memberScope] } : filter)
+/**
+ * Intersect a route's own filter with the caller's scope, if they have one -
+ * except for what is always theirs, which the route's filter must not hide.
+ */
+export const scoped = (req, filter) => {
+  if (!req.memberScope) return filter
+  const within = { $and: [filter, req.memberScope] }
+  return req.memberAlways ? { $or: [within, req.memberAlways] } : within
+}
 
 /**
  * The run ids a member may see, or null for all of them.
