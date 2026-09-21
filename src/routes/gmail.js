@@ -19,6 +19,7 @@ import {
   sendAsMember,
   statusFor,
 } from '../services/gmail.js'
+import { EMAIL_OUTCOME, syncMapEntryToHubSpot } from '../services/hubspotMapCalls.js'
 
 /**
  * The consent callback. Google sends the browser here with no Auth0 session,
@@ -269,7 +270,8 @@ router.post('/send', async (req, res, next) => {
     // On the call log, because that is the one timeline someone reads before
     // picking the agency up. An email after a voicemail is part of the call.
     const now = new Date()
-    await LeAgency.updateOne(
+    const clientCallId = `gmail:${id}`
+    const updated = await LeAgency.findOneAndUpdate(
       { ori },
       {
         $push: {
@@ -278,18 +280,43 @@ router.post('/send', async (req, res, next) => {
             contactName: agency.contacts?.chiefName || '',
             contactTitle: agency.contacts?.chiefTitle || '',
             phone: '',
-            outcome: 'Follow-up email sent',
+            outcome: EMAIL_OUTCOME,
             notes: `To ${to}\nSubject: ${subject}\n\n${body}`,
-            clientCallId: `gmail:${id}`,
+            clientCallId,
             loggedBy: email,
             loggedAt: now,
           },
         },
-        $set: { 'outreach.lastCalledAt': now, 'outreach.lastOutcome': 'Follow-up email sent', 'outreach.lastLoggedBy': email },
+        $set: { 'outreach.lastCalledAt': now, 'outreach.lastOutcome': EMAIL_OUTCOME, 'outreach.lastLoggedBy': email },
         $inc: { 'outreach.callCount': 1 },
       },
-    )
-    return res.json({ ok: true, id, to })
+      { new: true },
+    ).select('ori agencyName crm.hubspotCompanyId crm.hubspotContactId callLog')
+
+    // And on the HubSpot timeline as an Email, so "how many voicemails got a
+    // follow-up" can be answered there. Same rule as a call: the email has
+    // gone and the log has it, so a HubSpot failure is stamped, not raised.
+    let hubspot = null
+    const savedEntry = updated?.callLog?.find((entry) => entry.clientCallId === clientCallId)
+    if (savedEntry) {
+      try {
+        hubspot = await syncMapEntryToHubSpot(updated, savedEntry)
+        if (hubspot) {
+          savedEntry.hubspotCallId = hubspot.callId
+          savedEntry.hubspotSyncedAt = new Date()
+          savedEntry.hubspotSyncError = ''
+        }
+      } catch (error) {
+        savedEntry.hubspotSyncError = String(error?.message || error).slice(0, 300)
+        hubspot = { error: savedEntry.hubspotSyncError }
+      }
+      try {
+        await updated.save()
+      } catch {
+        // The backfill reconciles by tt_map_call_id.
+      }
+    }
+    return res.json({ ok: true, id, to, hubspot })
   } catch (error) {
     return next(error)
   }

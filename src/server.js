@@ -32,6 +32,7 @@ import chatThreadsRouter from './routes/chatThreads.js'
 import rfpOpportunitiesRouter from './routes/rfpOpportunities.js'
 import policeGrantLeadsRouter from './routes/policeGrantLeads.js'
 import leAgenciesRouter from './routes/leAgencies.js'
+import { ensureMapCallSheet } from './services/mapCallSheet.js'
 import crmDealsRouter from './routes/crmDeals.js'
 import grantSourcesRouter from './routes/grantSources.js'
 import grantOpportunitiesRouter from './routes/grantOpportunities.js'
@@ -199,6 +200,11 @@ async function start() {
   } else {
     await mongoose.connect(mongoUri)
     console.log('Connected to MongoDB')
+    // The `map_calls` view over the agencies' call logs. Never fatal: the
+    // API serves the same rows without it.
+    await ensureMapCallSheet()
+      .then((result) => console.log(`Call sheet view ${result.view}: ${result.action}`))
+      .catch((error) => console.error('Failed to create the call sheet view', error?.message || error))
   }
 
   const server = app.listen(port, () => {

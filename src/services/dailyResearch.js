@@ -268,6 +268,127 @@ async function startEntry(day, entry) {
   return run
 }
 
+export const MINI_RUN_MAX = 50
+
+/**
+ * A handful of leads for one person, right now, outside the morning plan.
+ *
+ * For "Troy is out of pins and it is two in the afternoon". Same draw as the
+ * morning - the pick scope, random, never-researched agencies, excluding
+ * anything ever queued - so a mini run cannot collide with tomorrow's plan
+ * or hand someone an agency already on a colleague's map. Not part of any
+ * day's budget: it neither counts against the morning nor stops it running.
+ *
+ * Capped small on purpose. A run costs real money per agency, and the point
+ * of this button is a top-up, not a second morning.
+ */
+/**
+ * Where a mini run draws from: the person's own map scope, where they have
+ * one, over the morning's pick.
+ *
+ * The morning is deliberately national - it feeds everyone from one pool.
+ * A mini run is "give Neil five more", and five more in Ohio are no use to
+ * someone working Texas. Each field falls back on its own, so a scope that
+ * only names a state keeps the morning's size ceiling. Camera status is not
+ * theirs to choose: a run only ever researches unknowns, because researching
+ * an agency whose status is already known buys nothing.
+ */
+export function miniRunPick(schedule, member) {
+  const base = schedule?.pick || DEFAULT_PICK
+  const scope = member?.scope || {}
+  return {
+    states: scope.states?.length ? scope.states : base.states,
+    agencyTypes: scope.agencyTypes?.length ? scope.agencyTypes : base.agencyTypes,
+    maxOfficers: Number.isFinite(scope.maxOfficers) ? scope.maxOfficers : base.maxOfficers,
+    camera: 'unknown',
+  }
+}
+
+export async function startMiniRun({ email, count, startedBy = '' }) {
+  const member = await HubMember.findOne({ email: String(email || '').trim().toLowerCase() }).lean()
+  if (!member) throw Object.assign(new Error('Nobody on the board with that email.'), { statusCode: 404 })
+  const size = Math.min(Math.max(Math.floor(Number(count) || 0), 1), MINI_RUN_MAX)
+
+  const { query, where } = pickFilter({ pick: miniRunPick(await getSchedule(), member) })
+  const taken = await everQueued()
+  const picked = await LeAgency.aggregate([
+    { $match: { $and: [where, { ori: { $nin: taken } }] } },
+    { $sample: { size } },
+    { $project: { ori: 1 } },
+  ])
+  const oris = picked.map((row) => row.ori)
+  if (!oris.length) {
+    throw Object.assign(
+      new Error('Nothing left to pick: every agency in the pick scope is researched or has a known camera status.'),
+      { statusCode: 409 },
+    )
+  }
+
+  const label = describeFilters(query)
+  const run = await startRun({
+    oris,
+    brief: `Mini run for ${member.name || member.email}: ${oris.length} random agencies, ${label}.`,
+    filters: query,
+    filtersLabel: `${member.name || member.email} - mini run - ${label}`,
+    skipResearched: true,
+    includeOffMap: false,
+    startedBy: startedBy || 'mini-run',
+    assignedTo: member.email,
+  })
+  await HubMember.updateOne({ email: member.email }, { $addToSet: { assignedRunIds: String(run._id) } })
+  // Marked after the fact rather than through startRun: the runner does not
+  // need to know a mini run from any other, only the notifier does.
+  await BwcResearchRun.updateOne({ _id: run._id }, { $set: { miniRun: true, notified: '' } })
+  return { runId: String(run._id), queued: oris.length, brief: run.brief }
+}
+
+/**
+ * Email the leads of every mini run that has finished and not been told about.
+ *
+ * The morning's email goes out when its plan entry completes; a mini run has
+ * no entry, so the scheduler's tick looks for finished ones here. Claimed by
+ * a conditional update first, so two backends sharing the database cannot
+ * both send it. The note lands on the run, where the board can show it.
+ */
+export async function notifyMiniRuns() {
+  const finished = await BwcResearchRun.find({ miniRun: true, status: { $in: ['done', 'stopped', 'failed'] }, notified: '' })
+    .select('_id')
+    .lean()
+  for (const { _id } of finished) {
+    const claimed = await BwcResearchRun.updateOne({ _id, notified: '' }, { $set: { notified: 'sending' } })
+    if (!claimed.modifiedCount) continue
+    const note = (text) => BwcResearchRun.updateOne({ _id }, { $set: { notified: text } })
+    try {
+      const run = await BwcResearchRun.findById(_id).lean()
+      const schedule = await getSchedule()
+      const from = schedule.notifyFrom ? await HubMember.findOne({ email: schedule.notifyFrom }).lean() : null
+      if (!from?.gmail?.refreshToken) {
+        await note(`Not emailed: ${schedule.notifyFrom || 'no sender set'} has no Gmail connected.`)
+        continue
+      }
+      const to = await HubMember.findOne({ email: run.assignedTo }).lean()
+      const { date } = localNow(schedule.timezone)
+      const { subject, text, found } = buildLeadsEmail({
+        rows: runFindingsRows(run),
+        to,
+        entry: { email: run.assignedTo },
+        day: { date },
+        from,
+        kind: 'mini',
+      })
+      if (!found) {
+        await note(run.status === 'failed' ? `Not emailed: run failed (${run.lastError || 'no leads'}).` : 'Not emailed: no leads to send.')
+        continue
+      }
+      const cc = (schedule.notifyCc || []).filter((address) => address && address !== run.assignedTo)
+      const id = await sendAsMember(from, { to: run.assignedTo, cc, subject, text, fromName: from.name || '' })
+      await note(`Emailed from ${from.gmail.address}${cc.length ? `, cc ${cc.join(', ')}` : ''} (${id}).`)
+    } catch (error) {
+      await note(`Not emailed: ${String(error?.message || error).slice(0, 200)}`)
+    }
+  }
+}
+
 /**
  * Leads a run delivered: researched and not yet running cameras - nothing
  * published either way, or a purchase only planned, so a call can settle or
@@ -404,7 +525,7 @@ export async function advance({ force = false } = {}) {
 }
 
 /** The leads email, as text. Pure, so it can be read before anyone gets it. */
-export function buildLeadsEmail({ rows, to, entry, day, from }) {
+export function buildLeadsEmail({ rows, to, entry, day, from, kind = 'morning' }) {
   const researched = rows.filter((row) => row.cameras !== 'Not researched')
   // Found to have cameras: ruled out. Found to have none: settled. Neither is
   // a lead; the leads are the unknowns.
@@ -431,7 +552,9 @@ export function buildLeadsEmail({ rows, to, entry, day, from }) {
   const text = [
     `Hi ${firstName},`,
     '',
-    `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now, on top of your Texas list.`,
+    kind === 'mini'
+      ? `${from.name || from.email} asked the traveller for a few more: it researched ${researched.length} agencies for you just now and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now.`
+      : `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now, on top of your Texas list.`,
     '',
     `${withEmail} have an email address and ${withPhone} have a phone number.${ruledOut || settledNo ? ` Left off: ${[ruledOut ? `${ruledOut} already have cameras` : '', settledNo ? `${settledNo} confirmed none` : ''].filter(Boolean).join(', ')}.` : ''}`,
     '',
@@ -444,7 +567,11 @@ export function buildLeadsEmail({ rows, to, entry, day, from }) {
     `Sent by Trusted Tech Central on behalf of ${from.name || from.email}.`,
   ].join('\n')
 
-  return { subject: `${found.length} new leads on your map - ${day.date}`, text, found: found.length }
+  return {
+    subject: `${found.length} new leads on your map - ${kind === 'mini' ? 'mini run - ' : ''}${day.date}`,
+    text,
+    found: found.length,
+  }
 }
 
 /**
@@ -508,6 +635,7 @@ export function startDailyResearchScheduler() {
     ticking = true
     try {
       await advance()
+      await notifyMiniRuns()
     } catch (error) {
       console.error(`[daily-research] tick failed: ${error?.message || error}`)
     } finally {

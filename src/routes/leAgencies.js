@@ -14,13 +14,14 @@ import {
 } from '../services/researchRunWorkbook.js'
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
-import { requireLoggedByEmail, syncMapCallToHubSpot } from '../services/hubspotMapCalls.js'
+import { requireLoggedByEmail, syncMapEntryToHubSpot } from '../services/hubspotMapCalls.js'
 import BwcResearchRun from '../models/BwcResearchRun.js'
 import AgencyResearchLog from '../models/AgencyResearchLog.js'
 import { resolveActor } from '../middleware/auth.js'
 import { requireFullAccess } from '../middleware/featureAccess.js'
 import { scoped, visibleRunIds, withMemberScope } from '../services/hubMembers.js'
 import { buildFilter, describeFilters, parseNumber } from '../services/leAgencyFilters.js'
+import { listMapCalls, mapCallsToCsv } from '../services/mapCallSheet.js'
 
 const router = Router()
 
@@ -1520,13 +1521,16 @@ router.post('/:ori/call-log', async (req, res, next) => {
 
     // The hub's log is the source of truth and must survive a HubSpot outage.
     // A failed sync is stamped for retry/backfill instead of turning a locally
-    // saved call into an error in the SAE's browser.
+    // saved call into an error in the SAE's browser. A "Call later" bookmark
+    // is not sent at all: it is a pin colour, not a call.
     let hubspot = null
     try {
-      hubspot = await syncMapCallToHubSpot(agency, savedEntry)
-      savedEntry.hubspotCallId = hubspot.callId
-      savedEntry.hubspotSyncedAt = new Date()
-      savedEntry.hubspotSyncError = ''
+      hubspot = await syncMapEntryToHubSpot(agency, savedEntry)
+      if (hubspot) {
+        savedEntry.hubspotCallId = hubspot.callId
+        savedEntry.hubspotSyncedAt = new Date()
+        savedEntry.hubspotSyncError = ''
+      }
     } catch (error) {
       savedEntry.hubspotSyncError = String(error?.message || error).slice(0, 300)
       hubspot = { error: savedEntry.hubspotSyncError }
@@ -1623,6 +1627,39 @@ const callReportInput = (req, source = {}) => ({
   from: typeof source.from === 'string' ? source.from : '',
   to: typeof source.to === 'string' ? source.to : '',
   timezone: typeof source.timezone === 'string' ? source.timezone : 'UTC',
+})
+
+/**
+ * The call sheet: every call logged from the map, one row each, newest first.
+ *
+ * For whoever writes the week up in HubSpot. `?rep=`, `?from=`, `?to=`,
+ * `?outcome=`, `?kind=call|email|bookmark`, `?state=`, `?ori=` narrow it,
+ * `?unsynced=true` lists what never reached HubSpot, and `?format=csv`
+ * downloads it as a spreadsheet. Full access only: a rep's own calls are on
+ * their pins; the whole team's are a manager's view.
+ */
+router.get('/calls', requireFullAccess, async (req, res, next) => {
+  try {
+    const result = await listMapCalls(req.query, req.memberScope)
+    if (String(req.query.format || '').toLowerCase() === 'csv') {
+      const day = (date) => date.toISOString().slice(0, 10)
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="map-calls-${day(result.period.from)}-to-${day(result.period.to)}.csv"`,
+      )
+      return res.send(mapCallsToCsv(result.rows))
+    }
+    return res.json({
+      calls: result.rows,
+      count: result.rows.length,
+      truncated: result.truncated,
+      limit: result.limit,
+      period: result.period,
+    })
+  } catch (error) {
+    return next(error)
+  }
 })
 
 /** The figures on their own, for the preview in the report dialog. */

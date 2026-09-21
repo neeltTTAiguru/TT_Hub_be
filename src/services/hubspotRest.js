@@ -32,7 +32,7 @@ const token = () => {
  * flattened into "request failed". That message ends up in front of whoever
  * clicked Save, and it is usually the whole fix.
  */
-async function call(method, path, body) {
+export async function call(method, path, body) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
   let response
@@ -174,6 +174,20 @@ export async function listOwners() {
  */
 const propertyCache = new Map()
 const uniquePropertyCache = new Set()
+
+/**
+ * Add one option to an enumeration property, leaving the others as they are.
+ * A no-op when the value already exists, so it is safe to call on every run.
+ */
+export async function ensureEnumerationOption(objectType, propertyName, option) {
+  const property = await call('GET', `/crm/v3/properties/${objectType}/${propertyName}`)
+  const options = property.options || []
+  if (options.some((existing) => existing.value === option.value)) return false
+  await call('PATCH', `/crm/v3/properties/${objectType}/${propertyName}`, {
+    options: [...options, { ...option, displayOrder: options.length }],
+  })
+  return true
+}
 
 export async function requireUniqueProperty(objectType, propertyName) {
   const key = `${objectType}:${propertyName}`

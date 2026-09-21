@@ -104,6 +104,10 @@ const bwcResearchRunSchema = new mongoose.Schema(
     // The person this run was researched for, when the daily schedule made
     // it. Their map is limited to these agencies; the board lists it under them.
     assignedTo: { type: String, default: '', index: true },
+    // Started from the board for one person, outside the morning plan. The
+    // plan carries the morning's "emailed" note; a mini run carries its own.
+    miniRun: { type: Boolean, default: false },
+    notified: { type: String, default: '' },
     startedAt: { type: Date, default: Date.now },
     finishedAt: { type: Date, default: null },
     lastError: { type: String, default: '' },

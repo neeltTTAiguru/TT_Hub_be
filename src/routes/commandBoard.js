@@ -12,6 +12,7 @@ import {
   poolSize,
   recentDays,
   saveSchedule,
+  startMiniRun,
 } from '../services/dailyResearch.js'
 
 const router = Router()
@@ -205,6 +206,25 @@ router.post('/schedule/run-now', async (req, res, next) => {
     if (!day) return res.status(409).json({ message: 'Nobody has a daily number set.' })
     return res.json({ date: day.date, trigger: day.trigger, finishedAt: day.finishedAt, plan: day.plan })
   } catch (error) {
+    return next(error)
+  }
+})
+
+/**
+ * A few leads for one person right now. Body: `{ count }`, capped. The run
+ * lands in their assignments like a morning run; 409 when a run is already
+ * going or the pick scope is exhausted.
+ */
+router.post('/members/:email/mini-run', async (req, res, next) => {
+  try {
+    const result = await startMiniRun({
+      email: req.params.email,
+      count: req.body?.count,
+      startedBy: await resolveActor(req).catch(() => ''),
+    })
+    return res.status(201).json(result)
+  } catch (error) {
+    if (error?.statusCode) return res.status(error.statusCode).json({ message: error.message })
     return next(error)
   }
 })

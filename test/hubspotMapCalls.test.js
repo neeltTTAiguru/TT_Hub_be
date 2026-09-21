@@ -1,10 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  HUBSPOT_DISPOSITIONS,
   buildMapCallProperties,
+  buildMapEmailProperties,
   backfillMapCalls,
+  dispositionFor,
   findOwnerForEmail,
   mapCallFingerprint,
+  mapEntryKind,
+  parseLoggedEmail,
   requireLoggedByEmail,
   upsertMapCallRecord,
 } from '../src/services/hubspotMapCalls.js'
@@ -34,7 +39,50 @@ test('Map Call payload is reportable and preserves the authenticated map email',
   assert.equal(properties.tt_logged_by_email, 'troy@trustedtechnology.ai')
   assert.equal(properties.tt_agency_ori, 'TX1234500')
   assert.equal(properties.tt_map_outcome, 'Spoke with decision maker')
+  assert.equal(properties.hs_call_disposition, HUBSPOT_DISPOSITIONS.connected)
   assert.match(properties.hs_call_body, /Asked for pricing/)
+})
+
+test("every map outcome that was a dial lands on one of HubSpot's own Outcomes", () => {
+  assert.equal(dispositionFor('Spoke with gatekeeper'), HUBSPOT_DISPOSITIONS.connected)
+  assert.equal(dispositionFor('Not interested'), HUBSPOT_DISPOSITIONS.connected)
+  assert.equal(dispositionFor('Left voicemail'), HUBSPOT_DISPOSITIONS.leftVoicemail)
+  assert.equal(dispositionFor('No answer'), HUBSPOT_DISPOSITIONS.noAnswer)
+  assert.equal(dispositionFor('Wrong number / bad line'), HUBSPOT_DISPOSITIONS.wrongNumber)
+  // No outcome, no Outcome - HubSpot shows "unassigned" rather than a guess.
+  assert.equal(dispositionFor(''), '')
+  assert.equal('hs_call_disposition' in buildMapCallProperties({ agency, entry: { ...entry, outcome: '' } }), false)
+})
+
+test('a bookmark is not a call and an email is not a call', () => {
+  assert.equal(mapEntryKind({ outcome: 'Call later' }), 'bookmark')
+  assert.equal(mapEntryKind({ outcome: 'Follow-up email sent' }), 'email')
+  assert.equal(mapEntryKind({ outcome: 'Left voicemail' }), 'call')
+  assert.equal(mapEntryKind({ outcome: '' }), 'call')
+})
+
+test('a logged follow-up email becomes a HubSpot Email with its subject and recipient', () => {
+  const notes = 'To chief@example.gov\nSubject: Following up on my voicemail\n\nHi Chief,\n\nQuick note.'
+  assert.deepEqual(parseLoggedEmail(notes), {
+    to: 'chief@example.gov',
+    subject: 'Following up on my voicemail',
+    body: 'Hi Chief,\n\nQuick note.',
+  })
+  const properties = buildMapEmailProperties({
+    agency,
+    entry: { ...entry, outcome: 'Follow-up email sent', notes },
+    ownerId: '90396815',
+  })
+  assert.equal(properties.hs_email_direction, 'EMAIL')
+  assert.equal(properties.hs_email_status, 'SENT')
+  assert.equal(properties.hs_email_subject, 'Following up on my voicemail')
+  assert.equal(properties.hs_email_text, 'Hi Chief,\n\nQuick note.')
+  assert.deepEqual(JSON.parse(properties.hs_email_headers), {
+    from: { email: 'troy@trustedtechnology.ai' },
+    to: [{ email: 'chief@example.gov' }],
+  })
+  assert.equal(properties.tt_email_source, 'agency_map')
+  assert.equal(properties.tt_map_call_id, mapCallFingerprint(agency, entry))
 })
 
 test('HubSpot owner attribution is an exact case-insensitive email match', () => {
@@ -73,10 +121,23 @@ test('backfill processes every historical Map call and keeps going after one fai
     return { callId: `hs-${call._id}` }
   })
 
-  assert.deepEqual(result, { total: 3, synced: 2, failed: 1 })
+  assert.deepEqual(result, { total: 3, synced: 2, skipped: 0, failed: 1 })
   assert.equal(agencies[0].callLog[0].hubspotCallId, 'hs-1')
   assert.match(agencies[0].callLog[1].hubspotSyncError, /temporary outage/)
   assert.equal(agencies[1].callLog[0].hubspotCallId, 'hs-3')
+})
+
+test('backfill leaves bookmarks alone rather than sending them up as calls', async () => {
+  const agencies = [{ ori: 'A', callLog: [{ _id: '1', outcome: 'Call later' }, { _id: '2' }], async save() {} }]
+  const sent = []
+  const result = await backfillMapCalls(agencies, async (_agency, call) => {
+    if (call.outcome === 'Call later') return null
+    sent.push(call._id)
+    return { callId: `hs-${call._id}` }
+  })
+  assert.deepEqual(result, { total: 2, synced: 1, skipped: 1, failed: 0 })
+  assert.deepEqual(sent, ['2'])
+  assert.equal(agencies[0].callLog[0].hubspotCallId, undefined)
 })
 
 test('an Auth0 subject cannot create an unattributed HubSpot Map Call', () => {
