@@ -355,11 +355,12 @@ async function startMiniRound(member, { target, need, round, chainId, startedBy 
  * otherwise email the leads.
  *
  * The morning does this from its plan entry; a mini run has no entry, so the
- * scheduler's tick looks for finished ones here. The same rule as the
- * morning: fewer leads than asked, the run went fine and rounds are left -
- * draw the shortfall again, up to MAX_ROUNDS. Claimed by a conditional
- * update first, so two backends sharing the database cannot both act on it.
- * The note lands on the run, where the board can show it.
+ * scheduler's tick looks for finished ones here. Unlike the morning there is
+ * no round limit: the button was pressed for that many leads, and it keeps
+ * drawing the shortfall until it has them. What stops it is the scope
+ * running out of unresearched agencies, or the run failing. Claimed by a
+ * conditional update first, so two backends sharing the database cannot both
+ * act on it. The note lands on the run, where the board can show it.
  */
 export async function settleMiniRuns() {
   const finished = await BwcResearchRun.find({ miniRun: true, status: { $in: ['done', 'stopped', 'failed'] }, notified: '' })
@@ -377,7 +378,7 @@ export async function settleMiniRuns() {
       const target = run.miniTarget || run.total
 
       const short = leads < target
-      const canTopUp = run.status !== 'failed' && (run.miniRound || 1) < MAX_ROUNDS
+      const canTopUp = run.status !== 'failed'
       if (short && canTopUp) {
         // The traveller is busy with something else: try again next tick.
         if (await activeRun()) {
