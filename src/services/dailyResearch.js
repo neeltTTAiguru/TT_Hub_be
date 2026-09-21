@@ -268,19 +268,15 @@ async function startEntry(day, entry) {
   return run
 }
 
-export const MINI_RUN_MAX = 50
-
 /**
- * A handful of leads for one person, right now, outside the morning plan.
+ * One person's morning, right now.
  *
- * For "Troy is out of pins and it is two in the afternoon". Same draw as the
- * morning - the pick scope, random, never-researched agencies, excluding
- * anything ever queued - so a mini run cannot collide with tomorrow's plan
- * or hand someone an agency already on a colleague's map. Not part of any
- * day's budget: it neither counts against the morning nor stops it running.
- *
- * Capped small on purpose. A run costs real money per agency, and the point
- * of this button is a top-up, not a second morning.
+ * For "Troy is out of pins and it is two in the afternoon". The same run the
+ * schedule would give them - their leads-a-day, random never-researched
+ * agencies, excluding anything ever queued so it cannot collide with
+ * tomorrow's plan or a colleague's map - drawn from their own map scope
+ * rather than the national pool. Not part of any day's budget: it neither
+ * counts against the morning nor stops it running.
  */
 /**
  * Where a mini run draws from: the person's own map scope, where they have
@@ -304,10 +300,11 @@ export function miniRunPick(schedule, member) {
   }
 }
 
-export async function startMiniRun({ email, count, startedBy = '' }) {
+export async function startMiniRun({ email, startedBy = '' }) {
   const member = await HubMember.findOne({ email: String(email || '').trim().toLowerCase() }).lean()
   if (!member) throw Object.assign(new Error('Nobody on the board with that email.'), { statusCode: 404 })
-  const size = Math.min(Math.max(Math.floor(Number(count) || 0), 1), MINI_RUN_MAX)
+  const size = Math.min(Math.floor(member.dailyResearch || 0), 500)
+  if (!size) throw Object.assign(new Error('No leads-a-day set for them on the board.'), { statusCode: 409 })
 
   const { query, where } = pickFilter({ pick: miniRunPick(await getSchedule(), member) })
   const taken = await everQueued()
@@ -327,9 +324,9 @@ export async function startMiniRun({ email, count, startedBy = '' }) {
   const label = describeFilters(query)
   const run = await startRun({
     oris,
-    brief: `Mini run for ${member.name || member.email}: ${oris.length} random agencies, ${label}.`,
+    brief: `Research for ${member.name || member.email}, run from the board: ${oris.length} random agencies, ${label}.`,
     filters: query,
-    filtersLabel: `${member.name || member.email} - mini run - ${label}`,
+    filtersLabel: `${member.name || member.email} - ${label}`,
     skipResearched: true,
     includeOffMap: false,
     startedBy: startedBy || 'mini-run',
@@ -553,7 +550,7 @@ export function buildLeadsEmail({ rows, to, entry, day, from, kind = 'morning' }
     `Hi ${firstName},`,
     '',
     kind === 'mini'
-      ? `${from.name || from.email} asked the traveller for a few more: it researched ${researched.length} agencies for you just now and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now.`
+      ? `The traveller researched ${researched.length} agencies for you just now and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now.`
       : `The traveller researched ${researched.length} agencies for you overnight and found ${found.length} new leads - agencies with no published body camera status, so a call can settle it. They are on your map now, on top of your Texas list.`,
     '',
     `${withEmail} have an email address and ${withPhone} have a phone number.${ruledOut || settledNo ? ` Left off: ${[ruledOut ? `${ruledOut} already have cameras` : '', settledNo ? `${settledNo} confirmed none` : ''].filter(Boolean).join(', ')}.` : ''}`,
@@ -568,7 +565,7 @@ export function buildLeadsEmail({ rows, to, entry, day, from, kind = 'morning' }
   ].join('\n')
 
   return {
-    subject: `${found.length} new leads on your map - ${kind === 'mini' ? 'mini run - ' : ''}${day.date}`,
+    subject: `${found.length} new leads on your map - ${day.date}`,
     text,
     found: found.length,
   }

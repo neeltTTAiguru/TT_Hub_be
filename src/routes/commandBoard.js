@@ -211,15 +211,14 @@ router.post('/schedule/run-now', async (req, res, next) => {
 })
 
 /**
- * A few leads for one person right now. Body: `{ count }`, capped. The run
- * lands in their assignments like a morning run; 409 when a run is already
- * going or the pick scope is exhausted.
+ * One person's morning research, right now: their leads-a-day, from their own
+ * map scope. The run lands in their assignments like a morning run; 409 when
+ * a run is already going, they have no daily number, or the scope is exhausted.
  */
 router.post('/members/:email/mini-run', async (req, res, next) => {
   try {
     const result = await startMiniRun({
       email: req.params.email,
-      count: req.body?.count,
       startedBy: await resolveActor(req).catch(() => ''),
     })
     return res.status(201).json(result)
