@@ -478,6 +478,7 @@ export async function advance({ force = false } = {}) {
       // against the same plan count, top up and email exactly once. A stale
       // settle is claimed the same way, by its old timestamp, so two backends
       // cannot both take it back over.
+      const settlingAt = new Date()
       const claimed = await DailyResearchDay.updateOne(
         {
           _id: day._id,
@@ -487,14 +488,21 @@ export async function advance({ force = false } = {}) {
             ? { 'plan.status': 'settling', 'plan.settlingAt': running.settlingAt || null }
             : { 'plan.status': 'running' }),
         },
-        { $set: { 'plan.$.status': 'settling', 'plan.$.settlingAt': new Date() } },
+        { $set: { 'plan.$.status': 'settling', 'plan.$.settlingAt': settlingAt } },
       )
       if (!claimed.modifiedCount) return day
+      // Our claim, by its timestamp. Every write below is conditional on it:
+      // a settle that stalls past SETTLE_STALE_MS is taken over by the other
+      // backend, and when the stalled one finally wakes it must find its
+      // claim gone and do nothing. Kyle's 2026-09-21 email listed 23 leads
+      // while the other backend's top-up was still finding 10 more, because
+      // the stalled settle marked the entry done and emailed on wake-up.
+      const stillOurs = { _id: day._id, 'plan.email': running.email, 'plan.status': 'settling', 'plan.settlingAt': settlingAt }
 
       // Counted from every run this entry has had, not accumulated - so a
       // settle that is taken over and redone cannot count the same run twice.
       const leads = await leadsAcross(running.runIds?.length ? running.runIds : [running.runId])
-      await DailyResearchDay.updateOne({ _id: day._id, 'plan.email': running.email }, { $set: { 'plan.$.leads': leads } })
+      if (!(await DailyResearchDay.updateOne(stillOurs, { $set: { 'plan.$.leads': leads } })).modifiedCount) return day
       // toObject first: `running` is a Mongoose subdocument, and spreading one
       // copies its internals but none of its fields - email, count and rounds
       // all came out undefined, so the top-up drew for nobody and marked
@@ -512,10 +520,16 @@ export async function advance({ force = false } = {}) {
         } catch (error) {
           console.error(`[daily-research] top-up for ${entry.email} failed: ${error?.message || error}`)
         }
+        // startEntry may have ended the entry itself (paused, nothing to
+        // pick) - or a takeover may have started a run under it while we
+        // were away. Either way it is no longer ours to finish.
+        const fresh = await DailyResearchDay.findOne({ _id: day._id, 'plan.email': entry.email }, { 'plan.$': 1 }).lean()
+        const now = fresh?.plan?.[0]
+        if (!now || now.status !== 'settling' || +new Date(now.settlingAt) !== +settlingAt) return DailyResearchDay.findById(day._id)
       }
 
-      await DailyResearchDay.updateOne(
-        { _id: day._id, 'plan.email': entry.email },
+      const finished = await DailyResearchDay.updateOne(
+        stillOurs,
         {
           $set: {
             'plan.$.status': run?.status === 'failed' && !leads ? 'failed' : 'done',
@@ -526,6 +540,7 @@ export async function advance({ force = false } = {}) {
           },
         },
       )
+      if (!finished.modifiedCount) return day
       if (run) {
         await notifyLeadsReady(day, entry, schedule).catch((error) =>
           console.error(`[daily-research] could not email ${entry.email}: ${error?.message || error}`),
