@@ -107,6 +107,11 @@ const bwcResearchRunSchema = new mongoose.Schema(
     // Started from the board for one person, outside the morning plan. The
     // plan carries the morning's "emailed" note; a mini run carries its own.
     miniRun: { type: Boolean, default: false },
+    // The number asked for, which round this run is, and the first run of the
+    // chain - a mini run tops up like the morning until it has its leads.
+    miniTarget: { type: Number, default: 0 },
+    miniRound: { type: Number, default: 0 },
+    miniChainId: { type: String, default: '', index: true },
     notified: { type: String, default: '' },
     startedAt: { type: Date, default: Date.now },
     finishedAt: { type: Date, default: null },
