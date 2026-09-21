@@ -11,6 +11,7 @@ import {
   nextFireAt,
   poolSize,
   recentDays,
+  recentMiniRuns,
   saveSchedule,
   startMiniRun,
 } from '../services/dailyResearch.js'
@@ -54,7 +55,7 @@ const asMember = (doc) => ({
 router.get('/', async (req, res, next) => {
   try {
     await seedRosterFromActivity()
-    const [members, runs, agencyTypes, schedule, days] = await Promise.all([
+    const [members, runs, agencyTypes, schedule, days, miniRuns] = await Promise.all([
       HubMember.find({}).sort({ lastSeenAt: -1, email: 1 }).lean(),
       BwcResearchRun.find({})
         .select('status brief filtersLabel total completed failed foundCameras foundEmails foundPhones startedAt finishedAt startedBy assignedTo')
@@ -64,6 +65,7 @@ router.get('/', async (req, res, next) => {
       LeAgency.distinct('agencyType', { isTestRecord: { $ne: true } }),
       getSchedule(),
       recentDays(7),
+      recentMiniRuns(10),
     ])
     // How many unknown-camera agencies are left to draw from, so a daily total
     // bigger than the pool is visible before the morning it comes up short.
@@ -88,6 +90,7 @@ router.get('/', async (req, res, next) => {
       })),
       agencyTypes: agencyTypes.filter(Boolean).sort(),
       fullAccessEmails: fullAccessEmails(),
+      miniRuns,
       schedule: {
         enabled: Boolean(schedule.enabled),
         hour: schedule.hour,

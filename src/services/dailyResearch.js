@@ -691,6 +691,49 @@ export function startDailyResearchScheduler() {
   console.log('[daily-research] scheduler ticking every minute.')
 }
 
+/**
+ * Recent mini runs for the board, one row per chain, newest first.
+ *
+ * A chain is one press of the button: the first draw and every top-up after
+ * it. Counted the way the morning's plan entry is - leads against the number
+ * asked for, the round in flight in brackets - so the two boards read alike.
+ */
+export async function recentMiniRuns(limit = 10) {
+  const runs = await BwcResearchRun.find({ miniRun: true }).sort({ startedAt: -1 }).limit(limit * 6).lean()
+  const chains = new Map()
+  for (const run of runs) {
+    const id = run.miniChainId || String(run._id)
+    if (!chains.has(id)) chains.set(id, [])
+    chains.get(id).push(run)
+  }
+  return [...chains.entries()].slice(0, limit).map(([chainId, items]) => {
+    const rounds = [...items].sort((a, b) => new Date(a.startedAt) - new Date(b.startedAt))
+    const latest = rounds[rounds.length - 1]
+    const first = rounds[0]
+    const leads = rounds.reduce((sum, run) => sum + leadsIn(run), 0)
+    const finished = ['done', 'stopped', 'failed'].includes(latest.status) && latest.notified && latest.notified !== 'settling'
+      ? !/top-up \d+ started/.test(latest.notified)
+      : false
+    return {
+      chainId,
+      email: latest.assignedTo,
+      target: first.miniTarget || first.total,
+      leads,
+      rounds: rounds.length,
+      // 'running' until the last round has been settled - a top-up may still
+      // be about to start even though the run itself says done.
+      status: finished ? (latest.status === 'failed' && !leads ? 'failed' : 'done') : 'running',
+      round: { completed: latest.completed + latest.failed, total: latest.total, status: latest.status },
+      runId: String(latest._id),
+      runIds: rounds.map((run) => String(run._id)),
+      startedBy: first.startedBy || '',
+      startedAt: first.startedAt,
+      finishedAt: finished ? latest.finishedAt : null,
+      notified: latest.notified || '',
+    }
+  })
+}
+
 /** Recent mornings, newest first, for the board. */
 export const recentDays = (limit = 14) =>
   DailyResearchDay.find({}).sort({ date: -1 }).limit(limit).lean()
