@@ -63,6 +63,14 @@ Deal Pipeline model (authoritative for stage, qualification, ownership, and prog
 - Ignore technical wording or internal IDs from earlier assistant messages; they are obsolete and must not be repeated.
 - Use read-only tools only. Never create, update, or delete CRM data.
 
+Activity questions - calls and emails made by a rep (authoritative; the deal properties "Number of Calls" / "Number of Emails" are NOT the answer to these):
+- "How many calls did Kyle make today" is a question about Call engagement records, object type "calls". Query that object, never deals.
+- A map call is a Call record with tt_call_source equal to "agency_map". Who made it is tt_logged_by_email (kyle@trustedtechnology.ai, neil@trustedtechnology.ai, troy.broddrick@trustedtechnology.ai) - match on that, not on owner names, because a call whose owner could not be matched is still theirs.
+- Exclude records whose tt_map_outcome is "Call later": those are bookmarks, not dials.
+- The day is hs_timestamp, and day boundaries are America/Chicago (the reps' day). "Today" is the date given at the end of these instructions; convert its Chicago midnight-to-midnight to UTC for the filter. Say which calendar day you counted, in one clause, so the number can be checked against the HubSpot call report.
+- Count with one aggregate query grouped by tt_logged_by_email (COUNT with GROUP BY) rather than paging through records. A rep with no matching records is 0 - say so as a plain number, do not say the rep "has no calls logged" in a way that implies nothing was ever logged.
+- Emails the same way: object type "emails", tt_email_source equal to "agency_map", tt_logged_by_email, hs_timestamp.
+
 Tool-use efficiency rules (follow exactly; each failed call re-sends the whole conversation and wastes work):
 - Every tool call must include all required arguments. In particular, query_crm_data requires a non-empty "sql" argument; never invoke it without one.
 - query_crm_data SQL does not support DISTINCT. To get unique values, use GROUP BY instead (for example, GROUP BY dealstage rather than SELECT DISTINCT dealstage).
@@ -70,6 +78,24 @@ Tool-use efficiency rules (follow exactly; each failed call re-sends the whole c
 - For a count, total, or "how many" question, prefer a single aggregate query (COUNT with GROUP BY) over retrieving every record and counting them. It returns the exact number with far less work than pagination.
 - Request only the specific properties the question needs; do not fetch every property on every deal.
 - If a tool call returns an error, read the error, adjust the arguments to satisfy the stated constraint, and issue a corrected call. Never repeat the identical failing call.`
+
+/**
+ * "Today" for activity questions. The model has no clock, and the reps'
+ * day is Chicago - without this, "calls today" is counted against whatever
+ * date the model assumes, in UTC, and comes back 0 at 4pm.
+ */
+export function withToday(instructions, now = new Date()) {
+  const chicago = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(now)
+  return `${instructions}\n\nRight now it is ${chicago} in America/Chicago (${now.toISOString()} UTC). "Today" means that Chicago calendar day.`
+}
 
 export async function chatWithHubSpotDeals(messages, options = {}) {
   // Fail closed before spending a call: if the background monitor has confirmed
@@ -81,7 +107,7 @@ export async function chatWithHubSpotDeals(messages, options = {}) {
     ...options,
     timeoutMs: HUBSPOT_TIMEOUT_MS,
     rateLimitRetries: HUBSPOT_RETRIES,
-    instructions: HUBSPOT_DEAL_INSTRUCTIONS,
+    instructions: withToday(HUBSPOT_DEAL_INSTRUCTIONS),
   })
 
   // Catches a drop that happened since the last probe.
