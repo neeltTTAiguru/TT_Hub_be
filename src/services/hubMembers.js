@@ -45,7 +45,15 @@ export async function seedRosterFromActivity() {
       TravellerState.distinct('email', { email: { $regex: '@' } }),
       BwcResearchRun.distinct('startedBy', { startedBy: { $regex: '@' } }),
     ])
-    const emails = [...new Set([...callers, ...travellers, ...runners].map((e) => String(e).trim().toLowerCase()))]
+    // Filter again here: distinct() on an array field (callLog.loggedBy)
+    // returns every value in a matching document's array, not only the ones
+    // the query matched - so an Auth0 subject logged next to a real email
+    // came through as "google-oauth2|1035...", and onto the board.
+    const emails = [
+      ...new Set(
+        [...callers, ...travellers, ...runners].map((e) => String(e).trim().toLowerCase()).filter((e) => e.includes('@')),
+      ),
+    ]
     if (!emails.length) return
     await HubMember.bulkWrite(
       emails.map((email) => ({
