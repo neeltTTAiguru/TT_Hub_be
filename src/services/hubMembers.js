@@ -141,6 +141,12 @@ export async function alwaysClauseFor(member) {
   return parts.length === 1 ? parts[0] : { $or: parts }
 }
 
+/** The member a full-access caller asked to look through, or ''. */
+function viewAsEmail(req) {
+  const asked = String(req.get('x-view-as') || '').trim().toLowerCase()
+  return asked.includes('@') && !hasFullAccess(asked) ? asked : ''
+}
+
 /**
  * Express middleware: work out the caller's scope once, for the routes below.
  *
@@ -155,8 +161,13 @@ export async function withMemberScope(req, res, next) {
   if (req.method === 'OPTIONS') return next()
   try {
     const email = await resolveActorEmail(req)
-    if (!email || hasFullAccess(email)) return next()
-    const member = await HubMember.findOne({ email }).lean()
+    if (!email) return next()
+    // A full-access account can ask to see the map as one member sees it
+    // (the Views menu). Only full access may borrow a scope, and only a
+    // restricted member's - "view as Todd" would just be the whole map.
+    const viewAs = hasFullAccess(email) ? viewAsEmail(req) : ''
+    if (hasFullAccess(email) && !viewAs) return next()
+    const member = await HubMember.findOne({ email: viewAs || email }).lean()
     if (!member) return next()
     req.member = member
     req.memberRunIds = await effectiveRunIds(member)
