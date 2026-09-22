@@ -30,11 +30,16 @@ export const gmailCallbackRouter = Router()
 
 gmailCallbackRouter.get('/', async (req, res) => {
   const frontend = (process.env.HUB_FRONTEND_URL?.trim() || 'https://trusted-fe-hub-agl8a.ondigitalocean.app').replace(/\/$/, '')
+  // Where they pressed Connect. Read out of the signed state below; the error
+  // paths that never get that far land on Gmail, which is where the button
+  // has always been.
+  let page = 'gmail'
   const back = (outcome, detail = '') =>
-    res.redirect(`${frontend}/gmail?gmail=${outcome}${detail ? `&reason=${encodeURIComponent(detail)}` : ''}`)
+    res.redirect(`${frontend}/${page}?gmail=${outcome}${detail ? `&reason=${encodeURIComponent(detail)}` : ''}`)
   try {
     if (req.query.error) return back('denied', String(req.query.error))
-    const { email } = readState(req.query.state)
+    const { email, to } = readState(req.query.state)
+    page = to
     const address = await completeConnect(email, String(req.query.code || ''))
     return back('connected', address)
   } catch (error) {

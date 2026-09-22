@@ -43,6 +43,11 @@ const callLogEntrySchema = new mongoose.Schema(
     hubspotCallId: { type: String, default: '', trim: true },
     hubspotSyncedAt: { type: Date, default: null },
     hubspotSyncError: { type: String, default: '', trim: true },
+    // The call-back this entry put on the SAE's own Google Calendar. Stored
+    // so a second save of the same call updates that event rather than
+    // booking the chief twice, and so the reason is visible when it failed.
+    calendarEventId: { type: String, default: '', trim: true },
+    calendarError: { type: String, default: '', trim: true },
   },
 )
 

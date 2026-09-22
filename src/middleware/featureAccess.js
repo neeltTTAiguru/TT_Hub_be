@@ -6,7 +6,7 @@ import { resolveActor } from './auth.js'
  * Signing in is not the same as being allowed everywhere. The Auth0 Action and
  * ALLOWED_EMAIL_DOMAINS answer "may this person in at all"; this answers "and
  * then what may they touch". Everybody who is not on the full-access list gets
- * the Agency Map and their Gmail, and a 403 everywhere else.
+ * the Agency Map and their own Gmail and Calendar, and a 403 everywhere else.
  *
  * Kept in the environment rather than in the User collection on purpose. This
  * is the gate, and a gate that opens by editing a document in the database it
@@ -29,7 +29,7 @@ const DEFAULT_FULL_ACCESS_EMAILS = 'neel@trustedtechnology.ai'
  * added to one of the two features keeps working, and a new router is closed
  * until someone puts it here on purpose.
  */
-export const RESTRICTED_ACCESS_PREFIXES = ['/le-agencies', '/crm-deals', '/gmail']
+export const RESTRICTED_ACCESS_PREFIXES = ['/le-agencies', '/crm-deals', '/gmail', '/calendar']
 
 function splitEnvList(value = '') {
   return String(value)
@@ -94,12 +94,12 @@ export async function requireFeatureAccess(req, res, next) {
   if (!email) {
     return res.status(403).json({
       message:
-        'Your account could not be identified, so only the Agency Map and Gmail are available. Sign out and back in; if it persists, the Auth0 login action may not be adding the email claim.',
+        'Your account could not be identified, so only the Agency Map, Gmail and Calendar are available. Sign out and back in; if it persists, the Auth0 login action may not be adding the email claim.',
     })
   }
 
   return res.status(403).json({
-    message: `${email} has access to the Agency Map and Gmail only. Ask an administrator to widen it.`,
+    message: `${email} has access to the Agency Map, Gmail and Calendar only. Ask an administrator to widen it.`,
   })
 }
 

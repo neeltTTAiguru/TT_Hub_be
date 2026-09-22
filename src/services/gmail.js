@@ -7,6 +7,11 @@
  * fetch against Google's endpoints rather than the googleapis SDK - a handful
  * of calls do not need a client library.
  *
+ * Also the only place the Google connection itself lives. Calendar rides on
+ * the same grant and the same refresh token - one "Connect Google", not two -
+ * so services/calendar.js borrows `googleAccessToken` and the scope list from
+ * here rather than running a second OAuth flow of its own.
+ *
  * Environment:
  *   GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET - the Web application
  *     client from Google Cloud Console, Internal to the Workspace.
@@ -19,7 +24,20 @@ import crypto from 'node:crypto'
 import HubMember from '../models/HubMember.js'
 import EmailTemplate from '../models/EmailTemplate.js'
 
-const SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly']
+const GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly']
+
+/**
+ * Calendar: view and edit events on the calendars they can already reach.
+ *
+ * Deliberately `calendar.events` and not `calendar`: it is enough to read the
+ * month and to add, move and cancel an appointment, and it cannot create or
+ * delete a calendar or change who it is shared with. It does not grant the
+ * calendar *list* either, which is why the page works one calendar at a time
+ * and that calendar is `primary`.
+ */
+export const CALENDAR_SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+
+const SCOPES = [...GMAIL_SCOPES, ...CALENDAR_SCOPES]
 const API = 'https://gmail.googleapis.com/gmail/v1/users/me'
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
@@ -76,9 +94,15 @@ const decrypt = (blob) => {
 const sign = (payload) =>
   crypto.createHmac('sha256', env().tokenKey).update(payload).digest('base64url')
 
-export function connectUrl(email) {
+/**
+ * `returnTo` is the hub page the person pressed Connect on - 'gmail' or
+ * 'calendar'. It rides inside the signed state so the callback, which has no
+ * session to ask, puts them back where they were instead of always on Gmail.
+ */
+export function connectUrl(email, returnTo = 'gmail') {
   if (!isConfigured()) throw notConfigured()
-  const payload = Buffer.from(JSON.stringify({ email, at: Date.now() })).toString('base64url')
+  const to = RETURN_PAGES.includes(returnTo) ? returnTo : 'gmail'
+  const payload = Buffer.from(JSON.stringify({ email, to, at: Date.now() })).toString('base64url')
   const state = `${payload}.${sign(payload)}`
   const params = new URLSearchParams({
     client_id: env().clientId,
@@ -96,12 +120,15 @@ export function connectUrl(email) {
   return `${AUTH_URL}?${params.toString()}`
 }
 
+/** The hub pages a consent flow may be sent back to. Anything else is Gmail. */
+export const RETURN_PAGES = ['gmail', 'calendar']
+
 export function readState(state) {
   const [payload, mac] = String(state || '').split('.')
   if (!payload || !mac || sign(payload) !== mac) throw Object.assign(new Error('Bad state.'), { statusCode: 400 })
   const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
   if (Date.now() - parsed.at > 15 * 60 * 1000) throw Object.assign(new Error('That link expired. Start again.'), { statusCode: 400 })
-  return parsed
+  return { ...parsed, to: RETURN_PAGES.includes(parsed.to) ? parsed.to : 'gmail' }
 }
 
 const tokenRequest = async (body) => {
@@ -177,12 +204,24 @@ export async function disconnect(email) {
   )
 }
 
+/**
+ * Whether this member's stored grant covers Calendar.
+ *
+ * Everyone who connected before Calendar was added has a perfectly good
+ * refresh token that Google will refuse calendar calls with. Reading the
+ * scopes we recorded at consent tells the page to offer a reconnect instead
+ * of showing an empty calendar and a 403.
+ */
+export const hasCalendarScope = (member) =>
+  CALENDAR_SCOPES.every((scope) => (member?.gmail?.scopes || []).includes(scope))
+
 export const statusFor = (member) => ({
   configured: isConfigured(),
   connected: Boolean(member?.gmail?.refreshToken),
   address: member?.gmail?.address || '',
   connectedAt: member?.gmail?.connectedAt || null,
   lastError: member?.gmail?.lastError || '',
+  calendar: Boolean(member?.gmail?.refreshToken) && hasCalendarScope(member),
 })
 
 async function accessTokenFor(member) {
@@ -209,6 +248,16 @@ async function accessTokenFor(member) {
     throw error
   }
 }
+
+/**
+ * A live access token for this member's Google grant, for any Google API.
+ *
+ * Exported for services/calendar.js. Refreshing, the encrypted token and the
+ * revoked-grant handling all live here, and there is exactly one grant per
+ * member, so a second copy of this in the calendar service would be a second
+ * thing to get wrong.
+ */
+export const googleAccessToken = (member) => accessTokenFor(member)
 
 const encodeHeader = (value) => `=?UTF-8?B?${Buffer.from(String(value), 'utf8').toString('base64')}?=`
 

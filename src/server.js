@@ -21,6 +21,7 @@ import healthRouter from './routes/health.js'
 import accessRouter from './routes/access.js'
 import commandBoardRouter from './routes/commandBoard.js'
 import gmailRouter, { gmailCallbackRouter } from './routes/gmail.js'
+import calendarRouter from './routes/calendar.js'
 import agentsRouter from './routes/agents.js'
 import companyContextRouter from './routes/companyContext.js'
 import competitorsRouter from './routes/competitors.js'
@@ -149,6 +150,8 @@ app.use('/police-grant-leads', policeGrantLeadsRouter)
 app.use('/le-agencies', leAgenciesRouter)
 app.use('/command-board', commandBoardRouter)
 app.use('/gmail', gmailRouter)
+// Same Google connection as Gmail, one page down in the sidebar.
+app.use('/calendar', calendarRouter)
 app.use('/crm-deals', crmDealsRouter)
 app.use('/grant-sources', grantSourcesRouter)
 app.use('/grant-opportunities', grantOpportunitiesRouter)

@@ -15,6 +15,20 @@ import {
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
 import { requireLoggedByEmail, syncMapEntryToHubSpot } from '../services/hubspotMapCalls.js'
+import { bookCallBack, callBackOwner } from '../services/calendar.js'
+import HubMember from '../models/HubMember.js'
+
+/**
+ * The outcomes whose ring-back belongs to the call-back owner rather than to
+ * whoever dialled.
+ *
+ * Both mean the same thing - nobody was reached and somebody must come back
+ * to this agency - and that somebody is whoever owns outbound, not the person
+ * who happened to have the number open. Every other outcome's follow-up is an
+ * appointment that person made themselves and stays in their own diary.
+ * Matches CALL_LATER_OUTCOMES in the frontend's CallLogModal.
+ */
+const OWNER_CALL_BACK_OUTCOMES = ['Left voicemail', 'Call later']
 import BwcResearchRun from '../models/BwcResearchRun.js'
 import AgencyResearchLog from '../models/AgencyResearchLog.js'
 import { resolveActor } from '../middleware/auth.js'
@@ -1535,6 +1549,39 @@ router.post('/:ori/call-log', async (req, res, next) => {
       savedEntry.hubspotSyncError = String(error?.message || error).slice(0, 300)
       hubspot = { error: savedEntry.hubspotSyncError }
     }
+    // And in a diary, when they asked for it and named a time.
+    //
+    // A deferral's ring-back is the call-back owner's work whoever logged it
+    // (see OWNER_CALL_BACK_OUTCOMES), so it goes in their calendar. Any other
+    // follow-up is an appointment this person made themselves and stays
+    // theirs. Decided here rather than trusted from the request: the client
+    // says "book it", the server says whose.
+    //
+    // Same rule as HubSpot: the call is saved, so an unconnected Google
+    // account or a Calendar outage is reported beside the saved call, not
+    // raised over it.
+    let calendar = null
+    if (body.addToCalendar && savedEntry.followUpAt) {
+      const owner = OWNER_CALL_BACK_OUTCOMES.includes(savedEntry.outcome) ? await callBackOwner() : null
+      const member = owner ? owner.member : await HubMember.findOne({ email: loggedBy }).lean()
+      calendar = await bookCallBack(member, {
+        agencyName: agency.agencyName,
+        at: savedEntry.followUpAt,
+        phone: savedEntry.phone || agency.contacts?.phone || '',
+        contactName: savedEntry.contactName,
+        notes: savedEntry.notes,
+        loggedBy,
+        existingEventId: savedEntry.calendarEventId,
+      })
+      if (calendar.id) calendar.owner = owner ? owner.email : loggedBy
+      if (calendar.id) {
+        savedEntry.calendarEventId = calendar.id
+        savedEntry.calendarError = ''
+      } else {
+        savedEntry.calendarError = calendar.error || ''
+      }
+    }
+
     try {
       await agency.save()
     } catch {
@@ -1549,6 +1596,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
       calls: sortedCalls(agency.toObject().callLog),
       outreach: agency.outreach,
       hubspot,
+      calendar,
     })
   } catch (error) {
     return next(error)

@@ -54,6 +54,17 @@ test('the map and Brevo are open to everyone who is signed in', async () => {
   })
 })
 
+test("a person's own Gmail and Calendar are open to everyone who is signed in", async () => {
+  await withEnv('neel@trustedtechnology.ai', async () => {
+    for (const path of ['/gmail/status', '/gmail/inbox', '/calendar/status', '/calendar/events', '/calendar/events/abc']) {
+      const { req, res, next, out } = harness(path, { sub: 'auth0|9', [CLAIM]: 'someone@trustedtechnology.ai' })
+      await requireFeatureAccess(req, res, next)
+      assert.equal(out.passed, true, `${path} should be open`)
+      assert.equal(out.status, 0)
+    }
+  })
+})
+
 test('everything else is refused to an account that is not on the list', async () => {
   await withEnv('neel@trustedtechnology.ai', async () => {
     for (const path of ['/agents', '/company-files', '/users', '/admin', '/content-operations', '/rfp-opportunities']) {
