@@ -397,8 +397,15 @@ export async function settleMiniRuns() {
             await note(`${leads} of ${target} - top-up ${next.miniRound || (run.miniRound || 1) + 1} started (${next.total} more).`)
             continue
           } catch (error) {
-            // Nothing left to draw, most likely. Send what there is.
             console.error(`[mini-run] top-up for ${run.assignedTo} failed: ${error?.message || error}`)
+            // The traveller got taken between the check above and the draw.
+            // Release the settle claim and try the whole thing again next
+            // tick, rather than emailing a chain that is still owed a round.
+            if (isRetryable(error)) {
+              await note('')
+              continue
+            }
+            // Nothing left to draw, most likely. Send what there is.
           }
         }
       }
@@ -466,8 +473,25 @@ export async function advance({ force = false } = {}) {
   }
   if (day.finishedAt) return day
 
-  // Settle whatever was running - or whatever a dead process left half-settled.
+  // Hand back a claim whose process never got as far as starting the run.
+  // Conditional on the same timestamp it was claimed with, so a start that is
+  // merely slow - the laptop backend on a bad link takes minutes - cannot be
+  // stolen out from under itself twice.
   const staleBefore = new Date(Date.now() - SETTLE_STALE_MS)
+  for (const entry of day.plan) {
+    if (entry.status !== 'starting') continue
+    if (entry.startingAt && new Date(entry.startingAt) >= staleBefore) continue
+    const released = await DailyResearchDay.updateOne(
+      { _id: day._id, 'plan.email': entry.email, 'plan.status': 'starting', 'plan.startingAt': entry.startingAt || null },
+      { $set: { 'plan.$.status': 'pending', 'plan.$.startingAt': null, 'plan.$.note': 'Start was abandoned - queued again.' } },
+    )
+    if (released.modifiedCount) {
+      console.warn(`[daily-research] ${entry.email} was stuck starting; queued again.`)
+      day = await DailyResearchDay.findById(day._id)
+    }
+  }
+
+  // Settle whatever was running - or whatever a dead process left half-settled.
   const abandoned = (entry) =>
     entry.status === 'settling' && (!entry.settlingAt || new Date(entry.settlingAt) < staleBefore)
   const running = day.plan.find((entry) => entry.status === 'running' || abandoned(entry))
@@ -519,6 +543,22 @@ export async function advance({ force = false } = {}) {
           if (next) return DailyResearchDay.findById(day._id)
         } catch (error) {
           console.error(`[daily-research] top-up for ${entry.email} failed: ${error?.message || error}`)
+          // Busy means the top-up is still owed, not that the entry is done.
+          // Falling through would email the person a short morning and close
+          // the entry over a collision that clears in a minute. Released back
+          // to 'pending' only while the settle is still ours, so a process
+          // waking up after a takeover cannot undo the takeover's work.
+          if (isRetryable(error)) {
+            await DailyResearchDay.updateOne(stillOurs, {
+              $set: {
+                'plan.$.status': 'pending',
+                'plan.$.startingAt': null,
+                'plan.$.settlingAt': null,
+                'plan.$.note': 'Waiting for the traveller to be free for the top-up.',
+              },
+            })
+            return DailyResearchDay.findById(day._id)
+          }
         }
         // startEntry may have ended the entry itself (paused, nothing to
         // pick) - or a takeover may have started a run under it while we
@@ -564,23 +604,64 @@ export async function advance({ force = false } = {}) {
   // using him.
   if (await activeRun()) return day
 
-  // Claim the entry atomically; the other backend may be ticking too.
+  // Claim the entry atomically; the other backend may be ticking too. The
+  // timestamp is what lets the claim be taken back: a process that dies
+  // between here and the run existing used to leave the entry in 'starting'
+  // for good, which is neither pending nor running, so nobody ever looked at
+  // it again and the day finished a person short without saying so.
   const claimed = await DailyResearchDay.updateOne(
     { _id: day._id, 'plan.email': next.email, 'plan.status': 'pending' },
-    { $set: { 'plan.$.status': 'starting' } },
+    { $set: { 'plan.$.status': 'starting', 'plan.$.startingAt': new Date() } },
   )
   if (!claimed.modifiedCount) return day
 
   try {
     await startEntry(day, next)
   } catch (error) {
-    console.error(`[daily-research] could not start ${next.email}: ${error?.message || error}`)
-    await DailyResearchDay.updateOne(
-      { _id: day._id, 'plan.email': next.email },
-      { $set: { 'plan.$.status': 'failed', 'plan.$.note': String(error?.message || error).slice(0, 300), 'plan.$.finishedAt': new Date() } },
-    )
+    await failOrRequeue(day, next, error, 'start')
   }
   return DailyResearchDay.findById(day._id)
+}
+
+/**
+ * A start that did not happen: hand the entry back, or write it off.
+ *
+ * 'The traveller is busy' is not a failure, it is a queue - but it used to be
+ * recorded as `failed` with a finish time, which takes the person out of the
+ * plan for good. On 2026-09-22 the two backends collided at 4 AM and Neil's
+ * whole morning was written off on that one line: 0 of 20, never retried,
+ * while Troy ran the rest of the hour. Anything retryable goes back to
+ * 'pending' and the next tick picks it up.
+ */
+export const isRetryable = (error) => Boolean(error?.retryable) || error?.statusCode === 409
+
+/** What a failed start does to the entry. Pure, so the rule can be tested. */
+export function classifyStartFailure(error) {
+  const note = String(error?.message || error).slice(0, 300)
+  return isRetryable(error)
+    ? { status: 'pending', startingAt: null, note: `Waiting for the traveller: ${note}`, finishedAt: null }
+    : { status: 'failed', note, finishedAt: new Date() }
+}
+
+async function failOrRequeue(day, entry, error, what) {
+  const outcome = classifyStartFailure(error)
+  const retryable = outcome.status === 'pending'
+  console.error(
+    `[daily-research] ${what} for ${entry.email} failed${retryable ? ' (queued again)' : ''}: ${String(error?.message || error)}`,
+  )
+  await DailyResearchDay.updateOne(
+    { _id: day._id, 'plan.email': entry.email },
+    {
+      // A queued-again entry keeps no finish time: an entry that has finished
+      // is never looked at again.
+      $set: Object.fromEntries(
+        Object.entries(outcome)
+          .filter(([key, value]) => key !== 'finishedAt' || value !== null)
+          .map(([key, value]) => [`plan.$.${key}`, value]),
+      ),
+    },
+  )
+  return retryable
 }
 
 /** The leads email, as text. Pure, so it can be read before anyone gets it. */
@@ -687,8 +768,21 @@ export function nextFireAt(schedule) {
 }
 
 let ticking = false
-/** Tick once a minute for the life of the process. */
+/**
+ * Tick once a minute for the life of the process.
+ *
+ * Set DAILY_RESEARCH_SCHEDULER=off to read the board without driving it. The
+ * locks make two backends safe, not free: the laptop one sleeps at night,
+ * wakes with a half-dead database socket and takes minutes over a query
+ * production answers instantly, which is how it claimed Neil's entry at 4 AM
+ * on 2026-09-22 and then collided with production's run. Production drives
+ * the morning; the laptop watches.
+ */
 export function startDailyResearchScheduler() {
+  if (String(process.env.DAILY_RESEARCH_SCHEDULER || '').trim().toLowerCase() === 'off') {
+    console.log('[daily-research] scheduler off (DAILY_RESEARCH_SCHEDULER=off) - this backend will not drive the morning.')
+    return
+  }
   const tick = async () => {
     if (ticking) return
     ticking = true

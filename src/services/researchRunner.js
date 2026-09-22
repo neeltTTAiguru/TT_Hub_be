@@ -98,9 +98,60 @@ export const orderAsJourney = (agencies, origin) => {
   return [...route, ...unplaced]
 }
 
-/** The one run that is currently going, if any. */
+/**
+ * The one run that is currently going, if any.
+ *
+ * Oldest first, deliberately: it is how `startRun` breaks a tie when two
+ * backends create a run in the same instant. The first one created owns the
+ * traveller, the other deletes itself, and every reader here - the loop, the
+ * board, the morning schedule - agrees on which one that is.
+ */
 export const activeRun = () =>
-  BwcResearchRun.findOne({ status: { $in: ['running', 'stopping'] } }).sort({ createdAt: -1 })
+  BwcResearchRun.findOne({ status: { $in: ['running', 'stopping'] } }).sort({ createdAt: 1, _id: 1 })
+
+/**
+ * "Not now" rather than "not ever": the traveller is busy, try again shortly.
+ *
+ * Callers that run on a tick - the morning schedule, mini-run top-ups - must
+ * be able to tell this from a real failure. 2026-09-22 they could not, and a
+ * collision between the two backends marked Neil's morning `failed` at 4 AM
+ * with nothing drawn and nothing retried: he got no leads at all that day.
+ */
+export const busyError = () =>
+  Object.assign(new Error('A research run is already going.'), { statusCode: 409, retryable: true })
+
+// How long past its lease a run is presumed dead. Deliberately far longer
+// than the lease itself: the lease is renewed either side of every agency, so
+// anything short of this is a slow agency, and cutting a live run loose would
+// let a second one start and put two travellers on the map.
+const ABANDONED_AFTER_MS = 30 * 60 * 1000
+
+/**
+ * Release a run whose process is gone.
+ *
+ * The lease was written on every agency and never read, so a backend killed
+ * mid-run left its run 'running' for good - and with it the traveller, since
+ * no run may start while one is going. Nothing is lost by releasing it: a
+ * failed agency keeps no researched-at stamp, so starting again picks up
+ * where it stopped.
+ */
+async function releaseAbandoned() {
+  const { modifiedCount } = await BwcResearchRun.updateMany(
+    {
+      status: { $in: ['running', 'stopping'] },
+      leaseExpiresAt: { $lt: new Date(Date.now() - ABANDONED_AFTER_MS) },
+    },
+    {
+      $set: {
+        status: 'failed',
+        current: null,
+        finishedAt: new Date(),
+        lastError: 'Abandoned: the backend running it stopped. Start the run again to carry on from here.',
+      },
+    },
+  )
+  if (modifiedCount) console.warn(`[research-run] released ${modifiedCount} abandoned run(s).`)
+}
 
 /**
  * Build the queue and start walking.
@@ -120,10 +171,8 @@ export async function startRun({
   startedBy = '',
   assignedTo = '',
 }) {
-  const existing = await activeRun()
-  if (existing) {
-    throw Object.assign(new Error('A research run is already going.'), { statusCode: 409 })
-  }
+  await releaseAbandoned()
+  if (await activeRun()) throw busyError()
 
   const agencies = await LeAgency.find({ ori: { $in: oris } })
     .select('ori agencyName state latitude longitude location')
@@ -157,6 +206,21 @@ export async function startRun({
     leaseId,
     leaseExpiresAt: new Date(Date.now() + LEASE_MS),
   })
+
+  // The check above is an early-out, not the lock. Drawing the queue takes
+  // seconds - longer on the laptop backend over a slow link - and the other
+  // backend can create its own run inside that window; on 2026-09-22 one did,
+  // between the morning settling Kyle and it starting Neil.
+  //
+  // So claim by creating, then reconcile: the earliest run wins, everyone
+  // else deletes their own and is told to come back. Both sides reach the
+  // same verdict because `activeRun` orders the same way, and the loser's run
+  // is gone before either loop can pick it up.
+  const winner = await activeRun()
+  if (!winner || String(winner._id) !== String(run._id)) {
+    await BwcResearchRun.deleteOne({ _id: run._id })
+    throw busyError()
+  }
 
   void loop()
   return run

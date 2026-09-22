@@ -19,6 +19,10 @@ const entrySchema = new mongoose.Schema(
     // SETTLE_STALE_MS was abandoned by a process that died mid-step, and is
     // re-claimable; without this one crash wedged the whole morning.
     settlingAt: { type: Date, default: null },
+    // When 'starting' was claimed. Same idea: a process that died between
+    // claiming the entry and the run existing left it wedged in 'starting',
+    // which no later tick looked at - the day then finished a person short.
+    startingAt: { type: Date, default: null },
     // The run in flight (or the last one). `runIds` is every run this entry
     // started: the first draw plus each top-up.
     runId: { type: String, default: '' },
