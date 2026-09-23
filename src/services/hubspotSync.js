@@ -254,8 +254,13 @@ const mergeDescription = (existing, block) => {
  * `person` is who the SDR spoke to on the call being saved - used only when
  * the agency has no chief on file, so there is always a contact to hang the
  * company's calls, reminder and deal on.
+ *
+ * `ownerEmail` is whoever saved the call: the company and contact are handed
+ * to them, every save - the agency belongs to whoever worked it last. Someone
+ * who is not a HubSpot user leaves the owners as they are rather than
+ * clearing them.
  */
-export async function syncAgencyToHubSpot(ori, { person = null } = {}) {
+export async function syncAgencyToHubSpot(ori, { person = null, ownerEmail = '' } = {}) {
   const agency = await LeAgency.findOne({ ori: String(ori).toUpperCase() })
     .select('ori agencyName state county contacts crm sdr bwcContract surveillance.bwc employment.swornOfficers')
     .lean()
@@ -286,10 +291,14 @@ export async function syncAgencyToHubSpot(ori, { person = null } = {}) {
   const allowed = await ensureProperties('companies', SDR_PROPERTY_GROUP, SDR_PROPERTIES)
   const allowedBwc = agency.bwcContract?.status ? await ensureProperties('companies', BWC_PROPERTY_GROUP, BWC_PROPERTIES) : []
 
+  const ownerId = await ownerIdFor(ownerEmail)
+  const owned = ownerId ? { hubspot_owner_id: ownerId } : {}
+
   companyId = await upsertRecord(
     'companies',
     {
       name: agency.agencyName,
+      ...owned,
       ...(domain ? { domain } : {}),
       ...(contacts.website ? { website: contacts.website } : {}),
       ...(contacts.phone ? { phone: contacts.phone } : {}),
@@ -318,7 +327,10 @@ export async function syncAgencyToHubSpot(ori, { person = null } = {}) {
       ...(person?.title ? { jobtitle: person.title } : {}),
       ...(person?.phone || contacts.phone ? { phone: person?.phone || contacts.phone } : {}),
       ...(agency.agencyName ? { company: agency.agencyName } : {}),
+      ...owned,
     })
+  } else if (contactId && !hasPerson && ownerId) {
+    await upsertRecord('contacts', owned, contactId)
   }
   if (contactId && !hasPerson) {
     try {
@@ -340,6 +352,7 @@ export async function syncAgencyToHubSpot(ori, { person = null } = {}) {
         ...(contacts.phone ? { phone: contacts.phone } : {}),
         ...(contacts.chiefTitle ? { jobtitle: contacts.chiefTitle } : {}),
         ...(agency.agencyName ? { company: agency.agencyName } : {}),
+        ...owned,
       },
       contactId,
     )
@@ -406,10 +419,16 @@ export async function syncAgencyToHubSpot(ori, { person = null } = {}) {
   }
 }
 
-const ownerIdFor = async (email) => {
+// One save can ask for the same owner three times (company, reminder, deal);
+// the owner list changes when someone joins HubSpot, not between saves.
+let ownersCache = { at: 0, owners: [] }
+const OWNERS_TTL_MS = 10 * 60 * 1000
+
+export const ownerIdFor = async (email) => {
   if (!email) return ''
   try {
-    return findOwnerForEmail(email, await listOwners())?.id || ''
+    if (Date.now() - ownersCache.at > OWNERS_TTL_MS) ownersCache = { at: Date.now(), owners: await listOwners() }
+    return findOwnerForEmail(email, ownersCache.owners)?.id || ''
   } catch {
     return ''
   }
@@ -534,7 +553,8 @@ export async function syncSdrDeal(ori, ownerEmail = '') {
   let dealId = agency.crm?.hubspotDealId || ''
   const ownerId = await ownerIdFor(ownerEmail)
   if (dealId) {
-    await upsertRecord('deals', { description }, dealId)
+    // Owner follows whoever qualified it last; the stage stays where a rep put it.
+    await upsertRecord('deals', { description, ...(ownerId ? { hubspot_owner_id: ownerId } : {}) }, dealId)
   } else {
     const placement = await sdrDealPlacement()
     dealId = await upsertRecord('deals', {
@@ -554,5 +574,19 @@ export async function syncSdrDeal(ori, ownerEmail = '') {
       /* the deal stands without the note linked */
     }
   }
+  return { dealId }
+}
+
+/**
+ * Hand the agency's existing deal to whoever saved a call, on a save that did
+ * not touch TMAN-P (a TMAN-P save does this in syncSdrDeal). Nothing to do
+ * without a deal, or for someone who is not a HubSpot user.
+ */
+export async function assignDealOwner(ori, ownerEmail = '') {
+  const agency = await LeAgency.findOne({ ori: String(ori).toUpperCase() }).select('crm.hubspotDealId').lean()
+  const dealId = agency?.crm?.hubspotDealId
+  const ownerId = await ownerIdFor(ownerEmail)
+  if (!dealId || !ownerId) return {}
+  await upsertRecord('deals', { hubspot_owner_id: ownerId }, dealId)
   return { dealId }
 }

@@ -13,7 +13,7 @@ import {
   runFindingsRows,
 } from '../services/researchRunWorkbook.js'
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
-import { BWC_TERMS, bwcReviewDate, syncAgencyToHubSpot, syncBwcReminder, syncSdrDeal } from '../services/hubspotSync.js'
+import { BWC_TERMS, assignDealOwner, bwcReviewDate, syncAgencyToHubSpot, syncBwcReminder, syncSdrDeal } from '../services/hubspotSync.js'
 import { requireLoggedByEmail, syncMapEntryToHubSpot } from '../services/hubspotMapCalls.js'
 import { bookCallBack } from '../services/calendar.js'
 import HubMember from '../models/HubMember.js'
@@ -1591,6 +1591,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
     await step('Company', async () => {
       const synced = await syncAgencyToHubSpot(agency.ori, {
         person: { name: savedEntry.contactName, title: savedEntry.contactTitle, phone: savedEntry.phone },
+        ownerEmail: loggedBy,
       })
       agency.crm.hubspotCompanyId = synced.companyId
       if (synced.contactId) agency.crm.hubspotContactId = synced.contactId
@@ -1599,6 +1600,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
     if (hubspotAgency.companyId) {
       if (bwcContract) await step('Reminder', () => syncBwcReminder(agency.ori, loggedBy))
       if (sdr?.anyAnswered) await step('Deal', () => syncSdrDeal(agency.ori, loggedBy))
+      else await step('Deal owner', () => assignDealOwner(agency.ori, loggedBy))
     }
     if (hubspotAgency.errors.length) {
       await LeAgency.updateOne({ ori: agency.ori }, { $set: { 'crm.hubspotSyncError': hubspotAgency.errors.join(' | ') } })
