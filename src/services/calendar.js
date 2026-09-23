@@ -13,6 +13,7 @@
  * Requires the Google Calendar API to be enabled on the same Cloud project as
  * the OAuth client. Nothing else to configure.
  */
+import { randomUUID } from 'node:crypto'
 import HubMember from '../models/HubMember.js'
 import { googleAccessToken, hasCalendarScope } from './gmail.js'
 
@@ -48,6 +49,80 @@ export async function callBackOwner() {
     ready: Boolean(member?.gmail?.refreshToken) && hasCalendarScope(member),
     member,
   }
+}
+
+/**
+ * Whose calendars a person sees laid over their own, as read-only events.
+ *
+ * Kyle works the call-backs that Neil and Troy's voicemails generate, so he
+ * needs to see when they are free as well as when he is. A setting rather
+ * than code, like the call-back owner, because the team moves.
+ *
+ * CALENDAR_OVERLAYS - `viewer=owner+owner;viewer=owner`, emails throughout.
+ * Unset means the default below; set to `none` to turn it off.
+ */
+const DEFAULT_CALENDAR_OVERLAYS =
+  'kyle@trustedtechnology.ai=neil@trustedtechnology.ai+troy.broddrick@trustedtechnology.ai'
+
+export function overlayEmailsFor(viewer = '') {
+  const raw = process.env.CALENDAR_OVERLAYS?.trim() || DEFAULT_CALENDAR_OVERLAYS
+  if (raw.toLowerCase() === 'none') return []
+  const me = String(viewer).trim().toLowerCase()
+  for (const entry of raw.split(';')) {
+    const [who, owners = ''] = entry.split('=')
+    if (who?.trim().toLowerCase() !== me) continue
+    return owners
+      .split('+')
+      .map((email) => email.trim().toLowerCase())
+      .filter((email) => email && email !== me)
+  }
+  return []
+}
+
+/**
+ * Somebody else's event as the viewer may see it.
+ *
+ * Never editable here - the viewer's connection is not theirs to write with -
+ * and an event its owner marked private or confidential shows as the time it
+ * blocks and nothing else, which is what Google itself shows a colleague.
+ */
+const asOverlay = (event, owner) => {
+  const hidden = event.visibility === 'private' || event.visibility === 'confidential'
+  const { visibility, ...rest } = event
+  return {
+    ...rest,
+    ...(hidden
+      ? { summary: 'Busy', description: '', location: '', hangoutLink: '', meet: false, attendees: [], htmlLink: '' }
+      : {}),
+    canEdit: false,
+    owner,
+  }
+}
+
+/**
+ * The people in `overlayEmailsFor`, each with their events or the reason
+ * there are none. One person not having connected Google must not blank the
+ * viewer's own calendar, so every failure is reported rather than thrown.
+ */
+export async function listOverlays(viewer, window) {
+  const emails = overlayEmailsFor(viewer)
+  if (!emails.length) return []
+  const members = await HubMember.find({ email: { $in: emails } }).lean()
+  return Promise.all(
+    emails.map(async (email) => {
+      const member = members.find((m) => m.email === email)
+      const owner = { email, name: member?.name || email.split('@')[0] }
+      if (!member?.gmail?.refreshToken || !hasCalendarScope(member)) {
+        return { ...owner, ready: false, error: `${owner.name} has not connected Google Calendar in the hub.`, events: [] }
+      }
+      try {
+        const { events } = await listEvents(member, window)
+        return { ...owner, ready: true, error: '', events: events.map((event) => asOverlay(event, owner)) }
+      } catch (error) {
+        return { ...owner, ready: false, error: String(error?.message || error).slice(0, 300), events: [] }
+      }
+    }),
+  )
 }
 
 const notConnected = () =>
@@ -98,6 +173,8 @@ const shape = (event) => ({
   htmlLink: event.htmlLink || '',
   organizer: event.organizer?.email || '',
   hangoutLink: event.hangoutLink || '',
+  visibility: event.visibility || 'default',
+  meet: event.conferenceData?.conferenceSolution?.key?.type === 'hangoutsMeet',
   attendees: (event.attendees || []).map((a) => ({
     email: a.email || '',
     name: a.displayName || '',
@@ -176,21 +253,46 @@ const eventBody = ({ summary, description = '', location = '', allDay = false, s
 }
 
 /**
+ * A Google Meet for the event, or its removal.
+ *
+ * Google makes the link itself, asynchronously, from a createRequest; the
+ * requestId only has to be unique per request. `null` removes the conference.
+ * Only sent with `conferenceDataVersion=1` - without it Google silently drops
+ * the field and the event is saved with no call.
+ */
+const meetBody = (meet) =>
+  meet
+    ? { conferenceData: { createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: 'hangoutsMeet' } } } }
+    : { conferenceData: null }
+
+/**
  * `sendUpdates=all` because an event with guests and no invitation is a
  * meeting nobody knows about. Without guests Google ignores it.
  */
 export async function createEvent(member, input) {
-  const data = await calendarFetch(member, '/events?sendUpdates=all', {
+  const data = await calendarFetch(member, '/events?sendUpdates=all&conferenceDataVersion=1', {
     method: 'POST',
-    body: JSON.stringify(eventBody(input)),
+    body: JSON.stringify({ ...eventBody(input), ...(input.meet ? meetBody(true) : {}) }),
   })
   return shape(data)
 }
 
+/**
+ * `meet` left undefined leaves the event's call alone - the map's call-back
+ * re-booking goes through here and has no opinion on it. Given, it is only
+ * acted on when it changes something: asking again for a Meet the event
+ * already has would replace the link the guests were sent, and turning Meet
+ * off must not strip a Zoom or Teams call that some other add-on put there.
+ */
 export async function updateEvent(member, id, input) {
-  const data = await calendarFetch(member, `/events/${encodeURIComponent(id)}?sendUpdates=all`, {
+  let conference = {}
+  if (typeof input.meet === 'boolean') {
+    const current = await getEvent(member, id)
+    if (input.meet !== current.meet) conference = meetBody(input.meet)
+  }
+  const data = await calendarFetch(member, `/events/${encodeURIComponent(id)}?sendUpdates=all&conferenceDataVersion=1`, {
     method: 'PATCH',
-    body: JSON.stringify(eventBody(input)),
+    body: JSON.stringify({ ...eventBody(input), ...conference }),
   })
   return shape(data)
 }

@@ -2,7 +2,7 @@ import { Router } from 'express'
 import HubMember from '../models/HubMember.js'
 import { resolveActorEmail } from '../middleware/featureAccess.js'
 import { connectUrl, statusFor } from '../services/gmail.js'
-import { callBackOwner, createEvent, deleteEvent, getEvent, listEvents, updateEvent } from '../services/calendar.js'
+import { callBackOwner, createEvent, deleteEvent, getEvent, listEvents, listOverlays, updateEvent } from '../services/calendar.js'
 
 /**
  * The signed-in person's own Google Calendar.
@@ -53,13 +53,17 @@ router.get('/connect', async (req, res, next) => {
  */
 router.get('/events', async (req, res, next) => {
   try {
-    const { member } = await memberFor(req)
+    const { email, member } = await memberFor(req)
     const timeMin = new Date(String(req.query.timeMin || ''))
     const timeMax = new Date(String(req.query.timeMax || ''))
     if (Number.isNaN(timeMin.getTime()) || Number.isNaN(timeMax.getTime())) {
       return res.status(400).json({ message: 'A start and an end are needed.' })
     }
-    return res.json(await listEvents(member, { timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString() }))
+    const window = { timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString() }
+    // Colleagues' calendars ride along with the viewer's own - see
+    // CALENDAR_OVERLAYS. Fetched side by side so they cost no extra wait.
+    const [own, overlays] = await Promise.all([listEvents(member, window), listOverlays(email, window)])
+    return res.json({ ...own, overlays })
   } catch (error) {
     return next(error)
   }
@@ -100,6 +104,8 @@ const readEvent = (body) => {
       end,
       attendees,
       timeZone: String(body?.timeZone || '').slice(0, 64),
+      // Absent means "leave the call as it is", which is not the same as false.
+      meet: typeof body?.meet === 'boolean' ? body.meet : undefined,
     },
   }
 }
