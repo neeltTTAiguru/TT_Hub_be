@@ -13,22 +13,19 @@ import {
   runFindingsRows,
 } from '../services/researchRunWorkbook.js'
 import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
-import { syncAgencyToHubSpot } from '../services/hubspotSync.js'
+import { BWC_TERMS, bwcReviewDate, syncAgencyToHubSpot, syncBwcReminder, syncSdrDeal } from '../services/hubspotSync.js'
 import { requireLoggedByEmail, syncMapEntryToHubSpot } from '../services/hubspotMapCalls.js'
-import { bookCallBack, callBackOwner } from '../services/calendar.js'
+import { bookCallBack } from '../services/calendar.js'
 import HubMember from '../models/HubMember.js'
 
 /**
- * The outcomes whose ring-back belongs to the call-back owner rather than to
- * whoever dialled.
+ * Outcomes that never carry a call-back date.
  *
- * Both mean the same thing - nobody was reached and somebody must come back
- * to this agency - and that somebody is whoever owns outbound, not the person
- * who happened to have the number open. Every other outcome's follow-up is an
- * appointment that person made themselves and stays in their own diary.
- * Matches CALL_LATER_OUTCOMES in the frontend's CallLogModal.
+ * Nobody was reached: the pin turns pink, the agency goes on the Friday
+ * call-back list, and whoever rings next logs what happens then. A date sent
+ * with one of these is dropped, so nothing is booked in anyone's diary.
  */
-const OWNER_CALL_BACK_OUTCOMES = ['Left voicemail', 'Call later']
+const UNDATED_OUTCOMES = ['Left voicemail', 'Call later']
 import BwcResearchRun from '../models/BwcResearchRun.js'
 import AgencyResearchLog from '../models/AgencyResearchLog.js'
 import { resolveActor } from '../middleware/auth.js'
@@ -1377,6 +1374,43 @@ router.patch('/:ori/trusted-bwc', async (req, res, next) => {
   }
 })
 
+/** The TMAN-P answers from a request body, trimmed, and whether any were given. */
+const readSdr = (body = {}) => {
+  const text = (value) => String(value ?? '').slice(0, 2000).trim()
+  const fields = {
+    timeline: text(body.timeline),
+    money: text(body.money),
+    authority: text(body.authority),
+    needs: text(body.needs),
+    pain: text(body.pain),
+    notes: text(body.notes),
+  }
+  return { fields, anyAnswered: Object.values(fields).some(Boolean) }
+}
+
+/**
+ * The camera-contract answer from a request body, or null when there is none.
+ *
+ * `reviewAt` is kept when the term has not changed: re-saving "1-2 years" a
+ * month later must not push the reminder a month further out.
+ */
+const readBwcContract = (body, existing = {}, actor = '') => {
+  if (!body || typeof body !== 'object') return null
+  const status = ['none', 'under_contract'].includes(body.status) ? body.status : ''
+  if (!status) return null
+  const termLeft = status === 'under_contract' && BWC_TERMS[body.termLeft] ? body.termLeft : ''
+  const reviewAt =
+    termLeft && termLeft === existing.termLeft && existing.reviewAt ? existing.reviewAt : bwcReviewDate(termLeft)
+  return {
+    status,
+    vendor: status === 'under_contract' ? String(body.vendor ?? '').slice(0, 100).trim() : '',
+    termLeft,
+    reviewAt,
+    updatedBy: String(actor).slice(0, 200),
+    updatedAt: new Date(),
+  }
+}
+
 /**
  * Save the TMAN-P qualification for an agency.
  *
@@ -1386,17 +1420,7 @@ router.patch('/:ori/trusted-bwc', async (req, res, next) => {
  */
 router.patch('/:ori/sdr', async (req, res, next) => {
   try {
-    const body = req.body || {}
-    const text = (value) => String(value ?? '').slice(0, 2000).trim()
-    const fields = {
-      timeline: text(body.timeline),
-      money: text(body.money),
-      authority: text(body.authority),
-      needs: text(body.needs),
-      pain: text(body.pain),
-      notes: text(body.notes),
-    }
-    const anyAnswered = Object.values(fields).some(Boolean)
+    const { fields, anyAnswered } = readSdr(req.body || {})
 
     const set = Object.fromEntries(
       Object.entries(fields).map(([key, value]) => [`sdr.${key}`, value]),
@@ -1515,6 +1539,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
     }
     // An entry with neither an outcome nor a word of notes records nothing but
     // a timestamp, and would still turn the pin blue. Refuse it.
+    if (UNDATED_OUTCOMES.includes(entry.outcome)) entry.followUpAt = null
     if (!entry.outcome && !entry.notes && !entry.contactName) {
       return res.status(400).json({ message: 'Add an outcome or some notes before saving.' })
     }
@@ -1531,7 +1556,53 @@ router.post('/:ori/call-log', async (req, res, next) => {
     const savedEntry = agency.callLog.find((call) => call.clientCallId === clientCallId)
     if (!savedEntry) throw new Error('The saved Map call could not be reloaded.')
     agency.outreach = outreachFrom(agency.callLog)
+
+    // The call result card also carries the qualification and the camera
+    // contract, sent only when the SDR touched them. Stored here first, with
+    // the call, so nothing typed is lost to a HubSpot failure below.
+    const sdr = body.sdr && typeof body.sdr === 'object' ? readSdr(body.sdr) : null
+    if (sdr) {
+      agency.sdr = {
+        ...sdr.fields,
+        filledAt: sdr.anyAnswered ? new Date() : null,
+        filledBy: sdr.anyAnswered ? loggedBy : '',
+      }
+    }
+    const bwcContract = readBwcContract(body.bwc, agency.bwcContract?.toObject?.() || agency.bwcContract || {}, loggedBy)
+    if (bwcContract) agency.bwcContract = bwcContract
     await agency.save()
+
+    // Then the agency itself in HubSpot, before the call activity so a call
+    // that creates the company is linked to it. On every save:
+    //   - always: the company and a contact (the chief, else who they spoke
+    //     to, else the main line), with the BWC fields when known;
+    //   - camera contract given this time: the "contract is up" reminder
+    //     task, or the old one closed for "no contract";
+    //   - TMAN-P answered this time: the qualification note and a deal.
+    // Each step reports its own failure; none of them undoes the saved call.
+    const hubspotAgency = { errors: [] }
+    const step = async (label, run) => {
+      try {
+        Object.assign(hubspotAgency, await run())
+      } catch (error) {
+        hubspotAgency.errors.push(`${label}: ${String(error?.message || error).slice(0, 300)}`)
+      }
+    }
+    await step('Company', async () => {
+      const synced = await syncAgencyToHubSpot(agency.ori, {
+        person: { name: savedEntry.contactName, title: savedEntry.contactTitle, phone: savedEntry.phone },
+      })
+      agency.crm.hubspotCompanyId = synced.companyId
+      if (synced.contactId) agency.crm.hubspotContactId = synced.contactId
+      return { companyId: synced.companyId, contactId: synced.contactId }
+    })
+    if (hubspotAgency.companyId) {
+      if (bwcContract) await step('Reminder', () => syncBwcReminder(agency.ori, loggedBy))
+      if (sdr?.anyAnswered) await step('Deal', () => syncSdrDeal(agency.ori, loggedBy))
+    }
+    if (hubspotAgency.errors.length) {
+      await LeAgency.updateOne({ ori: agency.ori }, { $set: { 'crm.hubspotSyncError': hubspotAgency.errors.join(' | ') } })
+    }
 
     // The hub's log is the source of truth and must survive a HubSpot outage.
     // A failed sync is stamped for retry/backfill instead of turning a locally
@@ -1549,21 +1620,15 @@ router.post('/:ori/call-log', async (req, res, next) => {
       savedEntry.hubspotSyncError = String(error?.message || error).slice(0, 300)
       hubspot = { error: savedEntry.hubspotSyncError }
     }
-    // And in a diary, when they asked for it and named a time.
-    //
-    // A deferral's ring-back is the call-back owner's work whoever logged it
-    // (see OWNER_CALL_BACK_OUTCOMES), so it goes in their calendar. Any other
-    // follow-up is an appointment this person made themselves and stays
-    // theirs. Decided here rather than trusted from the request: the client
-    // says "book it", the server says whose.
+    // And in a diary, when they asked for it and named a time - the caller's
+    // own, since an agreed call-back is an appointment they made.
     //
     // Same rule as HubSpot: the call is saved, so an unconnected Google
     // account or a Calendar outage is reported beside the saved call, not
     // raised over it.
     let calendar = null
     if (body.addToCalendar && savedEntry.followUpAt) {
-      const owner = OWNER_CALL_BACK_OUTCOMES.includes(savedEntry.outcome) ? await callBackOwner() : null
-      const member = owner ? owner.member : await HubMember.findOne({ email: loggedBy }).lean()
+      const member = await HubMember.findOne({ email: loggedBy }).lean()
       calendar = await bookCallBack(member, {
         agencyName: agency.agencyName,
         at: savedEntry.followUpAt,
@@ -1573,7 +1638,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
         loggedBy,
         existingEventId: savedEntry.calendarEventId,
       })
-      if (calendar.id) calendar.owner = owner ? owner.email : loggedBy
+      if (calendar.id) calendar.owner = loggedBy
       if (calendar.id) {
         savedEntry.calendarEventId = calendar.id
         savedEntry.calendarError = ''
@@ -1596,6 +1661,7 @@ router.post('/:ori/call-log', async (req, res, next) => {
       calls: sortedCalls(agency.toObject().callLog),
       outreach: agency.outreach,
       hubspot,
+      hubspotAgency,
       calendar,
     })
   } catch (error) {

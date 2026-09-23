@@ -108,13 +108,13 @@ export function buildCallLaterEmail({ rows, total, to, from, timezone, names = {
     const last = [row.outcome, row.calledAt ? `on ${day(row.calledAt)}` : '', who(row.loggedBy) ? `by ${who(row.loggedBy)}` : '']
       .filter(Boolean)
       .join(' ')
-    const due = row.followUpAt
-      ? `${new Date(row.followUpAt) < now ? 'Was due' : 'Due'} ${day(row.followUpAt)}`
-      : 'No call-back date set'
+    // Voicemails and "Call later" carry no date any more; only an older
+    // entry that still has one says when it was due.
+    const due = row.followUpAt ? `${new Date(row.followUpAt) < now ? 'Was due' : 'Due'} ${day(row.followUpAt)}` : ''
     const contact = row.contactName ? `${row.contactName}${row.contactTitle ? `, ${row.contactTitle}` : ''}` : ''
     const reach = [contact, row.phone].filter(Boolean).join(' · ') || 'no contact on file'
     const notes = row.notes ? `\n    "${row.notes.replace(/\s+/g, ' ').slice(0, 160)}${row.notes.length > 160 ? '...' : ''}"` : ''
-    return `${index + 1}. ${row.name}${where ? ` (${where})` : ''}\n    ${due} · ${last}${row.callCount > 1 ? ` · ${row.callCount} calls` : ''}\n    ${reach}${notes}`
+    return `${index + 1}. ${row.name}${where ? ` (${where})` : ''}\n    ${[due, last].filter(Boolean).join(' · ')}${row.callCount > 1 ? ` · ${row.callCount} calls` : ''}\n    ${reach}${notes}`
   }
 
   const text = [

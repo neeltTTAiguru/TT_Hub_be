@@ -202,6 +202,23 @@ const leAgencySchema = new mongoose.Schema(
       filledAt: { type: Date, default: null },
     },
 
+    // What the agency told an SDR about its camera contract, on the call.
+    //
+    // Kept apart from `surveillance.bwc`, which is what research found in
+    // public records: the two disagree often enough that neither may
+    // overwrite the other. `reviewAt` is when the HubSpot reminder falls due -
+    // derived from the term left, so a re-save with the same answer keeps it.
+    bwcContract: {
+      // '' (not asked) | none | under_contract
+      status: { type: String, default: '', trim: true },
+      vendor: { type: String, default: '', trim: true },
+      // <1 | 1-2 | 2-4 | 5+ (years)
+      termLeft: { type: String, default: '', trim: true },
+      reviewAt: { type: Date, default: null },
+      updatedBy: { type: String, default: '', trim: true },
+      updatedAt: { type: Date, default: null },
+    },
+
     // Every call made to this agency, newest first.
     callLog: {
       type: [callLogEntrySchema],
@@ -282,6 +299,10 @@ const leAgencySchema = new mongoose.Schema(
       // reason as the two above: without it a re-save leaves a second copy of
       // the same call on the record.
       hubspotSdrNoteId: { type: String, default: '', trim: true },
+      // The deal a TMAN-P qualification opened, and the "contract is up"
+      // reminder the BWC answers set. Held so a re-save updates, never adds.
+      hubspotDealId: { type: String, default: '', trim: true },
+      hubspotBwcTaskId: { type: String, default: '', trim: true },
       hubspotSyncedAt: { type: Date, default: null },
       hubspotSyncError: { type: String, default: '', trim: true },
 

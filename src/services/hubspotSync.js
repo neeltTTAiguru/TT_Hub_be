@@ -16,7 +16,8 @@
  *      it did not happen rather than implying it did.
  */
 import LeAgency from '../models/LeAgency.js'
-import { associate, ensureProperties, findRecord, readRecord, upsertRecord } from './hubspotRest.js'
+import { associate, call, ensureProperties, findRecord, listOwners, readRecord, upsertRecord } from './hubspotRest.js'
+import { findOwnerForEmail } from './hubspotMapCalls.js'
 
 // A fenced block we own inside HubSpot's standard `description` field.
 //
@@ -29,6 +30,30 @@ import { associate, ensureProperties, findRecord, readRecord, upsertRecord } fro
 // alone. Writing description outright would delete their notes every time.
 const BLOCK_START = '--- Trusted Tech qualification ---'
 const BLOCK_END = '--- end Trusted Tech ---'
+
+/**
+ * The term-left answer as a reminder date: the earliest the contract could
+ * end, so the call to them lands while they are choosing what comes next
+ * rather than after. `<1` has no earliest, so it is half a year out.
+ */
+export const BWC_TERMS = { '<1': 6, '1-2': 12, '2-4': 24, '5+': 60 }
+export const BWC_TERM_LABELS = { '<1': '<1 year', '1-2': '1-2 years', '2-4': '2-4 years', '5+': '5+ years' }
+
+export function bwcReviewDate(termLeft, from = new Date()) {
+  const months = BWC_TERMS[termLeft]
+  if (!months) return null
+  const due = new Date(from)
+  due.setMonth(due.getMonth() + months)
+  return due
+}
+
+const bwcContractLine = (contract = {}) => {
+  if (contract.status === 'none') return 'BWC contract (told to SDR): none'
+  if (contract.status !== 'under_contract') return ''
+  return `BWC contract (told to SDR): ${contract.vendor || 'vendor not given'}${
+    contract.termLeft ? `, ${BWC_TERM_LABELS[contract.termLeft] || contract.termLeft} left` : ''
+  }`
+}
 
 const qualificationBlock = (agency, sdr = {}) => {
   const bwc = agency.surveillance?.bwc || {}
@@ -61,6 +86,7 @@ const qualificationBlock = (agency, sdr = {}) => {
     sdr.needs ? `N - Needs: ${sdr.needs}` : '',
     sdr.pain ? `P - Pain: ${sdr.pain}` : '',
     sdr.notes ? `Notes: ${sdr.notes}` : '',
+    bwcContractLine(agency.bwcContract),
     sdr.filledAt
       ? `Qualified ${new Date(sdr.filledAt).toISOString().slice(0, 10)}${sdr.filledBy ? ` by ${sdr.filledBy}` : ''}`
       : '',
@@ -95,6 +121,33 @@ const SDR_PROPERTIES = [
   { name: 'tt_sdr_filled_at', label: 'Qualified on', type: 'date', fieldType: 'date' },
   { name: 'tt_ori', label: 'ORI', type: 'string', fieldType: 'text' },
 ]
+
+/**
+ * What the agency said about its camera contract, as fields a list can be
+ * filtered on - "everyone on Axon with under a year left" is the future
+ * prospect list. Text rather than dropdowns so a new vendor never needs a
+ * schema change.
+ */
+const BWC_PROPERTY_GROUP = { name: 'trusted_tech_bwc', label: 'Trusted Tech BWC contract' }
+
+const BWC_PROPERTIES = [
+  { name: 'tt_bwc_contract', label: 'BWC contract', type: 'string', fieldType: 'text' },
+  { name: 'tt_bwc_vendor', label: 'BWC vendor', type: 'string', fieldType: 'text' },
+  { name: 'tt_bwc_term_left', label: 'BWC contract term left', type: 'string', fieldType: 'text' },
+  { name: 'tt_bwc_review_date', label: 'BWC contract review date', type: 'date', fieldType: 'date' },
+]
+
+const bwcProperties = (contract = {}, allowed = []) => {
+  if (!contract.status) return {}
+  const all = {
+    tt_bwc_contract: contract.status === 'none' ? 'No contract' : 'Under contract',
+    tt_bwc_vendor: contract.status === 'none' ? '' : contract.vendor || '',
+    tt_bwc_term_left: contract.status === 'none' ? '' : BWC_TERM_LABELS[contract.termLeft] || '',
+    tt_bwc_review_date:
+      contract.status === 'under_contract' && contract.reviewAt ? new Date(contract.reviewAt).toISOString().slice(0, 10) : '',
+  }
+  return Object.fromEntries(allowed.filter((name) => name in all).map((name) => [name, all[name]]))
+}
 
 /**
  * Only the fields the portal actually has.
@@ -197,9 +250,14 @@ const mergeDescription = (existing, block) => {
   return (current.slice(0, start) + block + current.slice(end)).trim()
 }
 
-export async function syncAgencyToHubSpot(ori) {
+/**
+ * `person` is who the SDR spoke to on the call being saved - used only when
+ * the agency has no chief on file, so there is always a contact to hang the
+ * company's calls, reminder and deal on.
+ */
+export async function syncAgencyToHubSpot(ori, { person = null } = {}) {
   const agency = await LeAgency.findOne({ ori: String(ori).toUpperCase() })
-    .select('ori agencyName state county contacts crm sdr surveillance.bwc employment.swornOfficers')
+    .select('ori agencyName state county contacts crm sdr bwcContract surveillance.bwc employment.swornOfficers')
     .lean()
   if (!agency) throw new Error(`No agency with ORI ${ori}`)
 
@@ -226,6 +284,7 @@ export async function syncAgencyToHubSpot(ori) {
   // token without schema scope this is empty and the write below is the same
   // one it always was.
   const allowed = await ensureProperties('companies', SDR_PROPERTY_GROUP, SDR_PROPERTIES)
+  const allowedBwc = agency.bwcContract?.status ? await ensureProperties('companies', BWC_PROPERTY_GROUP, BWC_PROPERTIES) : []
 
   companyId = await upsertRecord(
     'companies',
@@ -240,14 +299,34 @@ export async function syncAgencyToHubSpot(ori) {
       ...(address.zip ? { zip: address.zip } : {}),
       description: mergeDescription(existing.description, qualificationBlock(agency, agency.sdr || {})),
       ...sdrProperties(agency, agency.sdr || {}, allowed),
+      ...bwcProperties(agency.bwcContract, allowedBwc),
     },
     companyId,
   )
 
-  // A contact needs a person. A nameless, emailless one is a row nobody can
-  // act on and another thing to deduplicate later.
+  // Every agency gets a contact. The chief when one is on file; otherwise,
+  // for a first sync, whoever the SDR spoke to, and failing that the
+  // agency's main line - so the company always has somebody to call, and a
+  // later chief lookup fills the same record in rather than adding one.
   let contactId = agency.crm?.hubspotContactId || ''
   const hasPerson = Boolean(firstname || contacts.email)
+  if (!hasPerson && !contactId) {
+    const spoke = splitName(person?.name)
+    contactId = await upsertRecord('contacts', {
+      firstname: spoke.firstname || 'Main line',
+      lastname: spoke.firstname ? spoke.lastname : agency.agencyName,
+      ...(person?.title ? { jobtitle: person.title } : {}),
+      ...(person?.phone || contacts.phone ? { phone: person?.phone || contacts.phone } : {}),
+      ...(agency.agencyName ? { company: agency.agencyName } : {}),
+    })
+  }
+  if (contactId && !hasPerson) {
+    try {
+      await associate('contacts', contactId, 'companies', companyId)
+    } catch {
+      /* both records exist; they can be linked by hand */
+    }
+  }
   if (hasPerson) {
     if (!contactId && contacts.email) {
       contactId = await findRecord('contacts', 'email', contacts.email)
@@ -279,23 +358,28 @@ export async function syncAgencyToHubSpot(ori) {
   // Last, and swallowed, on purpose. The company and contact are already
   // written by this point, and losing the note is not worth reporting the whole
   // sync as failed.
+  // Only a qualification has anything to say on the timeline; a save that
+  // only recorded the camera contract leaves the note alone.
   let noteId = agency.crm?.hubspotSdrNoteId || ''
-  try {
-    noteId = await upsertRecord(
-      'notes',
-      {
-        hs_note_body: qualificationNote(agency, agency.sdr || {}),
-        // HubSpot places the note on the timeline by this, and rejects a create
-        // without it. Kept at the original stamp on a re-save so an edit does
-        // not jump the call to today.
-        hs_timestamp: new Date(agency.sdr?.filledAt || Date.now()).toISOString(),
-      },
-      noteId,
-    )
-    await associate('notes', noteId, 'companies', companyId)
-    if (contactId) await associate('notes', noteId, 'contacts', contactId)
-  } catch {
-    noteId = agency.crm?.hubspotSdrNoteId || ''
+  const sdrAnswered = ['timeline', 'money', 'authority', 'needs', 'pain', 'notes'].some((key) => agency.sdr?.[key])
+  if (sdrAnswered) {
+    try {
+      noteId = await upsertRecord(
+        'notes',
+        {
+          hs_note_body: qualificationNote(agency, agency.sdr || {}),
+          // HubSpot places the note on the timeline by this, and rejects a create
+          // without it. Kept at the original stamp on a re-save so an edit does
+          // not jump the call to today.
+          hs_timestamp: new Date(agency.sdr?.filledAt || Date.now()).toISOString(),
+        },
+        noteId,
+      )
+      await associate('notes', noteId, 'companies', companyId)
+      if (contactId) await associate('notes', noteId, 'contacts', contactId)
+    } catch {
+      noteId = agency.crm?.hubspotSdrNoteId || ''
+    }
   }
 
   await LeAgency.updateOne(
@@ -318,6 +402,147 @@ export async function syncAgencyToHubSpot(ori) {
     // Named so the caller can say what actually happened rather than implying
     // the structured copy landed when the token could not create the fields.
     propertiesWritten: allowed.length,
-    contactSkipped: hasPerson ? '' : 'No chief name or email on file, so no contact was created.',
+    contactSkipped: '',
   }
+}
+
+const ownerIdFor = async (email) => {
+  if (!email) return ''
+  try {
+    return findOwnerForEmail(email, await listOwners())?.id || ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The "their camera contract is up" reminder, as a HubSpot task on the
+ * company - the future-prospect call, dated from the term left.
+ *
+ * One task per agency, updated on a re-save. An agency that turns out to have
+ * no contract closes the reminder rather than deleting it, so the history of
+ * what was believed stays on the record.
+ */
+export async function syncBwcReminder(ori, ownerEmail = '') {
+  const agency = await LeAgency.findOne({ ori: String(ori).toUpperCase() })
+    .select('ori agencyName contacts crm bwcContract')
+    .lean()
+  if (!agency) throw new Error(`No agency with ORI ${ori}`)
+  const contract = agency.bwcContract || {}
+  let taskId = agency.crm?.hubspotBwcTaskId || ''
+
+  if (contract.status !== 'under_contract' || !contract.reviewAt) {
+    if (taskId) {
+      await upsertRecord('tasks', { hs_task_status: 'COMPLETED' }, taskId)
+      await LeAgency.updateOne({ ori: agency.ori }, { $set: { 'crm.hubspotBwcTaskId': '' } })
+    }
+    return { taskId: '', closed: Boolean(taskId) }
+  }
+
+  const term = BWC_TERM_LABELS[contract.termLeft] || contract.termLeft
+  const ownerId = await ownerIdFor(ownerEmail)
+  taskId = await upsertRecord(
+    'tasks',
+    {
+      hs_task_subject: `BWC contract renewal - ${agency.agencyName}`,
+      hs_task_body: [
+        `${agency.agencyName} told us on a call that they are under a body camera contract${
+          contract.vendor ? ` with ${contract.vendor}` : ''
+        }, with ${term} left.`,
+        'Future prospect: call before the contract renews.',
+        agency.contacts?.phone ? `Phone: ${agency.contacts.phone}` : '',
+        contract.updatedBy ? `Recorded by ${contract.updatedBy}.` : '',
+        `ORI ${agency.ori}`,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      hs_timestamp: new Date(contract.reviewAt).toISOString(),
+      hs_task_status: 'NOT_STARTED',
+      hs_task_type: 'CALL',
+      hs_task_priority: 'MEDIUM',
+      ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
+    },
+    taskId,
+  )
+  const companyId = agency.crm?.hubspotCompanyId
+  if (companyId) await associate('tasks', taskId, 'companies', companyId)
+  if (agency.crm?.hubspotContactId) await associate('tasks', taskId, 'contacts', agency.crm.hubspotContactId)
+  await LeAgency.updateOne({ ori: agency.ori }, { $set: { 'crm.hubspotBwcTaskId': taskId } })
+  return { taskId, dueAt: contract.reviewAt }
+}
+
+/**
+ * Where a new SDR deal starts: HUBSPOT_SDR_DEAL_PIPELINE / _STAGE when set,
+ * otherwise the default pipeline's first stage whose name says "qualified" -
+ * a filled TMAN-P is a qualified lead - or failing that its first stage.
+ * Looked up rather than hard-coded because stage ids differ per portal.
+ */
+let pipelineCache = null
+async function sdrDealPlacement() {
+  const envPipeline = process.env.HUBSPOT_SDR_DEAL_PIPELINE?.trim()
+  const envStage = process.env.HUBSPOT_SDR_DEAL_STAGE?.trim()
+  if (envPipeline && envStage) return { pipeline: envPipeline, dealstage: envStage }
+  if (!pipelineCache) {
+    const result = await call('GET', '/crm/v3/pipelines/deals')
+    pipelineCache = result.results || []
+  }
+  const pipeline =
+    pipelineCache.find((p) => p.id === envPipeline) || pipelineCache.find((p) => p.id === 'default') || pipelineCache[0]
+  if (!pipeline) throw new Error('HubSpot has no deal pipeline to put the deal in.')
+  const stages = [...(pipeline.stages || [])].sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
+  const stage = stages.find((s) => s.id === envStage) || stages.find((s) => /qualif/i.test(s.label)) || stages[0]
+  if (!stage) throw new Error(`HubSpot pipeline "${pipeline.label}" has no stages.`)
+  return { pipeline: pipeline.id, dealstage: stage.id }
+}
+
+/**
+ * The deal a TMAN-P qualification opens, on the agency's company and contact.
+ *
+ * Created once. A re-save refreshes its description and links but never its
+ * stage: by then a rep may have moved it, and the call log has no business
+ * moving it back.
+ */
+export async function syncSdrDeal(ori, ownerEmail = '') {
+  const agency = await LeAgency.findOne({ ori: String(ori).toUpperCase() })
+    .select('ori agencyName crm sdr bwcContract')
+    .lean()
+  if (!agency) throw new Error(`No agency with ORI ${ori}`)
+  const companyId = agency.crm?.hubspotCompanyId
+  if (!companyId) throw new Error('The agency is not in HubSpot yet, so there is no company to put a deal on.')
+
+  const sdr = agency.sdr || {}
+  const description = [
+    ...QUESTIONS.filter(([key]) => sdr[key]).map(([key, label]) => `${label}: ${sdr[key]}`),
+    sdr.notes ? `Notes: ${sdr.notes}` : '',
+    bwcContractLine(agency.bwcContract),
+    sdr.filledBy ? `Qualified by ${sdr.filledBy}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 5000)
+
+  let dealId = agency.crm?.hubspotDealId || ''
+  const ownerId = await ownerIdFor(ownerEmail)
+  if (dealId) {
+    await upsertRecord('deals', { description }, dealId)
+  } else {
+    const placement = await sdrDealPlacement()
+    dealId = await upsertRecord('deals', {
+      dealname: `${agency.agencyName} - Body cameras`,
+      ...placement,
+      description,
+      ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
+    })
+    await LeAgency.updateOne({ ori: agency.ori }, { $set: { 'crm.hubspotDealId': dealId } })
+  }
+  await associate('deals', dealId, 'companies', companyId)
+  if (agency.crm?.hubspotContactId) await associate('deals', dealId, 'contacts', agency.crm.hubspotContactId)
+  if (agency.crm?.hubspotSdrNoteId) {
+    try {
+      await associate('notes', agency.crm.hubspotSdrNoteId, 'deals', dealId)
+    } catch {
+      /* the deal stands without the note linked */
+    }
+  }
+  return { dealId }
 }
