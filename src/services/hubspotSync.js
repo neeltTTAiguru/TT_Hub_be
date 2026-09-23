@@ -473,12 +473,15 @@ export async function syncBwcReminder(ori, ownerEmail = '') {
 
 /**
  * Where a new SDR deal starts: HUBSPOT_SDR_DEAL_PIPELINE / _STAGE when set,
- * otherwise the default pipeline's first stage whose name says "qualified" -
- * a filled TMAN-P is a qualified lead - or failing that its first stage.
- * Looked up rather than hard-coded because stage ids differ per portal.
+ * otherwise "Deal Pipeline" at "Qualified Lead" - a filled TMAN-P is a
+ * qualified lead, the first step of the funnel. Matched by name rather than
+ * id so a renumbered portal still works; HubSpot's built-in `default` is the
+ * portal's "Old Sales Pipeline" and is only the last resort.
  */
+const SDR_DEAL_PIPELINE_LABEL = 'Deal Pipeline'
+const SDR_DEAL_STAGE_LABEL = 'Qualified Lead'
 let pipelineCache = null
-async function sdrDealPlacement() {
+export async function sdrDealPlacement() {
   const envPipeline = process.env.HUBSPOT_SDR_DEAL_PIPELINE?.trim()
   const envStage = process.env.HUBSPOT_SDR_DEAL_STAGE?.trim()
   if (envPipeline && envStage) return { pipeline: envPipeline, dealstage: envStage }
@@ -487,10 +490,17 @@ async function sdrDealPlacement() {
     pipelineCache = result.results || []
   }
   const pipeline =
-    pipelineCache.find((p) => p.id === envPipeline) || pipelineCache.find((p) => p.id === 'default') || pipelineCache[0]
+    pipelineCache.find((p) => p.id === envPipeline) ||
+    pipelineCache.find((p) => p.label?.trim().toLowerCase() === SDR_DEAL_PIPELINE_LABEL.toLowerCase()) ||
+    pipelineCache.find((p) => p.id === 'default') ||
+    pipelineCache[0]
   if (!pipeline) throw new Error('HubSpot has no deal pipeline to put the deal in.')
   const stages = [...(pipeline.stages || [])].sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
-  const stage = stages.find((s) => s.id === envStage) || stages.find((s) => /qualif/i.test(s.label)) || stages[0]
+  const stage =
+    stages.find((s) => s.id === envStage) ||
+    stages.find((s) => s.label?.trim().toLowerCase() === SDR_DEAL_STAGE_LABEL.toLowerCase()) ||
+    stages.find((s) => /qualif/i.test(s.label)) ||
+    stages[0]
   if (!stage) throw new Error(`HubSpot pipeline "${pipeline.label}" has no stages.`)
   return { pipeline: pipeline.id, dealstage: stage.id }
 }
