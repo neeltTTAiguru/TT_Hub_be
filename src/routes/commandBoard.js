@@ -15,6 +15,7 @@ import {
   saveSchedule,
   startMiniRun,
 } from '../services/dailyResearch.js'
+import { digestSettings, nextDigestAt, prepareDigest, recentDigests, sendDigest } from '../services/callLaterDigest.js'
 
 const router = Router()
 
@@ -67,6 +68,7 @@ router.get('/', async (req, res, next) => {
       recentDays(7),
       recentMiniRuns(10),
     ])
+    const digests = await recentDigests()
     // How many unknown-camera agencies are left to draw from, so a daily total
     // bigger than the pool is visible before the morning it comes up short.
     const pool = await poolSize(schedule)
@@ -102,6 +104,18 @@ router.get('/', async (req, res, next) => {
         notifyCc: schedule.notifyCc || [],
         pool,
         nextFireAt: schedule.enabled ? nextFireAt(schedule) : null,
+        callLaterDigest: {
+          ...digestSettings(schedule),
+          nextAt: digestSettings(schedule).enabled ? nextDigestAt(schedule) : null,
+          recent: digests.map((send) => ({
+            at: send.createdAt,
+            trigger: send.trigger,
+            to: send.to,
+            count: send.count,
+            total: send.total,
+            note: send.note,
+          })),
+        },
         days: days.map((day) => ({
           date: day.date,
           trigger: day.trigger,
@@ -191,6 +205,7 @@ router.put('/schedule', async (req, res, next) => {
       pick: body.pick,
       notifyFrom: typeof body.notifyFrom === 'string' ? body.notifyFrom : undefined,
       notifyCc: Array.isArray(body.notifyCc) ? body.notifyCc : undefined,
+      callLaterDigest: body.callLaterDigest && typeof body.callLaterDigest === 'object' ? body.callLaterDigest : undefined,
       updatedBy: await resolveActor(req),
     })
     res.json({ ...schedule, nextFireAt: schedule.enabled ? nextFireAt(schedule) : null })
@@ -210,6 +225,34 @@ router.post('/schedule/run-now', async (req, res, next) => {
     return res.json({ date: day.date, trigger: day.trigger, finishedAt: day.finishedAt, plan: day.plan })
   } catch (error) {
     return next(error)
+  }
+})
+
+/** The Friday call-later email exactly as it would go out now, without sending it. */
+router.get('/call-later-digest/preview', async (req, res, next) => {
+  try {
+    const { settings, from, total, rows, subject, text } = await prepareDigest(await getSchedule())
+    res.json({
+      to: settings.to,
+      from: from?.gmail?.address || '',
+      fromReady: Boolean(from?.gmail?.refreshToken),
+      count: rows.length,
+      total,
+      subject,
+      text,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+/** Send it now. Does not use up Friday's send. */
+router.post('/call-later-digest/send-now', async (req, res, next) => {
+  try {
+    const send = await sendDigest({ trigger: 'manual', sentBy: await resolveActor(req).catch(() => '') })
+    res.json({ at: send.createdAt, trigger: send.trigger, to: send.to, count: send.count, total: send.total, note: send.note })
+  } catch (error) {
+    next(error)
   }
 })
 

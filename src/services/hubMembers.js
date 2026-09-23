@@ -13,6 +13,7 @@ import LeAgency from '../models/LeAgency.js'
 import TravellerState from '../models/TravellerState.js'
 import { hasFullAccess, resolveActorEmail } from '../middleware/featureAccess.js'
 import { buildFilter } from './leAgencyFilters.js'
+import { callLaterListsFor } from './callLaterDigest.js'
 
 const CAMERA_TO_QUERY = { unknown: 'unknown', yes: 'true', no: 'false', not_yes: 'not_yes' }
 
@@ -145,6 +146,9 @@ export async function alwaysClauseFor(member) {
   // Every agency with a call logged, whoever logged it: the Reached out and
   // Call later pins. Callable follow-ups, not leads, so no camera filter.
   if (member?.includeCalled) parts.push({ 'outreach.callCount': { $gt: 0 } })
+  // Their Friday call-later lists, so "Show on map" finds every row.
+  const listed = (await callLaterListsFor(member?.email)).flatMap((list) => (list.rows || []).map((row) => row.ori))
+  if (listed.length) parts.push({ ori: { $in: [...new Set(listed)] } })
   if (!parts.length) return null
   return parts.length === 1 ? parts[0] : { $or: parts }
 }
@@ -218,7 +222,14 @@ export async function memberViewFor(member) {
     .select('email name')
     .lean()
   const nameOf = (email) => owners.find((o) => o.email === email)?.name || (email || '').split('@')[0]
+  const lists = await callLaterListsFor(member.email)
   return {
+    callLaterLists: lists.map((list) => ({
+      id: String(list._id),
+      at: list.createdAt,
+      total: list.total || 0,
+      rows: list.rows || [],
+    })),
     assignedRuns: runs.map((run) => ({
       id: String(run._id),
       status: run.status,

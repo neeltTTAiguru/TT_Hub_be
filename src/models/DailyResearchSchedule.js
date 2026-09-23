@@ -33,6 +33,21 @@ const dailyResearchScheduleSchema = new mongoose.Schema(
     notifyFrom: { type: String, default: '' },
     // Copied on every leads email - a manager who wants to see what went out.
     notifyCc: { type: [String], default: [] },
+    // The weekly call-later email: the pink pins still waiting for a ring-back,
+    // sent to whoever works them. Rides on this document for the timezone and
+    // the sender above; see services/callLaterDigest.js.
+    callLaterDigest: {
+      enabled: { type: Boolean, default: true },
+      // 0 = Sunday ... 6 = Saturday, in `timezone`. Friday, so the list is
+      // in hand for planning the week ahead.
+      weekday: { type: Number, default: 5 },
+      hour: { type: Number, default: 7 },
+      minute: { type: Number, default: 0 },
+      // Blank means the call-back owner (CALL_BACK_CALENDAR_EMAIL, Kyle).
+      to: { type: String, default: '' },
+      cc: { type: [String], default: [] },
+      limit: { type: Number, default: 50 },
+    },
     updatedBy: { type: String, default: '' },
   },
   { timestamps: true },

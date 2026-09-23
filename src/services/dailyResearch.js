@@ -30,6 +30,7 @@ import { hasFullAccess } from '../middleware/featureAccess.js'
 import { buildFilter, describeFilters } from './leAgencyFilters.js'
 import { runFindingsRows } from './researchRunWorkbook.js'
 import { sendAsMember } from './gmail.js'
+import { isCallLaterDayFor, tickDigest } from './callLaterDigest.js'
 
 const TICK_MS = 60 * 1000
 // How long after the hour a missed morning is still run. Past this it waits
@@ -71,8 +72,20 @@ export const getSchedule = async () => {
   }
 }
 
-export async function saveSchedule({ enabled, hour, minute, weekdays, pick, notifyFrom, notifyCc, updatedBy = '' }) {
+export async function saveSchedule({ enabled, hour, minute, weekdays, pick, notifyFrom, notifyCc, callLaterDigest, updatedBy = '' }) {
   const set = { updatedBy }
+  if (callLaterDigest && typeof callLaterDigest === 'object') {
+    const d = callLaterDigest
+    if (typeof d.enabled === 'boolean') set['callLaterDigest.enabled'] = d.enabled
+    if (Number.isInteger(d.weekday) && d.weekday >= 0 && d.weekday <= 6) set['callLaterDigest.weekday'] = d.weekday
+    if (Number.isInteger(d.hour) && d.hour >= 0 && d.hour <= 23) set['callLaterDigest.hour'] = d.hour
+    if (Number.isInteger(d.minute) && d.minute >= 0 && d.minute <= 59) set['callLaterDigest.minute'] = d.minute
+    if (Number.isInteger(d.limit) && d.limit > 0 && d.limit <= 200) set['callLaterDigest.limit'] = d.limit
+    if (typeof d.to === 'string') set['callLaterDigest.to'] = d.to.trim().toLowerCase()
+    if (Array.isArray(d.cc)) {
+      set['callLaterDigest.cc'] = [...new Set(d.cc.map((v) => String(v).trim().toLowerCase()).filter((v) => v.includes('@')))]
+    }
+  }
   if (Array.isArray(weekdays)) {
     set.weekdays = [...new Set(weekdays.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort()
   }
@@ -176,9 +189,16 @@ async function claimDay(date, trigger) {
   const members = await HubMember.find({ dailyResearch: { $gt: 0 }, dailyPaused: { $ne: true } })
     .sort({ dailyResearch: -1, email: 1 })
     .lean()
+  const schedule = await getSchedule()
   const plan = members
     .filter((member) => !hasFullAccess(member.email))
     .map((member) => ({ email: member.email, count: Math.min(Math.floor(member.dailyResearch), 500) }))
+    // Kept in the plan, marked, so the board says why there was no run.
+    .map((entry) =>
+      isCallLaterDayFor(schedule, entry.email, date)
+        ? { ...entry, status: 'skipped', note: 'Call-later day: their list is the week\'s call-backs.', finishedAt: new Date() }
+        : entry,
+    )
   try {
     const day = await DailyResearchDay.create({ date, claimedBy: me, trigger, plan })
     console.log(`[daily-research] ${date} claimed by ${me}: ${plan.map((p) => `${p.email}=${p.count}`).join(', ') || 'nobody to research for'}`)
@@ -789,6 +809,8 @@ export function startDailyResearchScheduler() {
     try {
       await advance()
       await settleMiniRuns()
+      // Friday's call-later email. Here so the same off switch silences it.
+      await tickDigest()
     } catch (error) {
       console.error(`[daily-research] tick failed: ${error?.message || error}`)
     } finally {
