@@ -259,6 +259,21 @@ const leAgencySchema = new mongoose.Schema(
       },
       phone: { type: String, default: '', trim: true },
       email: { type: String, default: '', trim: true },
+      // Where `email` came from when the hub found it rather than a person
+      // typing it: who the address belongs to, how sure the finder was and the
+      // page it was read off, so an SAE can see a generic records@ inbox for
+      // what it is before sending. `notFoundAt` stops a fruitless lookup being
+      // paid for again on every click.
+      emailSource: {
+        source: { type: String, default: '', trim: true },
+        tier: { type: String, default: '', trim: true },
+        owner: { type: String, default: '', trim: true },
+        sourceUrl: { type: String, default: '', trim: true },
+        confidence: { type: String, default: '', trim: true },
+        notes: { type: String, default: '', trim: true },
+        foundAt: { type: Date, default: null },
+        notFoundAt: { type: Date, default: null },
+      },
       website: { type: String, default: '', trim: true },
       mailingAddress: { type: String, default: '', trim: true },
       // Structured because a geocoder needs the parts, not one blob.

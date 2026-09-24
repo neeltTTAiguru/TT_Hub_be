@@ -228,7 +228,17 @@ router.get('/template/:key/preview/:ori', async (req, res, next) => {
       .lean()
     if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
     const rendered = renderTemplate(await getTemplate(key), agency, member || { email })
-    return res.json({ ...rendered, to: agency.contacts?.email || '', ...statusFor(member) })
+    const source = agency.contacts?.emailSource || {}
+    return res.json({
+      ...rendered,
+      to: agency.contacts?.email || '',
+      // Where that address came from when the hub found it, so the composer
+      // can say "records@ inbox, medium confidence" before anything is sent.
+      toSource: agency.contacts?.email && source.source
+        ? { source: source.source, tier: source.tier, owner: source.owner, sourceUrl: source.sourceUrl, confidence: source.confidence }
+        : null,
+      ...statusFor(member),
+    })
   } catch (error) {
     return next(error)
   }

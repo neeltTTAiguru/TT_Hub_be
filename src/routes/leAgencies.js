@@ -16,6 +16,7 @@ import { activeRun, startRun, stopRun } from '../services/researchRunner.js'
 import { BWC_TERMS, assignDealOwner, bwcReviewDate, syncAgencyToHubSpot, syncBwcReminder, syncSdrDeal } from '../services/hubspotSync.js'
 import { requireLoggedByEmail, syncMapEntryToHubSpot } from '../services/hubspotMapCalls.js'
 import { bookCallBack } from '../services/calendar.js'
+import { findAgencyEmail } from '../services/agencyEmailFinder.js'
 import HubMember from '../models/HubMember.js'
 
 /**
@@ -1412,6 +1413,21 @@ const readBwcContract = (body, existing = {}, actor = '') => {
 }
 
 /**
+ * Find who to email at an agency when no address is on file, with PromptLoop.
+ *
+ * Pressed from the pin's Email button. Up to a minute of web research, paid
+ * per run, so an address already on file (or a recent miss) is returned
+ * without running; `force` asks again.
+ */
+router.post('/:ori/find-email', async (req, res, next) => {
+  try {
+    res.json(await findAgencyEmail(req.params.ori, { force: req.body?.force === true }))
+  } catch (error) {
+    next(error)
+  }
+})
+
+/**
  * Save the TMAN-P qualification for an agency.
  *
  * Shared like everything else on this map - one record per agency, not per
@@ -1570,7 +1586,19 @@ router.post('/:ori/call-log', async (req, res, next) => {
     }
     const bwcContract = readBwcContract(body.bwc, agency.bwcContract?.toObject?.() || agency.bwcContract || {}, loggedBy)
     if (bwcContract) agency.bwcContract = bwcContract
+    // The contract answer is also the pin's verdict, recorded as a person's
+    // word like the old Mark buttons: under contract means they have cameras,
+    // no contract means they do not. A vendor only overwrites when given.
+    const bwcTrusted = bwcContract ? (bwcContract.status === 'under_contract' ? 'has_bwc' : 'no_bwc') : ''
+    if (bwcTrusted) {
+      agency.set('surveillance.bwc.trustedResearched', bwcTrusted)
+      agency.set('surveillance.bwc.trustedResearchedAt', new Date())
+      agency.set('surveillance.bwc.trustedResearchedBy', 'manual')
+      agency.set('surveillance.bwc.trustedResearchedNote', 'BWC Info on a call result')
+      if (bwcTrusted === 'has_bwc' && bwcContract.vendor) agency.set('surveillance.bwc.vendor', bwcContract.vendor)
+    }
     await agency.save()
+    if (bwcTrusted) await recordAgencyResearch(agency.ori, { source: 'manual', by: loggedBy })
 
     // Then the agency itself in HubSpot, before the call activity so a call
     // that creates the company is linked to it. On every save:
@@ -1665,6 +1693,9 @@ router.post('/:ori/call-log', async (req, res, next) => {
       hubspot,
       hubspotAgency,
       calendar,
+      bwcTrusted: bwcTrusted
+        ? { value: bwcTrusted, vendor: agency.surveillance?.bwc?.vendor || '' }
+        : null,
     })
   } catch (error) {
     return next(error)
