@@ -19,7 +19,7 @@ import { getSchedule, localNow } from './dailyResearch.js'
 import { sendAsMember } from './gmail.js'
 
 /** The outcomes that turn a pin pink. Matches CALL_LATER_OUTCOMES on the map. */
-export const CALL_LATER_OUTCOMES = ['Call later', 'Left voicemail']
+export const CALL_LATER_OUTCOMES = ['Call later', 'Left voicemail', 'Spoke with gatekeeper']
 
 // A Friday send that was missed (the backend down at seven) still goes out
 // later that morning; one missed by more than this waits for next week rather
