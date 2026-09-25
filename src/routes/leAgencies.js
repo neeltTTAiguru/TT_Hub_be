@@ -108,8 +108,18 @@ router.use(async (req, res, next) => {
     req.seesTargetList = false
   }
   if (!req.seesTargetList) {
-    delete req.query.targetList
-    if (req.body?.filters) delete req.body.filters.targetList
+    const strip = (source) => {
+      if (!source) return
+      delete source.targetList
+      if (typeof source.categories === 'string') {
+        source.categories = source.categories
+          .split(',')
+          .filter((key) => key.trim() !== 'targetList')
+          .join(',')
+      }
+    }
+    strip(req.query)
+    strip(req.body?.filters)
   }
   next()
 })

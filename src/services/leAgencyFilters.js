@@ -12,6 +12,54 @@ export const parseNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+// Outcomes that leave an agency waiting to be rung again - the map's pink pin.
+// Same list as CALL_LATER_OUTCOMES in callLaterDigest.js and the map.
+const CALL_LATER_OUTCOMES = ['Call later', 'Left voicemail', 'Spoke with gatekeeper']
+
+/**
+ * The map's legend rows as queries. Every agency sits in exactly one, decided
+ * in the map's order - target list, then cameras, then call later, reached out,
+ * confirmed none, and unknown for the rest - so each row excludes the ones
+ * above it and the counts line up with the legend.
+ */
+const CATEGORY_TESTS = [
+  ['targetList', { 'targetList.name': { $gt: '' } }],
+  [
+    'bwc',
+    {
+      $or: [
+        { 'surveillance.bwc.trustedResearched': 'has_bwc' },
+        {
+          'surveillance.bwc.trustedResearched': { $ne: 'no_bwc' },
+          'surveillance.bwc.status': 'yes',
+        },
+      ],
+    },
+  ],
+  ['callLater', { 'outreach.lastOutcome': { $in: CALL_LATER_OUTCOMES } }],
+  ['contacted', { 'outreach.callCount': { $gt: 0 } }],
+  [
+    'noBwc',
+    { $or: [{ 'surveillance.bwc.trustedResearched': 'no_bwc' }, { 'surveillance.bwc.status': 'no' }] },
+  ],
+  ['unknownBwc', {}],
+]
+
+export const LEGEND_CATEGORIES = CATEGORY_TESTS.map(([key]) => key)
+
+export function categoriesClause(keys) {
+  const wanted = new Set(keys)
+  const branches = []
+  CATEGORY_TESTS.forEach(([key, test], index) => {
+    if (!wanted.has(key)) return
+    const earlier = CATEGORY_TESTS.slice(0, index).map(([, t]) => t)
+    const parts = [test, ...(earlier.length ? [{ $nor: earlier }] : [])].filter((p) => Object.keys(p).length)
+    branches.push(parts.length === 1 ? parts[0] : { $and: parts })
+  })
+  if (!branches.length) return null
+  return branches.length === 1 ? branches[0] : { $or: branches }
+}
+
 /** Shared filter builder so the list, geojson, and stats views stay consistent. */
 export const buildFilter = (query) => {
   const filter = {}
@@ -140,6 +188,13 @@ export const buildFilter = (query) => {
     }
   }
 
+  // Legend colours, as the map draws them (see categoryFor in AgencyMap). Last, so
+  // the camera filter's `filter.$and = [...]` above cannot overwrite it.
+  if (typeof query.categories === 'string' && query.categories.trim()) {
+    const clause = categoriesClause(query.categories.split(',').map((c) => c.trim()))
+    if (clause) filter.$and = [...(filter.$and || []), clause]
+  }
+
   return filter
 }
 
@@ -155,5 +210,17 @@ export const describeFilters = (filters = {}) => {
   if (filters.bwc === 'true') parts.push('Known to have cameras')
   if (filters.bwc === 'false') parts.push('Known to have none')
   if (filters.search) parts.push(`Name contains "${filters.search}"`)
+  if (filters.categories) {
+    const names = {
+      targetList: 'Target list',
+      bwc: 'Has body-worn cameras',
+      callLater: 'Call later',
+      contacted: 'Reached out',
+      noBwc: 'Confirmed no cameras',
+      unknownBwc: 'Unknown',
+    }
+    const picked = String(filters.categories).split(',').map((key) => names[key.trim()]).filter(Boolean)
+    if (picked.length) parts.push(`Colours: ${picked.join(', ')}`)
+  }
   return parts.join('; ')
 }
