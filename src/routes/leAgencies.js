@@ -30,7 +30,7 @@ const UNDATED_OUTCOMES = ['Left voicemail', 'Call later']
 import BwcResearchRun from '../models/BwcResearchRun.js'
 import AgencyResearchLog from '../models/AgencyResearchLog.js'
 import { resolveActor } from '../middleware/auth.js'
-import { requireFullAccess } from '../middleware/featureAccess.js'
+import { hasFullAccess, requireFullAccess, resolveActorEmail } from '../middleware/featureAccess.js'
 import { scoped, visibleRunIds, withMemberScope } from '../services/hubMembers.js'
 import { buildFilter, describeFilters, parseNumber } from '../services/leAgencyFilters.js'
 import { listMapCalls, mapCallsToCsv } from '../services/mapCallSheet.js'
@@ -95,6 +95,32 @@ const serializeRun = (run) => {
 // and unconfigured members get no scope and see the map as it always was.
 router.use(withMemberScope)
 
+/**
+ * The uploaded target list is for full-access accounts only - Neel and Todd,
+ * not the SAEs - and not while one of them is viewing the map as a member.
+ * Enforced here rather than just hidden in the UI: everyone else can neither
+ * filter by it nor see which agencies are on it.
+ */
+router.use(async (req, res, next) => {
+  try {
+    req.seesTargetList = !req.member && hasFullAccess(await resolveActorEmail(req))
+  } catch {
+    req.seesTargetList = false
+  }
+  if (!req.seesTargetList) {
+    delete req.query.targetList
+    if (req.body?.filters) delete req.body.filters.targetList
+  }
+  next()
+})
+
+/** An agency document as this caller may see it. */
+const withoutTargetList = (req, agency) => {
+  if (req.seesTargetList || !agency) return agency
+  const { targetList, ...rest } = agency
+  return rest
+}
+
 router.get('/', async (req, res, next) => {
   try {
     const filter = scoped(req, buildFilter(req.query))
@@ -110,7 +136,7 @@ router.get('/', async (req, res, next) => {
       LeAgency.countDocuments(filter),
     ])
 
-    res.json({ total, page, limit, agencies })
+    res.json({ total, page, limit, agencies: agencies.map((agency) => withoutTargetList(req, agency)) })
   } catch (error) {
     next(error)
   }
@@ -191,7 +217,7 @@ router.get('/geojson', async (req, res, next) => {
             // looks like a real pin is a trap someone eventually calls.
             isTest: Boolean(agency.isTestRecord),
             // On the uploaded agency list; the map colours these purple.
-            targetList: agency.targetList?.name || '',
+            targetList: req.seesTargetList ? agency.targetList?.name || '' : '',
             // A documented body-worn camera. `bwcVendor` is blank far more
             // often than not, so the map must not read blank as "no vendor".
             hasBwc: Boolean(agency.surveillance?.bwc?.hasBwc),
@@ -1880,7 +1906,7 @@ router.get('/:ori', async (req, res, next) => {
   try {
     const agency = await LeAgency.findOne({ ori: req.params.ori.toUpperCase() }).lean()
     if (!agency) return res.status(404).json({ message: 'Agency was not found.' })
-    res.json(agency)
+    res.json(withoutTargetList(req, agency))
   } catch (error) {
     next(error)
   }
