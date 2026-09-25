@@ -45,6 +45,9 @@ export const buildFilter = (query) => {
     if (list.length) filter['crm.stage'] = list.length === 1 ? list[0] : { $in: list }
   }
 
+  // On the uploaded agency list (see scripts/tagTargetList.js).
+  if (query.targetList === 'true') filter['targetList.name'] = { $gt: '' }
+
   if (query.isNibrs === 'true') filter.isNibrs = true
   if (query.isNibrs === 'false') filter.isNibrs = false
 

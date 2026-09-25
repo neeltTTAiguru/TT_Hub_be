@@ -132,7 +132,7 @@ router.get('/geojson', async (req, res, next) => {
     const agencies = await LeAgency.find(filter)
       .select(
         'ori agencyName agencyType state county latitude longitude location ' +
-          'fbiCoordIsCountyProxy employment contacts crm surveillance isTestRecord outreach',
+          'fbiCoordIsCountyProxy employment contacts crm surveillance isTestRecord outreach targetList',
       )
       .limit(limit)
       .lean()
@@ -190,6 +190,8 @@ router.get('/geojson', async (req, res, next) => {
             // Sent so the map can colour it distinctly. A test agency that
             // looks like a real pin is a trap someone eventually calls.
             isTest: Boolean(agency.isTestRecord),
+            // On the uploaded agency list; the map colours these purple.
+            targetList: agency.targetList?.name || '',
             // A documented body-worn camera. `bwcVendor` is blank far more
             // often than not, so the map must not read blank as "no vendor".
             hasBwc: Boolean(agency.surveillance?.bwc?.hasBwc),

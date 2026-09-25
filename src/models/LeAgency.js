@@ -230,6 +230,17 @@ const leAgencySchema = new mongoose.Schema(
     // "has anyone rung them" - selecting the notes of every call to answer that
     // would put megabytes of typing on the wire for a boolean. Written on every
     // call-log change, never edited by hand.
+    // An uploaded list of agencies someone wants to work, e.g. a trade-show or
+    // partner list. Names on a list are matched to ORIs once, by
+    // scripts/tagTargetList.js; the map colours these pins purple and can show
+    // them alone. `sourceName` is the line exactly as the list wrote it, so a
+    // doubtful match can be checked against what was asked for.
+    targetList: {
+      name: { type: String, default: '', trim: true, index: true },
+      sourceName: { type: String, default: '', trim: true },
+      addedAt: { type: Date, default: null },
+    },
+
     outreach: {
       callCount: { type: Number, default: 0 },
       lastCalledAt: { type: Date, default: null, index: true },
