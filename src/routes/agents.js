@@ -7,7 +7,7 @@ import { retrieveMemoryContext, saveApprovedMemory, listSectionMemories, listAll
 import { researchCompetitorWebsite } from '../services/competitorResearch.js'
 import { refreshAllCompetitorSections, getCollectorStatus } from '../services/competitorCollector.js'
 import { buildUserContentWithAttachments } from '../services/chatAttachments.js'
-import { HUBSPOT_DEAL_INSTRUCTIONS } from '../services/hubspotDeals.js'
+import { HUBSPOT_DEAL_INSTRUCTIONS, withToday } from '../services/hubspotDeals.js'
 import {
   assertHubSpotToolsAvailable,
   assertResponseIsLive,
@@ -225,7 +225,7 @@ router.post('/:id/chat/stream', async (req, res, next) => {
         {
           memoryContext: memory.context,
           timeoutMs: Number(process.env.HERMES_STREAM_TIMEOUT_MS || 240000),
-          instructions: agentId === 'trusted-tech-hubspot-assistant' ? HUBSPOT_DEAL_INSTRUCTIONS : undefined,
+          instructions: agentId === 'trusted-tech-hubspot-assistant' ? withToday(HUBSPOT_DEAL_INSTRUCTIONS) : undefined,
           signal: clientAbort.signal,
         },
         emit,
