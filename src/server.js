@@ -15,6 +15,10 @@ import {
   createHermesSession,
   destroyHermesSession,
 } from './services/hermesDashboard.js'
+import {
+  attachHermesWorkspaceUpgrade,
+  createHermesWorkspaceMiddleware,
+} from './services/hermesWorkspace.js'
 import { requireAuth } from './middleware/auth.js'
 import { requireFeatureAccess } from './middleware/featureAccess.js'
 import healthRouter from './routes/health.js'
@@ -94,6 +98,10 @@ app.disable('x-powered-by')
 // It gates itself on a signed cookie and ignores every path it does not own.
 const hermesDashboard = createHermesDashboardMiddleware()
 app.use(hermesDashboard)
+// Hermes Workspace, under /workspace, behind the same cookie. Same placement
+// rules as the dashboard proxy above.
+const hermesWorkspace = createHermesWorkspaceMiddleware()
+app.use(hermesWorkspace)
 
 app.use(helmet())
 app.use(cors(corsOptions))
@@ -238,6 +246,7 @@ async function start() {
   // The chat terminal is a PTY over a websocket. Upgrades never reach Express,
   // so the proxy and its cookie gate are attached to the raw server.
   attachHermesDashboardUpgrade(server, hermesDashboard)
+  attachHermesWorkspaceUpgrade(server, hermesWorkspace)
 
   server.on('error', (error) => {
     if (error?.code === 'EADDRINUSE') {

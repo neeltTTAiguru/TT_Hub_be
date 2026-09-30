@@ -80,6 +80,20 @@ export function isHermesDashboardConfigured() {
   return Boolean(target && secret)
 }
 
+/**
+ * The approved email on a request's Hermes session cookie, or null. Hermes
+ * Workspace is fronted by the same cookie and allowlist as the dashboard, so it
+ * calls this rather than minting a second session: one approval covers both,
+ * and removing an address from the allowlist revokes both at once.
+ */
+export function readHermesSessionEmail(req) {
+  const { secret, allowed } = getConfig()
+  if (!secret) return null
+  const claims = readToken(readCookie(req, COOKIE_NAME), secret)
+  if (!claims || !isAllowed(claims.email, allowed)) return null
+  return claims.email
+}
+
 function sign(value, secret) {
   return crypto.createHmac('sha256', secret).update(value).digest('base64url')
 }
@@ -137,7 +151,10 @@ function isAllowed(email, allowed) {
  */
 export async function createHermesSession(req, res) {
   const { target, secret, allowed } = getConfig()
-  if (!target || !secret) {
+  // Either embed is enough to need a session: Hermes Workspace travels on this
+  // same cookie, so a backend proxying only the Workspace still mints it.
+  const workspaceTarget = String(process.env.HERMES_WORKSPACE_URL || '').trim()
+  if (!(target || workspaceTarget) || !secret) {
     return res.status(503).json({
       message: 'The Hermes dashboard is not configured on this backend.',
     })
