@@ -311,7 +311,7 @@ function registerMailTools(server, mail) {
     'mail_reply',
     {
       title: 'Mail agent: reply',
-      description: `Reply to one email as ${mailbox}, in its thread, to its sender. Only when can_auto_reply was true and you can answer fully and correctly. Plain text, signed "Neel". In trial mode the reply is emailed to Neel as "would reply" instead of to the sender. A refusal means: call mail_notify_neel instead.`,
+      description: `Reply to one email as ${mailbox}, in its thread, to its sender. Use it when can_auto_reply was true and you answered the question or did the task (including research you just did), or when Neel told you to reply in instructions_from_neel. Plain text, signed "Neel". In trial mode the reply is emailed to Neel as "would reply" instead of to the sender. A refusal means: call mail_notify_neel instead.`,
       inputSchema: {
         message_id: messageId,
         body: z.string().min(1).max(5000).describe('The reply text, plain, signed "Neel"'),
@@ -324,7 +324,7 @@ function registerMailTools(server, mail) {
     'mail_notify_neel',
     {
       title: 'Mail agent: hand to Neel',
-      description: 'Hand one email to Neel instead of replying: emails him who it is from, a short summary, why it needs him, and an optional suggested reply. Use for anything you cannot answer fully and correctly, and for pricing, commitments, complaints, internal data or first-time senders.',
+      description: 'Hand one email to Neel instead of replying: emails him who it is from, a short summary, why it needs him, and an optional suggested reply. Use for anything you cannot answer or do with your tools, and for pricing, commitments, complaints, internal data for outsiders, or first-time senders. Research and lookup requests are NOT a reason to notify: do the research and mail_reply. Neel answers by replying to this email; his reply comes back as an instruction.',
       inputSchema: {
         message_id: messageId,
         summary: z.string().min(1).max(2000).describe('Two lines: who they are and what they want'),

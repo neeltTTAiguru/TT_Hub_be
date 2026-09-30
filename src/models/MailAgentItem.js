@@ -19,13 +19,20 @@ const mailAgentItemSchema = new mongoose.Schema(
     fromEmail: { type: String, default: '' },
     from: { type: String, default: '' },
     subject: { type: String, default: '' },
-    // claimed -> replied | notified | skipped. `filtered` never reaches Hermes.
+    // claimed -> replied | notified | skipped; notified + approvedAt -> replied.
+    // `filtered` never reaches Hermes; `instruction` rows are Neel's replies.
     status: { type: String, default: 'claimed', index: true },
     reason: { type: String, default: '' },
     reply: { type: String, default: '' },
     // trial = the reply went to Neel as "would reply"; live = to the sender.
     mode: { type: String, default: '' },
     sentId: { type: String, default: '' },
+    // A "Needs you" email: its thread (where Neel's reply lands), the reply the
+    // agent suggested, and Neel's instruction once he answers it.
+    notifyThreadId: { type: String, default: '', index: true },
+    suggestedReply: { type: String, default: '' },
+    instruction: { type: String, default: '' },
+    approvedAt: { type: Date, default: null },
     claimedAt: { type: Date, default: null },
     decidedAt: { type: Date, default: null },
   },

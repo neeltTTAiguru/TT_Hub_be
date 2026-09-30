@@ -450,6 +450,9 @@ export async function getMessage(member, id) {
     references: header(m, 'References'),
     body: bodyOf(m.payload),
     unread: (m.labelIds || []).includes('UNREAD'),
+    // Gmail's own record that this mailbox sent it. Unlike the From header,
+    // an outsider cannot forge it.
+    sent: (m.labelIds || []).includes('SENT'),
     // What tells a person from a machine. The mail agent must never answer an
     // autoresponder, a mailing list or a notification -- two agents replying
     // to each other is a loop that only stops at the send quota.
