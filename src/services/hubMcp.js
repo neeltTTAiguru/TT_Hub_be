@@ -12,6 +12,7 @@ import {
   mapResearchRuns,
   mapSearchAgencies,
 } from './agencyMapTools.js'
+import { createMailAgent } from './mailAgent.js'
 
 /**
  * The hub as an MCP server -- the return path from Hermes into the hub.
@@ -25,7 +26,11 @@ import {
  * UI uses, so an agent reached from Hermes carries its own SKILL.md, its GBrain
  * memory and its tool filters. The map tools are read-only views of the Agency
  * Map (agencyMapTools.js). No hub endpoint is exposed that a person could not
- * already reach from the hub, and nothing here spends money or writes.
+ * already reach from the hub, and nothing here spends money.
+ *
+ * The one exception to read-only is the mail agent (mailAgent.js): it sends
+ * email as MAIL_AGENT_MAILBOX, and only exists when that is set. Its
+ * guardrails live in that file, not in the tool descriptions.
  */
 
 // Who the memory layer and the "saved by" stamps see. A service identity with
@@ -125,6 +130,7 @@ export function createHubMcpServer({
   agents = listAgents,
   agent = getAgentById,
   map = { callActivity: mapCallActivity, recentCalls: mapRecentCalls, searchAgencies: mapSearchAgencies, agency: mapAgency, researchRuns: mapResearchRuns },
+  mail = createMailAgent(),
 } = {}) {
   const server = new McpServer({ name: 'trusted-tech-hub', version: '1.0.0' })
 
@@ -273,7 +279,74 @@ export function createHubMcpServer({
     async (args) => jsonResult(await map.researchRuns(args)),
   )
 
+  if (mail) registerMailTools(server, mail)
+
   return server
+}
+
+// A thrown guardrail is an answer Hermes should read and act on, not a crash.
+const mailCall = (fn) => async (args) => {
+  try {
+    return jsonResult(await fn(args))
+  } catch (error) {
+    return toolError(error?.message || 'The mail agent failed.')
+  }
+}
+
+function registerMailTools(server, mail) {
+  const mailbox = mail.config.mailbox
+  const messageId = z.string().min(1).describe('message_id from mail_next_batch')
+
+  server.registerTool(
+    'mail_next_batch',
+    {
+      title: 'Mail agent: next emails',
+      description: `The next new emails in ${mailbox}'s inbox for the mail agent to handle, oldest first, with instructions. Newsletters, notifications and other automated mail are already filtered out. Each email is claimed for you: settle EVERY one with mail_reply, mail_notify_neel or mail_skip. When "more" is true, call again after settling these. Empty "emails" means nothing to do.`,
+      inputSchema: { max: z.number().int().min(1).max(10).optional().describe('Emails per batch (default 5)') },
+    },
+    mailCall((args) => mail.nextBatch(args)),
+  )
+
+  server.registerTool(
+    'mail_reply',
+    {
+      title: 'Mail agent: reply',
+      description: `Reply to one email as ${mailbox}, in its thread, to its sender. Only when can_auto_reply was true and you can answer fully and correctly. Plain text, signed "Neel". In trial mode the reply is emailed to Neel as "would reply" instead of to the sender. A refusal means: call mail_notify_neel instead.`,
+      inputSchema: {
+        message_id: messageId,
+        body: z.string().min(1).max(5000).describe('The reply text, plain, signed "Neel"'),
+      },
+    },
+    mailCall((args) => mail.reply(args)),
+  )
+
+  server.registerTool(
+    'mail_notify_neel',
+    {
+      title: 'Mail agent: hand to Neel',
+      description: 'Hand one email to Neel instead of replying: emails him who it is from, a short summary, why it needs him, and an optional suggested reply. Use for anything you cannot answer fully and correctly, and for pricing, commitments, complaints, internal data or first-time senders.',
+      inputSchema: {
+        message_id: messageId,
+        summary: z.string().min(1).max(2000).describe('Two lines: who they are and what they want'),
+        reason: z.string().min(1).max(1000).describe('Why the agent did not reply itself'),
+        suggested_reply: z.string().max(5000).optional().describe('A reply Neel could send, if you have one'),
+      },
+    },
+    mailCall((args) => mail.notify(args)),
+  )
+
+  server.registerTool(
+    'mail_skip',
+    {
+      title: 'Mail agent: no response needed',
+      description: 'Settle an email that needs no response at all (a thank-you, an FYI, an acknowledgement). Not for emails you could not answer -- those go to mail_notify_neel.',
+      inputSchema: {
+        message_id: messageId,
+        reason: z.string().min(1).max(500).describe('Why no response is needed'),
+      },
+    },
+    mailCall((args) => mail.skip(args)),
+  )
 }
 
 export async function handleHubMcpRequest(req, res, deps) {

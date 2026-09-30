@@ -450,7 +450,28 @@ export async function getMessage(member, id) {
     references: header(m, 'References'),
     body: bodyOf(m.payload),
     unread: (m.labelIds || []).includes('UNREAD'),
+    // What tells a person from a machine. The mail agent must never answer an
+    // autoresponder, a mailing list or a notification -- two agents replying
+    // to each other is a loop that only stops at the send quota.
+    automation: {
+      autoSubmitted: header(m, 'Auto-Submitted'),
+      precedence: header(m, 'Precedence'),
+      listId: header(m, 'List-Id'),
+      listUnsubscribe: header(m, 'List-Unsubscribe'),
+    },
   }
+}
+
+/**
+ * Whether this mailbox has ever sent mail to `address`. One cheap search, used
+ * by the mail agent to tell a known correspondent from a first-time sender.
+ */
+export async function hasSentTo(member, address) {
+  const email = String(address || '').trim().toLowerCase()
+  if (!email.includes('@')) return false
+  const params = new URLSearchParams({ maxResults: '1', labelIds: 'SENT', q: `to:${email}` })
+  const list = await gmailFetch(member, `/messages?${params.toString()}`)
+  return Boolean(list.messages?.length)
 }
 
 export const TEMPLATE_KEYS = ['voicemail-followup']
