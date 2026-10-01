@@ -7,8 +7,8 @@
 // built on it has real, cited sources.
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses'
-const DEFAULT_MODEL = process.env.WEB_RESEARCH_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-mini'
-const REQUEST_TIMEOUT_MS = Number(process.env.WEB_RESEARCH_TIMEOUT_MS || 120000)
+const DEFAULT_MODEL = process.env.WEB_RESEARCH_MODEL || 'gpt-5'
+const REQUEST_TIMEOUT_MS = Number(process.env.WEB_RESEARCH_TIMEOUT_MS || 300000)
 const MAX_TOOL_CALLS = Number(process.env.WEB_RESEARCH_MAX_TOOL_CALLS || 12)
 
 function getTextFromResponse(payload) {

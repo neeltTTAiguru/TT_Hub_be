@@ -286,7 +286,7 @@ export function createHubMcpServer({
     {
       title: 'Web research',
       description:
-        'Search the web and read the pages to answer one question, with cited source URLs. Use this for anything that needs current information from the internet (vendors, agencies, products, news, grants, people, prices on public sites). It really browses; prefer it over your own web tools and over hub agents for web questions. Takes up to two minutes.',
+        'Search the web and read the pages to answer one question, with cited source URLs. Use this for anything that needs current information from the internet (vendors, agencies, products, news, grants, people, prices on public sites). It really browses; prefer it over your own web tools and over hub agents for web questions. Takes a few minutes.',
       inputSchema: {
         question: z.string().min(1).max(2000).describe('What to find out, as a full question'),
         context: z.string().max(4000).optional().describe('Background that narrows the search, e.g. the email it came from'),
