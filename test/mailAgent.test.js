@@ -85,10 +85,10 @@ function fakeGmail(messages, { sentTo = [] } = {}) {
   }
 }
 
-function agent({ messages, sentTo, mode = 'trial', store = memoryStore(), maxRepliesPerHour = 10 }) {
+function agent({ messages, sentTo, mode = 'trial', store = memoryStore(), maxRepliesPerHour = 10, onlyFrom }) {
   const gmail = fakeGmail(messages, { sentTo })
   const mail = createMailAgent({
-    config: { mailbox: MAILBOX, enabled: true, mode, notifyTo: MAILBOX, maxRepliesPerHour },
+    config: { mailbox: MAILBOX, enabled: true, mode, notifyTo: MAILBOX, maxRepliesPerHour, onlyFrom },
     store,
     gmail,
     findMember: async () => ({ email: MAILBOX, name: 'Neel Palle', gmail: { refreshToken: 'x' } }),
@@ -102,6 +102,78 @@ test('is off unless a mailbox is configured, and defaults to trial mode', () => 
   assert.equal(mailAgentConfig({ MAIL_AGENT_MAILBOX: MAILBOX }).mode, 'trial')
   assert.equal(mailAgentConfig({ MAIL_AGENT_MAILBOX: MAILBOX, MAIL_AGENT_MODE: 'live' }).mode, 'live')
   assert.equal(mailAgentConfig({ MAIL_AGENT_MAILBOX: MAILBOX, MAIL_AGENT_MODE: 'yes' }).mode, 'trial')
+})
+
+test('handles only Todd unless MAIL_AGENT_ONLY_FROM says otherwise', () => {
+  assert.deepEqual(mailAgentConfig({ MAIL_AGENT_MAILBOX: MAILBOX }).onlyFrom, ['todd.hodnett@trustedtechnology.ai'])
+  assert.deepEqual(mailAgentConfig({ MAIL_AGENT_ONLY_FROM: 'A@x.com, b@y.com' }).onlyFrom, ['a@x.com', 'b@y.com'])
+  assert.deepEqual(mailAgentConfig({ MAIL_AGENT_ONLY_FROM: '*' }).onlyFrom, [])
+})
+
+test('never offers or replies to anyone off the sender list, even with Neel approving', async () => {
+  const TODD = 'todd.hodnett@trustedtechnology.ai'
+  const { mail, gmail, store } = agent({
+    messages: [
+      { id: 'm1', from: `Todd <${TODD}>`, subject: 'Research', body: 'Top 10 sheriff offices buying BWCs?' },
+      { id: 'm2', from: 'Kyle <kyle@trustedtechnology.ai>', subject: 'Hi', body: 'Pipeline?' },
+    ],
+    mode: 'live',
+    onlyFrom: [TODD],
+  })
+  const batch = await mail.nextBatch()
+  assert.match(gmail.queries.find((x) => x.folder === 'inbox').q, /from:\(todd\.hodnett@trustedtechnology\.ai\)$/)
+  assert.deepEqual(batch.emails.map((e) => e.message_id), ['m1'])
+  assert.equal(store.rows.get('m2').status, 'filtered')
+
+  // Even a claimed + Neel-approved email from someone else cannot be replied to.
+  store.rows.set('m2', { ...store.rows.get('m2'), status: 'notified', approvedAt: new Date() })
+  await assert.rejects(mail.reply({ message_id: 'm2', body: 'ok' }), /not on MAIL_AGENT_ONLY_FROM/)
+  await mail.reply({ message_id: 'm1', body: 'Here they are.\n\nNeel' })
+  assert.deepEqual(gmail.sent.map((m) => m.to), [`Todd <${TODD}>`])
+})
+
+test('Todd always gets a reply: no skipping, holding reply when handed to Neel, follow-ups answered', async () => {
+  const TODD = 'todd.hodnett@trustedtechnology.ai'
+  const { mail, gmail, store } = agent({
+    messages: [
+      { id: 'm1', from: `Todd <${TODD}>`, subject: 'Thanks', body: 'Thanks!' },
+      { id: 'm2', from: `Todd <${TODD}>`, subject: 'Quote', body: 'What price should we give Dallas PD?' },
+      { id: 'm3', from: `Todd <${TODD}>`, subject: 'Thanks', body: 'One more thing', threadId: 't-m1' },
+    ],
+    mode: 'live',
+    onlyFrom: [TODD],
+  })
+  const batch = await mail.nextBatch()
+  assert.ok(batch.emails.every((e) => e.always_reply && e.can_auto_reply))
+  await assert.rejects(mail.skip({ message_id: 'm1', reason: 'just thanks' }), /always gets a reply/)
+  await mail.reply({ message_id: 'm1', body: 'Anytime.\n\nNeel' })
+
+  // Pricing goes to Neel, and Todd hears back straight away.
+  await mail.notify({ message_id: 'm2', summary: 'Todd wants a price', reason: 'pricing', holding_reply: 'On it, back to you today.\n\nNeel' })
+  const [holding, needsYou] = gmail.sent.slice(1)
+  assert.equal(holding.to, `Todd <${TODD}>`)
+  assert.equal(holding.thread.threadId, 't-m2')
+  assert.match(holding.text, /back to you today/)
+  assert.equal(needsYou.to, MAILBOX)
+  assert.match(needsYou.text, /Sent .* a holding reply/)
+  assert.equal(store.rows.get('m2').status, 'notified')
+
+  // A follow-up in a thread already answered today still gets a reply.
+  await mail.reply({ message_id: 'm3', body: 'Will do.\n\nNeel' })
+  assert.equal(gmail.sent.at(-1).thread.threadId, 't-m1')
+})
+
+test('in trial mode the holding reply is only shown to Neel', async () => {
+  const TODD = 'todd.hodnett@trustedtechnology.ai'
+  const { mail, gmail } = agent({
+    messages: [{ id: 'm1', from: TODD, subject: 'Quote', body: 'Price?' }],
+    onlyFrom: [TODD],
+  })
+  await mail.nextBatch()
+  await mail.notify({ message_id: 'm1', summary: 's', reason: 'pricing' })
+  assert.deepEqual(gmail.sent.map((m) => m.to), [MAILBOX])
+  assert.match(gmail.sent[0].text, /would have sent .* a holding reply/)
+  assert.match(gmail.sent[0].text, /come back to you on this shortly/)
 })
 
 test('tells machines from people', () => {

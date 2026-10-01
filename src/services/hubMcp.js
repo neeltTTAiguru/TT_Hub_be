@@ -13,6 +13,7 @@ import {
   mapSearchAgencies,
 } from './agencyMapTools.js'
 import { createMailAgent } from './mailAgent.js'
+import { webResearch } from './webResearch.js'
 
 /**
  * The hub as an MCP server -- the return path from Hermes into the hub.
@@ -131,6 +132,7 @@ export function createHubMcpServer({
   agent = getAgentById,
   map = { callActivity: mapCallActivity, recentCalls: mapRecentCalls, searchAgencies: mapSearchAgencies, agency: mapAgency, researchRuns: mapResearchRuns },
   mail = createMailAgent(),
+  research = webResearch,
 } = {}) {
   const server = new McpServer({ name: 'trusted-tech-hub', version: '1.0.0' })
 
@@ -279,6 +281,26 @@ export function createHubMcpServer({
     async (args) => jsonResult(await map.researchRuns(args)),
   )
 
+  server.registerTool(
+    'web_research',
+    {
+      title: 'Web research',
+      description:
+        'Search the web and read the pages to answer one question, with cited source URLs. Use this for anything that needs current information from the internet (vendors, agencies, products, news, grants, people, prices on public sites). It really browses; prefer it over your own web tools and over hub agents for web questions. Takes up to two minutes.',
+      inputSchema: {
+        question: z.string().min(1).max(2000).describe('What to find out, as a full question'),
+        context: z.string().max(4000).optional().describe('Background that narrows the search, e.g. the email it came from'),
+      },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await research(args))
+      } catch (error) {
+        return toolError(error?.message || 'Web research failed.')
+      }
+    },
+  )
+
   if (mail) registerMailTools(server, mail)
 
   return server
@@ -330,6 +352,7 @@ function registerMailTools(server, mail) {
         summary: z.string().min(1).max(2000).describe('Two lines: who they are and what they want'),
         reason: z.string().min(1).max(1000).describe('Why the agent did not reply itself'),
         suggested_reply: z.string().max(5000).optional().describe('A reply Neel could send, if you have one'),
+        holding_reply: z.string().max(5000).optional().describe('For always_reply emails: a short reply sent to the sender now, e.g. "Got it, I\'ll come back to you on pricing today." Signed "Neel".'),
       },
     },
     mailCall((args) => mail.notify(args)),
@@ -339,7 +362,7 @@ function registerMailTools(server, mail) {
     'mail_skip',
     {
       title: 'Mail agent: no response needed',
-      description: 'Settle an email that needs no response at all (a thank-you, an FYI, an acknowledgement). Not for emails you could not answer -- those go to mail_notify_neel.',
+      description: 'Settle an email that needs no response at all (a thank-you, an FYI, an acknowledgement). Not for emails you could not answer -- those go to mail_notify_neel. Refused for always_reply emails: acknowledge those with mail_reply.',
       inputSchema: {
         message_id: messageId,
         reason: z.string().min(1).max(500).describe('Why no response is needed'),

@@ -75,7 +75,7 @@ test('a Hermes-style client lists the active agents and asks one through the sha
     const tools = await client.listTools()
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       'ask_agent', 'list_agents',
-      'map_agency', 'map_call_activity', 'map_calls_by_sdr', 'map_recent_calls', 'map_research_runs', 'map_search_agencies',
+      'map_agency', 'map_call_activity', 'map_calls_by_sdr', 'map_recent_calls', 'map_research_runs', 'map_search_agencies', 'web_research',
     ])
 
     const listed = await client.callTool({ name: 'list_agents', arguments: {} })
